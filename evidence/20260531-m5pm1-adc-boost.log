@@ -1,0 +1,25 @@
+M5PM1 ADC on M5Stack StickS3 - external 5V boost enabled (2026-05-31)
+Captured via scripts/monitor_capture_windows.py on COM9 (--no-reset).
+Local build with PR #109961 M5PM1 mfd + adc + regulator cherry-picked (NOT in this
+repo; depends on that PR merging). System 3V3 rails declared regulator-always-on;
+boost_5v declared regulator-boot-on. Channels: VBAT (ch1), VIN (USB input, ch2),
+5VOUT (external 5V boost, ch3). Values in millivolts.
+
+M5PM1 VBAT=4180 mV  VIN=5128 mV  5VOUT=5130 mV
+M5PM1 VBAT=4184 mV  VIN=5138 mV  5VOUT=5132 mV
+M5PM1 VBAT=4190 mV  VIN=5138 mV  5VOUT=5074 mV
+M5PM1 VBAT=4186 mV  VIN=5136 mV  5VOUT=5158 mV
+M5PM1 VBAT=4184 mV  VIN=5136 mV  5VOUT=5152 mV
+M5PM1 VBAT=4180 mV  VIN=5130 mV  5VOUT=5066 mV
+M5PM1 VBAT=4184 mV  VIN=5134 mV  5VOUT=5142 mV
+M5PM1 VBAT=4186 mV  VIN=5136 mV  5VOUT=5090 mV
+M5PM1 VBAT=4184 mV  VIN=5134 mV  5VOUT=5030 mV
+M5PM1 VBAT=4184 mV  VIN=5138 mV  5VOUT=5146 mV
+M5PM1 VBAT=4186 mV  VIN=5142 mV  5VOUT=5066 mV
+M5PM1 VBAT=4180 mV  VIN=5134 mV  5VOUT=5138 mV
+
+Multimeter cross-check (Pro'sKit MT-1236, DC volts) on GROVE Port.A 5V vs GND:
+  boost disabled: 0.7 V   (rail off; agrees with ADC 5VOUT near 0)
+  boost enabled:  5.095 V, then 5.167 V on re-measure (see 20260531-m5pm1-5vout-meter.jpg)
+ADC 5VOUT ~5.13 V vs meter 5.167 V: about 37 mV (~0.7%) agreement.
+VBAT/VIN held steady throughout: no brownout, system rails untouched.
