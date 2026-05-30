@@ -1,0 +1,23 @@
+M5StickS3 Zephyr - quiet build verification (CONFIG_APP_DISPLAY_DEMO=n)
+Captured 2026-05-30 on COM9 via scripts/monitor_capture_windows.py (--no-reset).
+
+Quiet build behaviour: the LCD is filled once with a stable frame, the backlight
+stays on (regulator-boot-on), and there is no colour cycling and no backlight
+blink. The console heartbeat continues. Note the absence of any ">>> Backlight
+OFF/ON" lines (those only appear in the default CONFIG_APP_DISPLAY_DEMO=y build).
+
+Heartbeat lines (verbatim):
+
+M5StickS3 alive uptime_ms=32508 disp=ready KEY1=1 KEY2=1 accel=[0.311854 0.205907 -9.627378]
+M5StickS3 alive uptime_ms=33509 disp=ready KEY1=1 KEY2=1 accel=[0.308262 0.220871 -9.628575]
+M5StickS3 alive uptime_ms=34511 disp=ready KEY1=1 KEY2=1 accel=[0.284918 0.228653 -9.617203]
+M5StickS3 alive uptime_ms=35512 disp=ready KEY1=1 KEY2=1 accel=[0.313649 0.210097 -9.614808]
+M5StickS3 alive uptime_ms=36514 disp=ready KEY1=1 KEY2=1 accel=[0.298087 0.216083 -9.618400]
+M5StickS3 alive uptime_ms=37515 disp=ready KEY1=1 KEY2=1 accel=[0.301678 0.201717 -9.616604]
+M5StickS3 alive uptime_ms=38517 disp=ready KEY1=1 KEY2=1 accel=[0.307664 0.210097 -9.617203]
+M5StickS3 alive uptime_ms=39518 disp=ready KEY1=1 KEY2=1 accel=[0.300481 0.229850 -9.632765]
+M5StickS3 alive uptime_ms=40520 disp=ready KEY1=1 KEY2=1 accel=[0.301080 0.215484 -9.638751]
+M5StickS3 alive uptime_ms=41521 disp=ready KEY1=1 KEY2=1 accel=[0.311255 0.198126 -9.638152]
+M5StickS3 alive uptime_ms=42523 disp=ready KEY1=1 KEY2=1 accel=[0.309460 0.217280 -9.630371]
+M5StickS3 alive uptime_ms=43524 disp=ready KEY1=1 KEY2=1 accel=[0.311854 0.212491 -9.637554]
+M5StickS3 alive uptime_ms=44526 disp=ready KEY1=1 KEY2=1 accel=[0.299284 0.217280 -9.620195]
