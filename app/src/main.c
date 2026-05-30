@@ -64,8 +64,10 @@ int main(void)
 	printk("Board: %s\n", CONFIG_BOARD);
 
 	const struct device *g0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+#ifdef CONFIG_APP_DISPLAY_DEMO
 	const struct device *bl = DEVICE_DT_GET(DT_NODELABEL(lcd_backlight));
 	uint32_t tick = 0;
+#endif
 
 #if DT_NODE_HAS_STATUS(DT_ALIAS(imu0), okay)
 	const struct device *imu = DEVICE_DT_GET(DT_ALIAS(imu0));
@@ -95,19 +97,23 @@ int main(void)
 		display_blanking_off(disp);
 		disp_state = "ready";
 		printk("Display: ready (%dx%d)\n", LCD_W, LCD_H);
+		/* Show a stable frame immediately so the panel is never blank. */
+		fill_screen(disp, 0x001F);
 	} else {
 		disp_state = "not-ready";
 		printk("Display: not ready\n");
 	}
+#ifdef CONFIG_APP_DISPLAY_DEMO
 	static const uint16_t colors[] = {0xF800, 0x07E0, 0x001F, 0xFFFF};
 	int ci = 0;
+#endif
 #endif
 
 	while (1) {
 		int k1 = gpio_pin_get_raw(g0, KEY1_PIN);
 		int k2 = gpio_pin_get_raw(g0, KEY2_PIN);
 
-#if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_display), okay)
+#if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_display), okay) && defined(CONFIG_APP_DISPLAY_DEMO)
 		if (disp_ok) {
 			fill_screen(disp, colors[ci]);
 			ci = (ci + 1) % ARRAY_SIZE(colors);
@@ -131,6 +137,7 @@ int main(void)
 #endif
 		k_msleep(SLEEP_TIME_MS);
 
+#ifdef CONFIG_APP_DISPLAY_DEMO
 		/*
 		 * B-3: every ~5 s blink the backlight via regulator_disable/enable
 		 * to prove regulator power control works on real hardware (screen
@@ -143,6 +150,7 @@ int main(void)
 			(void)regulator_enable(bl);
 			printk(">>> Backlight ON (regulator_enable) - screen should be VISIBLE\n");
 		}
+#endif
 	}
 
 	return 0;

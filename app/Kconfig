@@ -1,0 +1,18 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "M5StickS3 validation app"
+
+config APP_DISPLAY_DEMO
+	bool "Animated display and backlight-blink demo loop"
+	default y
+	help
+	  When enabled, the validation app cycles the LCD through R/G/B/W fills
+	  and periodically blinks the backlight via the regulator API, to
+	  exercise the display and the M5PM1 power-rail control on hardware.
+
+	  Disable it (for example -DCONFIG_APP_DISPLAY_DEMO=n) for a quiet build
+	  that fills the screen once with a stable frame and then only logs a
+	  heartbeat over the console. The panel no longer flashes.
+
+source "Kconfig.zephyr"
