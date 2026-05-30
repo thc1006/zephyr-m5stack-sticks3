@@ -1,5 +1,10 @@
 # Zephyr RTOS support for the M5Stack StickS3 (ESP32-S3) — board `m5stack_sticks3`
 
+[![CI](https://github.com/thc1006/zephyr-m5stack-sticks3/actions/workflows/ci.yml/badge.svg)](https://github.com/thc1006/zephyr-m5stack-sticks3/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Zephyr](https://img.shields.io/badge/Zephyr-4.4.0-7f52ff.svg)](https://docs.zephyrproject.org/latest/releases/release-notes-4.4.html)
+[![Board](https://img.shields.io/badge/board-m5stack__sticks3-informational.svg)](boards/m5stack/m5stack_sticks3)
+
 **Yes — you can run Zephyr RTOS on the M5Stack StickS3.** This repository is a
 public, reproducible, upstream-oriented Zephyr 4.4 **board port** for the
 **M5Stack StickS3 / M5StickS3 K150** (SoC: **ESP32-S3-PICO-1-N8R8**, 8 MB flash +
