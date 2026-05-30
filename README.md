@@ -10,6 +10,17 @@ and the **ST7789(P3) LCD**.
 > Board name: `m5stack_sticks3` · SoC: `esp32s3/procpu` · Zephyr: 4.4.0 ·
 > Status: runtime-verified (boot, console, buttons, IMU, LCD)
 
+<p align="center">
+  <img src="evidence/PXL_20260529_235120410.jpg" width="300"
+       alt="M5Stack StickS3 running this Zephyr port: ST7789P3 LCD showing a green color-fill frame, board powered over USB-C and held in hand">
+  &nbsp;&nbsp;
+  <img src="evidence/PXL_20260529_235122375.jpg" width="300"
+       alt="M5Stack StickS3 running this Zephyr port: ST7789P3 LCD showing a white color-fill frame">
+</p>
+<p align="center"><sub>The M5Stack StickS3 running this Zephyr port — the ST7789P3 LCD during the
+color-fill test (green and white frames), powered over USB-C. Full logs and more
+photos in <a href="evidence/"><code>evidence/</code></a>.</sub></p>
+
 Aliases people search for: *M5StickS3*, *M5Stick S3*, *StickS3 K150*,
 *M5Stack StickS3 Zephyr*, *Zephyr ESP32-S3 board port*, *M5PM1 PMIC Zephyr
 regulator*, *ST7789P3 Zephyr display*.
