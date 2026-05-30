@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "Zephyr RTOS board port for the M5Stack StickS3 (board m5stack_sticks3)"
+abstract: >-
+  Public, reproducible, upstream-oriented Zephyr 4.4 board port and hardware
+  validation suite for the M5Stack StickS3 / M5StickS3 K150 (ESP32-S3-PICO-1-N8R8).
+  Runtime-verified on hardware for boot/console, buttons, the BMI270 IMU, and the
+  ST7789P3 LCD (powered via an interim M5PM1 PMIC L3B-rail regulator driver).
+type: software
+authors:
+  - alias: thc1006
+    name: "thc1006"
+repository-code: "https://github.com/thc1006/zephyr-m5stack-sticks3"
+url: "https://github.com/thc1006/zephyr-m5stack-sticks3"
+license: Apache-2.0
+keywords:
+  - zephyr
+  - zephyr-rtos
+  - m5stack
+  - m5sticks3
+  - m5stick-s3
+  - esp32-s3
+  - esp32s3
+  - board-port
+  - st7789p3
+  - bmi270
+  - m5pm1
+  - embedded

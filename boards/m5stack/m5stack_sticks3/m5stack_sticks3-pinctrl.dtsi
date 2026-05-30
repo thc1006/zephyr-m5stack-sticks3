@@ -1,0 +1,50 @@
+/*
+ * Copyright (c) 2026
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Pin assignments derived from the M5Stack StickS3 official PinMap
+ * (docs.m5stack.com/en/core/StickS3). See docs/00_RESEARCH_SNAPSHOT.md and
+ * docs/adr/0002-pin-map-source-of-truth.md.
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+&pinctrl {
+	uart0_default: uart0_default {
+		group1 {
+			pinmux = <UART0_TX_GPIO43>;
+			output-high;
+		};
+
+		group2 {
+			pinmux = <UART0_RX_GPIO44>;
+			bias-pull-up;
+		};
+	};
+
+	/* M5Stack PinMap: SDA G47, SCL G48 (BMI270 / M5PM1). */
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO47>,
+				 <I2C0_SCL_GPIO48>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	/* M5Stack PinMap: LCD MOSI G39, SCK G40 (CS G41 handled as GPIO). */
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_SCLK_GPIO40>;
+		};
+
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO39>;
+			output-low;
+		};
+	};
+};

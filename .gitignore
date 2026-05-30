@@ -1,0 +1,30 @@
+# Zephyr/build artifacts
+build/
+zephyrproject*/
+*.elf
+*.bin
+*.hex
+*.map
+*.uf2
+
+# Evidence: keep logs but do not accidentally commit huge videos unless intended
+evidence/*.mp4
+evidence/*.mov
+
+# Not hardware evidence (placeholder meme); replace with a real LCD photo.
+evidence/popcat.jpg
+
+# AI-tooling / agent scaffolding — kept locally, not part of the public,
+# tool-agnostic repo. A reader without any AI tools can reproduce everything
+# from README.md + CONTRIBUTING.md + docs/.
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+prompts/
+docs/adr/0003-claude-code-agent-workflow.md
+
+# Python
+__pycache__/
+.pytest_cache/
+.venv/

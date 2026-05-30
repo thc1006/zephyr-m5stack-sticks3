@@ -1,0 +1,190 @@
+/*
+ * Copyright (c) 2026
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * M5Stack StickS3 (ESP32-S3-PICO-1-N8R8) board devicetree.
+ * Pin map source: M5Stack official StickS3 PinMap. See
+ * docs/00_RESEARCH_SNAPSHOT.md and docs/09_SOURCES.md.
+ */
+/dts-v1/;
+
+#include <espressif/esp32s3/esp32s3_pico_n8r8.dtsi>
+#include "m5stack_sticks3-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <espressif/partitions_0x0_amp.dtsi>
+
+/ {
+	model = "M5Stack StickS3 PROCPU";
+	compatible = "m5stack,sticks3";
+
+	chosen {
+		zephyr,sram = &sram1;
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,bt-hci = &esp32_bt_hci;
+		zephyr,display = &lcd0;
+	};
+
+	aliases {
+		sw0 = &button_key1;
+		sw1 = &button_key2;
+		imu0 = &bmi270;
+		accel0 = &bmi270;
+		watchdog0 = &wdt0;
+		i2c-0 = &i2c0;
+	};
+
+	/*
+	 * Two programmable buttons (hardware-verified 2026-05-30, facing the unit):
+	 * MIDDLE button = KEY1 (G11), RIGHT button = KEY2 (G12). The LEFT button is
+	 * the power key wired to the M5PM1 PMIC (not a host GPIO).
+	 */
+	gpio_keys {
+		compatible = "gpio-keys";
+
+		button_key1: button_0 {
+			label = "KEY1"; /* middle button, G11 */
+			gpios = <&gpio0 11 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			zephyr,code = <INPUT_KEY_0>;
+		};
+
+		button_key2: button_1 {
+			label = "KEY2"; /* right button, G12 */
+			gpios = <&gpio0 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			zephyr,code = <INPUT_KEY_1>;
+		};
+	};
+
+	/*
+	 * LCD backlight enable. M5Stack PinMap: BL = G38 (gpio1 pin 6). The vendor
+	 * stack drives this via LEDC PWM; for bring-up a fixed on/off switch is
+	 * enough. The backlight only lights once the L3B rail (lcd_power) is on.
+	 */
+	lcd_backlight: lcd-backlight {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-backlight";
+		enable-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+
+	/*
+	 * ST7789P3 LCD on SPI2 via the MIPI-DBI SPI shim.
+	 * M5Stack PinMap: MOSI G39, SCK G40 (pinctrl), CS G41, DC/RS G45, RST G21.
+	 * Panel geometry/offsets/inversion from the vendor M5GFX StickS3 config.
+	 */
+	mipi_dbi: mipi-dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;   /* G45 */
+		reset-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>; /* G21 */
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		lcd0: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			reg = <0>;
+			mipi-max-frequency = <40000000>;
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+
+			width = <135>;
+			height = <240>;
+			x-offset = <52>;
+			y-offset = <40>;
+
+			vcom = <0x19>;
+			gctrl = <0x35>;
+			vrhs = <0x12>;
+			vdvs = <0x20>;
+			mdac = <0x00>;
+			gamma = <0x01>;
+			colmod = <0x55>;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [d0 04 0d 11 13 2b 3f 54 4c 18 0d 0b 1f 23];
+			nvgam-param = [d0 04 0c 11 13 2c 3f 44 51 2f 1f 1f 20 23];
+			ram-param = [00 e0];
+			rgb-param = [40 02 14];
+		};
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+
+	/* On-board 6-axis IMU. M5Stack PinMap: I2C address 0x68. */
+	bmi270: bmi270@68 {
+		compatible = "bosch,bmi270";
+		reg = <0x68>;
+		status = "okay";
+	};
+
+	/*
+	 * M5PM1 PMIC (0x6e). Used here only to switch on the LCD/peripheral power
+	 * rail (L3B) by driving M5PM1 GPIO2 high. regulator-boot-on enables it at
+	 * init, before the display. startup-delay matches the vendor 100 ms settle.
+	 */
+	lcd_power: regulator@6e {
+		compatible = "m5stack,m5pm1-l3b-regulator";
+		reg = <0x6e>;
+		regulator-name = "lcd-l3b";
+		regulator-boot-on;
+		gpio = <2>;
+	};
+};
+
+&spi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio1 9 GPIO_ACTIVE_LOW>; /* LCD CS = G41 */
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&wdt0 {
+	status = "okay";
+};
+
+&timer0 {
+	status = "okay";
+};
+
+&timer1 {
+	status = "okay";
+};
+
+&esp32_bt_hci {
+	status = "okay";
+};
+
+&wifi {
+	status = "okay";
+};

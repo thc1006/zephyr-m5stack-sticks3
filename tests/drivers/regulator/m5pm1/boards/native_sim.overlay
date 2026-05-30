@@ -1,0 +1,14 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+&i2c0 {
+	status = "okay";
+
+	lcd_power: regulator@6e {
+		compatible = "m5stack,m5pm1-l3b-regulator";
+		reg = <0x6e>;
+		regulator-name = "lcd-l3b";
+		regulator-boot-on;
+		gpio = <2>;
+		status = "okay";
+	};
+};

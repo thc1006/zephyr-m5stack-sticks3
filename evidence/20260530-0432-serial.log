@@ -1,0 +1,24 @@
+M5Stack StickS3 (m5stack_sticks3/esp32s3/procpu) - Zephyr 4.4.0 boot/console evidence
+Captured: 20260530-0432 (2026-05-30) via esp-idf-monitor on Windows COM9 (ESP32-S3 USB-Serial/JTAG)
+Flash: esptool write_flash 0x0 zephyr.bin --flash-mode dio --flash-freq 80m --flash-size 8MB --after watchdog_reset
+Note: monitor attached ~4s after boot, so the one-shot boot banner scrolled past;
+the per-second heartbeat below is self-identifying (board + IMU readiness).
+--------------------------------------------------------------- Warning: GDB cannot open serial ports accessed as COMx
+--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+M5StickS3 alive uptime_ms=4162 imu=ready
+M5StickS3 alive uptime_ms=5162 imu=ready
+M5StickS3 alive uptime_ms=6162 imu=ready
+M5StickS3 alive uptime_ms=7162 imu=ready
+M5StickS3 alive uptime_ms=8162 imu=ready
+M5StickS3 alive uptime_ms=9162 imu=ready
+M5StickS3 alive uptime_ms=10162 imu=ready
+M5StickS3 alive uptime_ms=11162 imu=ready
+M5StickS3 alive uptime_ms=12162 imu=ready
+M5StickS3 alive uptime_ms=13162 imu=ready
+M5StickS3 alive uptime_ms=14163 imu=ready
+
+[monitor captured 865 chars]
+

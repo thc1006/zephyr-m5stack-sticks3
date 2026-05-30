@@ -1,0 +1,18 @@
+Running TESTSUITE m5pm1
+ PASS - test_boot_on_enables_rail in 0.000 seconds
+ PASS - test_disable_then_enable in 0.000 seconds
+ PASS - test_enable_propagates_i2c_error in 0.000 seconds
+ PASS - test_enable_reasserts_full_sequence in 0.000 seconds
+ PASS - test_enable_write_order in 0.000 seconds
+ PASS - test_neighbour_pyg3_preserved in 0.000 seconds
+TESTSUITE m5pm1 succeeded
+------ TESTSUITE SUMMARY START ------
+SUITE PASS - 100.00% [m5pm1]: pass = 6, fail = 0, skip = 0, total = 6 duration = 0.000 seconds
+ - PASS - [m5pm1.test_boot_on_enables_rail] duration = 0.000 seconds
+ - PASS - [m5pm1.test_disable_then_enable] duration = 0.000 seconds
+ - PASS - [m5pm1.test_enable_propagates_i2c_error] duration = 0.000 seconds
+ - PASS - [m5pm1.test_enable_reasserts_full_sequence] duration = 0.000 seconds
+ - PASS - [m5pm1.test_enable_write_order] duration = 0.000 seconds
+ - PASS - [m5pm1.test_neighbour_pyg3_preserved] duration = 0.000 seconds
+------ TESTSUITE SUMMARY END ------
+PROJECT EXECUTION SUCCESSFUL

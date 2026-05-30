@@ -1,0 +1,18 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200[38;5;3m
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+[mM5StickS3 alive uptime_ms=4162 imu=ready
+M5StickS3 alive uptime_ms=5162 imu=ready
+M5StickS3 alive uptime_ms=6162 imu=ready
+M5StickS3 alive uptime_ms=7162 imu=ready
+M5StickS3 alive uptime_ms=8162 imu=ready
+M5StickS3 alive uptime_ms=9162 imu=ready
+M5StickS3 alive uptime_ms=10162 imu=ready
+M5StickS3 alive uptime_ms=11162 imu=ready
+M5StickS3 alive uptime_ms=12162 imu=ready
+M5StickS3 alive uptime_ms=13162 imu=ready
+M5StickS3 alive uptime_ms=14163 imu=ready
+
+[monitor captured 865 chars]

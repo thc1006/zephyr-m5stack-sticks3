@@ -1,0 +1,30 @@
+M5Stack StickS3 (m5stack_sticks3/esp32s3/procpu) - HW-003 LCD evidence
+Captured: 2026-05-30 via esp-idf-monitor on Windows COM9.
+
+LCD: ST7789P3 (135x240) on SPI2 via zephyr,mipi-dbi-spi; x-offset=52, y-offset=40,
+inversion ON, RGB565, 40 MHz. Power rail unlocked by the new M5PM1 PMIC regulator
+driver (drivers/regulator/regulator_m5pm1.c) driving M5PM1 GPIO2 (PYG2) high (L3B).
+
+Visual confirmation (user, 2026-05-30): the panel cycles solid colors
+red -> green -> blue -> white once per second (the app's fill_screen test).
+
+Serial heartbeat confirms display init succeeded ("disp=ready" every line):
+
+M5StickS3 alive uptime_ms=3572 disp=ready KEY1=1 KEY2=1 accel=[0.132882 0.240624 10.020638]
+M5StickS3 alive uptime_ms=4610 disp=ready KEY1=1 KEY2=1 accel=[0.111932 0.215484 10.014652]
+M5StickS3 alive uptime_ms=5647 disp=ready KEY1=1 KEY2=1 accel=[0.093376 0.190344 9.999688]
+M5StickS3 alive uptime_ms=6685 disp=ready KEY1=1 KEY2=1 accel=[0.117319 0.216681 10.020638]
+M5StickS3 alive uptime_ms=7722 disp=ready KEY1=1 KEY2=1 accel=[0.124502 0.229850 10.043383]
+M5StickS3 alive uptime_ms=8760 disp=ready KEY1=1 KEY2=1 accel=[0.124502 0.232843 10.017046]
+M5StickS3 alive uptime_ms=9797 disp=ready KEY1=1 KEY2=1 accel=[0.119115 0.207703 10.016448]
+M5StickS3 alive uptime_ms=10835 disp=ready KEY1=1 KEY2=1 accel=[0.120312 0.220273 10.012856]
+M5StickS3 alive uptime_ms=11872 disp=ready KEY1=1 KEY2=1 accel=[0.117918 0.213090 10.011659]
+
+Photo evidence (hand-held StickS3, USB-C powered, LCD lit, colours cycling):
+  evidence/PXL_20260529_235120410.jpg  (green/yellow fill)
+  evidence/PXL_20260529_235121324.jpg
+  evidence/PXL_20260529_235122375.jpg
+  evidence/PXL_20260529_235123817.jpg  (red/orange fill -> confirms the cycle)
+  evidence/PXL_20260529_235124483.jpg
+The five consecutive frames show different solid colours, matching the app's
+red/green/blue/white fill loop.

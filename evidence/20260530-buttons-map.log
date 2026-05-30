@@ -1,0 +1,22 @@
+M5Stack StickS3 - physical button mapping (hardware-verified 2026-05-30)
+Captured via esp-idf-monitor on COM9, gpio-keys input events.
+
+Facing the unit:
+  LEFT   button = POWER key (M5PM1 PMIC) - pressing it reboots the SoC
+                  (uptime reset 178s -> 0.4s, no gpio-keys event). Not a host GPIO.
+  MIDDLE button = KEY1 = GPIO11 = INPUT_KEY_0 (event code 11)
+  RIGHT  button = KEY2 = GPIO12 = INPUT_KEY_1 (event code 2)
+
+Captured sequence (pressed MIDDLE then RIGHT):
+
+BUTTON code=11 PRESSED
+BUTTON code=11 released
+BUTTON code=11 PRESSED
+BUTTON code=11 released
+BUTTON code=2 PRESSED
+BUTTON code=2 released
+BUTTON code=2 PRESSED
+BUTTON code=2 released
+
+Both programmable keys confirmed through the Zephyr gpio-keys interrupt/input
+subsystem. The board DTS labels match: KEY1=G11 (middle), KEY2=G12 (right).

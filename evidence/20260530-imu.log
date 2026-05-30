@@ -1,0 +1,30 @@
+M5Stack StickS3 (m5stack_sticks3/esp32s3/procpu) - HW-004 BMI270 IMU evidence
+Captured: 2026-05-30 via esp-idf-monitor on Windows COM9.
+BMI270 @ I2C0 0x68 (SCL G48 / SDA G47). Accel full-scale +/-2g, ODR 100 Hz.
+The device was rotated through several orientations; the ~9.8 m/s2 gravity vector
+moves across X/Y/Z, proving live, physically-correct accelerometer readings.
+------------------------------------------------------------M5StickS3 alive uptime_ms=76286 KEY1=1 KEY2=1 accel=[-2.740247 -9.194613 7.263630] m/s2
+M5StickS3 alive uptime_ms=77288 KEY1=1 KEY2=1 accel=[-3.765595 -7.085257 1.391073] m/s2
+M5StickS3 alive uptime_ms=78289 KEY1=1 KEY2=1 accel=[-1.269564 -10.940638 -3.341210] m/s2
+M5StickS3 alive uptime_ms=79291 KEY1=1 KEY2=1 accel=[0.056864 0.513571 8.253663] m/s2
+M5StickS3 alive uptime_ms=80292 KEY1=1 KEY2=1 accel=[-2.099180 5.979102 8.336266] m/s2
+M5StickS3 alive uptime_ms=81294 KEY1=1 KEY2=1 accel=[0.100559 0.456109 9.879974] m/s2
+M5StickS3 alive uptime_ms=82295 KEY1=1 KEY2=1 accel=[0.020351 0.222068 10.033806] m/s2
+M5StickS3 alive uptime_ms=83297 KEY1=1 KEY2=1 accel=[0.038308 0.260377 10.031412] m/s2
+M5StickS3 alive uptime_ms=84298 KEY1=1 KEY2=1 accel=[-2.472088 -9.248484 5.944984] m/s2
+M5StickS3 alive uptime_ms=85300 KEY1=1 KEY2=1 accel=[-2.880911 1.722082 10.746702] m/s2
+M5StickS3 alive uptime_ms=86301 KEY1=1 KEY2=1 accel=[0.091581 0.244814 10.018244] m/s2
+M5StickS3 alive uptime_ms=87303 KEY1=1 KEY2=1 accel=[0.073623 0.240026 10.020039] m/s2
+M5StickS3 alive uptime_ms=88304 KEY1=1 KEY2=1 accel=[0.058659 0.241223 10.023032] m/s2
+M5StickS3 alive uptime_ms=89306 KEY1=1 KEY2=1 accel=[0.087391 0.237033 10.024828] m/s2
+M5StickS3 alive uptime_ms=90307 KEY1=1 KEY2=1 accel=[0.530331 0.404632 11.030423] m/s2
+M5StickS3 alive uptime_ms=91309 KEY1=1 KEY2=1 accel=[-8.867795 0.582407 1.687365] m/s2
+M5StickS3 alive uptime_ms=92310 KEY1=1 KEY2=1 accel=[-9.530410 0.633285 1.298295] m/s2
+M5StickS3 alive uptime_ms=93312 KEY1=1 KEY2=1 accel=[-9.547769 0.408822 0.717085] m/s2
+M5StickS3 alive uptime_ms=94313 KEY1=1 KEY2=1 accel=[-9.674067 0.196330 1.016968] m/s2
+M5StickS3 alive uptime_ms=95315 KEY1=1 KEY2=1 accel=[-5.968926 -6.831464 -1.311463] m/s2
+M5StickS3 alive uptime_ms=96316 KEY1=1 KEY2=1 accel=[0.536916 -10.167886 1.262381] m/s2
+M5StickS3 alive uptime_ms=97318 KEY1=1 KEY2=1 accel=[0.421990 -12.166507 4.055901] m/s2
+M5StickS3 alive uptime_ms=98319 KEY1=1 KEY2=1 accel=[-2.277553 5.059102 0.287911] m/s2
+M5StickS3 alive uptime_ms=99321 KEY1=1 KEY2=1 accel=[0.098763 9.567521 0.353754] m/s2
+M5StickS3 alive uptime_ms=100322 KEY1=1 KEY2=1 accel=[0.075419 9.575901 0.364528] m/s2

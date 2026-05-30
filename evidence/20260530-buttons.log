@@ -1,0 +1,23 @@
+M5Stack StickS3 (m5stack_sticks3/esp32s3/procpu) - HW-002 button evidence
+Captured: 2026-05-30 via esp-idf-monitor on Windows COM9 (ESP32-S3 USB-Serial/JTAG)
+
+Method: a baseline+latch GPIO discovery firmware sampled candidate pins every
+250 ms, took a baseline at boot (ignoring pins held low by the unpowered
+peripheral rail), and latched any baseline-HIGH pin that went LOW (= a press).
+The user pressed the left and right buttons; the middle button is the power key
+(routed via the M5PM1 PMIC, not a host GPIO, so it does not appear).
+
+Result (final latched set, stable across samples):
+
+    latched-pressed=[ G11 G12 ]
+
+Conclusion (hardware-measured):
+- KEY1 = GPIO11, KEY2 = GPIO12 (active-low, internal pull-up). This MATCHES the
+  M5Stack official PinMap. The two physical user buttons pull their GPIO low on
+  press; the third physical button is the PMIC power key (no host GPIO).
+- Note: the gpio-keys *interrupt* path did not emit input events on this ESP32-S3
+  in testing; the raw GPIO level (and the latch scan) reliably show presses.
+
+Board DTS: boards/m5stack/m5stack_sticks3/m5stack_sticks3_procpu.dts
+  button_key1 -> &gpio0 11 (GPIO_ACTIVE_LOW | GPIO_PULL_UP), sw0, INPUT_KEY_0
+  button_key2 -> &gpio0 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP), sw1, INPUT_KEY_1

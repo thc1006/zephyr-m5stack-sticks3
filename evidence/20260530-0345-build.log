@@ -1,0 +1,61 @@
+=== installing west packages (esptool etc) ===
+  Building wheel for esptool (pyproject.toml): finished with status 'done'
+  Created wheel for esptool: filename=esptool-5.2.0-py3-none-any.whl size=613123 sha256=9191326496759363e36b06dc44a5416b3d2468a40fd9fc93b984cdaf2ae3dbbd
+  Stored in directory: /home/thc1006/.cache/pip/wheels/58/f7/2d/067b7bc6fd27d8615481010a538e8e3eb30139ce1c02bff7ba
+  Building wheel for pyDes (pyproject.toml): started
+  Building wheel for pyDes (pyproject.toml): finished with status 'done'
+  Created wheel for pyDes: filename=pydes-2.0.1-py2.py3-none-any.whl size=9638 sha256=d8ac5dd78afd9c283bbe6032d621d1fe32d30726fba6c66bbb0b68aa724a20c3
+  Stored in directory: /home/thc1006/.cache/pip/wheels/a5/8e/44/944eecd718a1eec08f26a45818a0a7e25e44505fc7ff407481
+  Building wheel for pyaes (pyproject.toml): started
+  Building wheel for pyaes (pyproject.toml): finished with status 'done'
+  Created wheel for pyaes: filename=pyaes-1.6.1-py3-none-any.whl size=26422 sha256=aba7c1656babf2df5b08edaa9e6c15d86546ae0dd512c4eb09796b7d116e4b18
+  Stored in directory: /home/thc1006/.cache/pip/wheels/d9/43/32/ec313dd557e88e419489b9df40c04dad7b99576bde162496f8
+Successfully built esptool pyDes pyaes
+Installing collected packages: reedsolo, pyDes, pyaes, base58, sslcrypto, pycryptodome, protobuf, mdurl, json5, grpcio, ecdsa, cbor2, markdown-it-py, grpcio-tools, rich, imgtool, rich_click, esptool
+
+Successfully installed base58-1.0.3 cbor2-6.1.1 ecdsa-0.19.2 esptool-5.2.0 grpcio-1.80.0 grpcio-tools-1.68.0 imgtool-2.4.0 json5-0.14.0 markdown-it-py-4.2.0 mdurl-0.1.2 protobuf-5.29.6 pyDes-2.0.1 pyaes-1.6.1 pycryptodome-3.23.0 reedsolo-1.7.0 rich-15.0.0 rich_click-1.9.8 sslcrypto-5.3
+=== esptool in venv ===
+esptool 5.2.0
+=== rebuild ===
+[230/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/fatal.c.obj
+[231/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/mailbox.c.obj
+[232/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/msg_q.c.obj
+[233/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/system_work_q.c.obj
+[234/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/sem.c.obj
+[235/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/stack.c.obj
+[236/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/queue.c.obj
+[237/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/condvar.c.obj
+[238/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/thread.c.obj
+[239/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/mutex.c.obj
+[240/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/timeslicing.c.obj
+[241/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/pipe.c.obj
+[242/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/work.c.obj
+[243/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/timer.c.obj
+[244/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/mempool.c.obj
+[245/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/timeout.c.obj
+[246/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/dynamic_disabled.c.obj
+[247/254] Building C object zephyr/kernel/CMakeFiles/kernel.dir/sched.c.obj
+[248/254] Linking C static library zephyr/kernel/libkernel.a
+[249/254] Linking C executable zephyr/zephyr_pre0.elf
+[250/254] Generating linker.cmd
+[251/254] Generating isr_tables.c, isr_tables_vt.ld, isr_tables_swi.ld
+[252/254] Building C object zephyr/CMakeFiles/zephyr_final.dir/misc/empty_file.c.obj
+[253/254] Building C object zephyr/CMakeFiles/zephyr_final.dir/isr_tables.c.obj
+[254/254] Linking C executable zephyr/zephyr.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:      137420 B    8388352 B      1.64%
+     iram0_0_seg:       44744 B     415492 B     10.77%
+     dram0_0_seg:       50608 B     399108 B     12.68%
+     irom0_0_seg:       22542 B        32 MB      0.07%
+     drom0_0_seg:       71884 B        32 MB      0.21%
+    rtc_iram_seg:           0 B         8 KB      0.00%
+    rtc_slow_seg:          36 B         8 KB      0.44%
+        IDT_LIST:           0 B         8 KB      0.00%
+Generating files from /home/thc1006/zephyrproject-m5sticks3/build/zephyr/zephyr.elf for board: m5stack_sticks3/esp32s3/procpu
+esptool v5.2.0
+Creating ESP32-S3 image...
+Image has only RAM segments visible. ROM segments are hidden and SHA256 digest is not appended.
+Merged 18 ELF sections.
+Successfully created ESP32-S3 image.
+=== artifacts ===
+-rwxr-xr-x 1 thc1006 thc1006 137420 May 30 03:43 /home/thc1006/zephyrproject-m5sticks3/build/zephyr/zephyr.bin

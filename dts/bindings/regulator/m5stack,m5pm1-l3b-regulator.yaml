@@ -1,0 +1,31 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  M5Stack M5PM1 PMIC GPIO-switched power rail, modeled as a Zephyr regulator.
+
+  The M5PM1 (I2C 0x6E) gates the M5StickS3 peripheral domains via its GPIOs
+  (PYG0..PYG4). The named M5PM1 GPIO is driven high to enable the rail. On
+  StickS3, GPIO2 (PYG2) is the "L3B" switch that powers the LCD/MIC/SPK domain.
+  This rail is a load switch, so there is no output voltage to set.
+
+  This is an interim, single-rail binding. The canonical upstream M5PM1 support
+  (MFD + gpio + adc + regulator) is being introduced by Zephyr PR #109961; the
+  board should reuse that once merged. The "-l3b-" name keeps this binding
+  distinct from the upstream "m5stack,m5pm1*" bindings.
+
+  Mark the node `regulator-boot-on` so the rail is enabled at init (before the
+  display is initialized).
+
+compatible: "m5stack,m5pm1-l3b-regulator"
+
+include:
+  - name: regulator.yaml
+  - name: i2c-device.yaml
+
+properties:
+  gpio:
+    type: int
+    required: true
+    description: |
+      M5PM1 GPIO index (0-4) that gates this rail. For the StickS3 LCD use 2.

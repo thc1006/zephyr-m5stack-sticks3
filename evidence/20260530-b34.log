@@ -1,0 +1,21 @@
+M5Stack StickS3 - HW B-3 (regulator disable) + B-4 (gpio-keys events) evidence
+Captured: 2026-05-30 via esp-idf-monitor on Windows COM9.
+
+B-3: the app blinks the LCD backlight (G38) via the regulator API every ~5 s.
+User confirmed (2026-05-30) the screen visibly goes dark and returns ("有閃黑").
+This proves regulator_disable()/regulator_enable() cut and restore power on real
+hardware. Serial:
+
+>>> Backlight OFF (regulator_disable) - screen should go DARK
+>>> Backlight ON (regulator_enable) - screen should be VISIBLE
+   (repeated several times over the capture window)
+
+B-4: gpio-keys INPUT-EVENT path confirmed on ESP32-S3 (resolves the earlier
+"unconfirmed" caveat). Pressing KEY2 (G12) produced, via the Zephyr input
+subsystem (interrupt-driven gpio-keys + INPUT_CALLBACK):
+
+BUTTON code=2 PRESSED      (code 2 = INPUT_KEY_1 = KEY2)
+BUTTON code=2 released
+
+Note: only KEY2 was pressed in this run; one full press/release through the
+input subsystem is sufficient to confirm the interrupt event path works.
