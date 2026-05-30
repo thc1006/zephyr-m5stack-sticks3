@@ -8,8 +8,8 @@ abstract: >-
   ST7789P3 LCD (powered via an interim M5PM1 PMIC L3B-rail regulator driver).
 type: software
 authors:
-  - alias: thc1006
-    name: "thc1006"
+  - name: "thc1006"
+    email: hctsai@linux.com
 repository-code: "https://github.com/thc1006/zephyr-m5stack-sticks3"
 url: "https://github.com/thc1006/zephyr-m5stack-sticks3"
 license: Apache-2.0
