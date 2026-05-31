@@ -1,0 +1,7 @@
+tests:
+  app.ir.nec:
+    tags:
+      - ir
+      - nec
+    platform_allow:
+      - native_sim
