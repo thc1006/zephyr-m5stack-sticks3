@@ -4,15 +4,45 @@
 mainmenu "M5StickS3 validation app"
 
 config APP_DISPLAY_DEMO
-	bool "Animated display and backlight-blink demo loop"
+	bool "Diagnostics page colour-cycle + backlight blink"
 	default y
 	help
-	  When enabled, the validation app cycles the LCD through R/G/B/W fills
-	  and periodically blinks the backlight via the regulator API, to
-	  exercise the display and the M5PM1 power-rail control on hardware.
+	  When enabled, the diagnostics page (PAGE_DIAG) cycles the LCD through
+	  R/G/B/W fills and periodically blinks the backlight via the regulator
+	  API, to exercise the display and the M5PM1 power-rail control on
+	  hardware.
 
-	  Disable it (for example -DCONFIG_APP_DISPLAY_DEMO=n) for a quiet build
-	  that fills the screen once with a stable frame and then only logs a
-	  heartbeat over the console. The panel no longer flashes.
+	  Disable it (for example -DCONFIG_APP_DISPLAY_DEMO=n) for a quiet
+	  diagnostics page (static black fill); the other pages are unaffected.
+
+config APP_BLE
+	bool "BLE advertising + GATT telemetry"
+	default n
+	help
+	  When enabled, the app brings up the Bluetooth LE controller and starts
+	  connectable + scannable advertising that carries the device name and a
+	  manufacturer-specific telemetry payload (uptime, battery mV, accel mg).
+	  It also exposes a custom 128-bit GATT service with a READ + NOTIFY
+	  telemetry characteristic, and adds a BLE status page to the UI.
+
+	  This pulls in the full Bluetooth host + the Espressif controller HAL,
+	  so it requires the binary blob: run `west blobs fetch hal_espressif`
+	  before building. It is off by default so the standard build stays
+	  blob-free. Enable it via -DEXTRA_CONF_FILE=overlay-ble.conf, which also
+	  turns on CONFIG_BT and the peripheral role.
+
+config APP_AUDIO
+	bool "ES8311 audio (440 Hz beep)"
+	default n
+	help
+	  When enabled, the app brings up the on-board ES8311 codec on I2S0 and
+	  adds an AUDIO page that plays a short 440 Hz beep when the page is
+	  entered. The AW8737 speaker amplifier (M5PM1 GPIO3) is enabled only for
+	  the duration of the beep.
+
+	  This needs CONFIG_AUDIO / CONFIG_AUDIO_CODEC (ES8311) and CONFIG_I2S
+	  (esp32-i2s + DMA). It is off by default so the standard build is
+	  unchanged; enable it via -DEXTRA_CONF_FILE=overlay-audio.conf, which
+	  turns on the codec, I2S, and DMA Kconfigs.
 
 source "Kconfig.zephyr"

@@ -1,0 +1,309 @@
+/*
+ * Copyright (c) 2026 Hsiu-Chi Tsai
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * P5: ES8311 audio bring-up for the M5StickS3 validation app.
+ *
+ * Everything here is gated behind CONFIG_APP_AUDIO (built via
+ * overlay-audio.conf); the default build does not compile this file.
+ *
+ * Signal path: SoC I2S0 (master, 16 kHz / 16-bit / standard I2S) -> ES8311
+ * codec (I2C control @ 0x18, MCLK derived from BCLK) -> AW8737 speaker amp.
+ * The amp is enabled by the M5PM1 PMIC GPIO3 (sound_amp / amp-gpios) and is
+ * driven high ONLY for the duration of a beep to avoid switch-on/off pops and
+ * to keep the speaker path muted at rest.
+ *
+ * BUILD-VERIFIED ONLY (compile + link); not flashed. The trigger ordering
+ * below follows the anti-click sequence proven during the throwaway bring-up,
+ * but the amp/power path must be reviewed before any flash.
+ */
+
+#include "audio.h"
+
+#ifdef CONFIG_APP_AUDIO
+
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/audio/codec.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/i2s.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(audio, LOG_LEVEL_INF);
+
+/* Audio format: 16 kHz / 16-bit / stereo (the esp32-i2s driver needs 2 ch). */
+#define AUDIO_SAMPLE_RATE 16000U
+#define AUDIO_WORD_BITS   16U
+#define AUDIO_CHANNELS    2U
+#define AUDIO_FRAME_BYTES (AUDIO_CHANNELS * (AUDIO_WORD_BITS / 8U)) /* 4 */
+
+/* Conservative output: ~ -15 dBFS of 16-bit full scale (32767). */
+#define TONE_AMPLITUDE 5800
+
+/* 440 Hz beep, ~200 ms. */
+#define TONE_FREQ_HZ   440U
+#define TONE_MS        200U
+
+/* Safe low playback volume in dB (ES8311 set_property maps dB -> reg code). */
+#define AUDIO_VOLUME_DB (-20)
+
+/*
+ * I2S TX memory blocks. block_size is a multiple of 4 (one stereo 16-bit frame
+ * = 4 bytes). 256 frames per block = 1024 bytes ~= 16 ms at 16 kHz. The slab
+ * lives in .bss -> internal SRAM (zephyr,sram = &sram1), never PSRAM, which
+ * the I2S DMA requires. At least 2 blocks per the I2S API; we keep a small
+ * pool so a couple of blocks can be pre-queued before START (anti-underrun).
+ */
+#define BLOCK_FRAMES 256U
+#define BLOCK_SIZE   (BLOCK_FRAMES * AUDIO_FRAME_BYTES) /* 1024 bytes */
+#define BLOCK_COUNT  4U
+
+/* DMA-capable memory must be cache-line aligned on the esp32-i2s path. */
+K_MEM_SLAB_DEFINE_STATIC(tx_slab, BLOCK_SIZE, BLOCK_COUNT, 32);
+
+/* I2S write timeout (ms): long enough to block until a TX block frees up. */
+#define I2S_WRITE_TIMEOUT_MS 1000
+
+/* Settle time after START before enabling the amp (clocks must be running). */
+#define AMP_SETTLE_MS 20
+
+static const struct device *const codec_dev = DEVICE_DT_GET(DT_NODELABEL(es8311));
+static const struct device *const i2s_dev = DEVICE_DT_GET(DT_NODELABEL(i2s0));
+static const struct gpio_dt_spec amp_gpio =
+	GPIO_DT_SPEC_GET(DT_NODELABEL(sound_amp), amp_gpios);
+
+static bool ready;
+
+/*
+ * Precomputed one-block 440 Hz mono sine, 16-bit signed, sampled at 16 kHz
+ * with a running phase (so a continuous beep can loop the block back-to-back).
+ * Amplitude is TONE_AMPLITUDE (~ -15 dBFS). A precomputed const table avoids
+ * any floating-point / libm dependency at runtime. Generated offline; see the
+ * P5 report. 16000/440 is not an integer so the block is not exactly periodic,
+ * but for a short beep the tiny seam is inaudible.
+ */
+BUILD_ASSERT(TONE_FREQ_HZ == 440U && AUDIO_SAMPLE_RATE == 16000U &&
+		     TONE_AMPLITUDE == 5800,
+	     "tone table was generated for 440 Hz @ 16 kHz, amp 5800");
+
+static const int16_t tone_mono[BLOCK_FRAMES] = {
+	0, 997, 1965, 2874, 3697, 4410, 4992, 5426,
+	5697, 5799, 5729, 5487, 5083, 4526, 3836, 3030,
+	2135, 1176, 182, -817, -1792, -2714, -3555, -4290,
+	-4897, -5359, -5660, -5794, -5754, -5544, -5168, -4638,
+	-3970, -3184, -2303, -1354, -364, 636, 1618, 2552,
+	3409, 4165, 4797, 5286, 5618, 5782, 5774, 5594,
+	5248, 4745, 4101, 3335, 2470, 1530, 546, -455,
+	-1442, -2387, -3260, -4036, -4692, -5209, -5570, -5765,
+	-5789, -5640, -5323, -4848, -4228, -3482, -2633, -1705,
+	-727, 273, 1265, 2220, 3108, 3903, 4583, 5126,
+	5516, 5742, 5797, 5679, 5393, 4945, 4351, 3626,
+	2794, 1879, 907, -91, -1087, -2050, -2952, -3767,
+	-4469, -5038, -5457, -5714, -5800, -5714, -5457, -5038,
+	-4469, -3767, -2952, -2050, -1087, -91, 907, 1879,
+	2794, 3626, 4351, 4945, 5393, 5679, 5797, 5742,
+	5516, 5126, 4583, 3903, 3108, 2220, 1265, 273,
+	-727, -1705, -2633, -3482, -4228, -4848, -5323, -5640,
+	-5789, -5765, -5570, -5209, -4692, -4036, -3260, -2387,
+	-1442, -455, 546, 1530, 2470, 3335, 4101, 4745,
+	5248, 5594, 5774, 5782, 5618, 5286, 4797, 4165,
+	3409, 2552, 1618, 636, -364, -1354, -2303, -3184,
+	-3970, -4638, -5168, -5544, -5754, -5794, -5660, -5359,
+	-4897, -4290, -3555, -2714, -1792, -817, 182, 1176,
+	2135, 3030, 3836, 4526, 5083, 5487, 5729, 5799,
+	5697, 5426, 4992, 4410, 3697, 2874, 1965, 997,
+	0, -997, -1965, -2874, -3697, -4410, -4992, -5426,
+	-5697, -5799, -5729, -5487, -5083, -4526, -3836, -3030,
+	-2135, -1176, -182, 817, 1792, 2714, 3555, 4290,
+	4897, 5359, 5660, 5794, 5754, 5544, 5168, 4638,
+	3970, 3184, 2303, 1354, 364, -636, -1618, -2552,
+	-3409, -4165, -4797, -5286, -5618, -5782, -5774, -5594,
+	-5248, -4745, -4101, -3335, -2470, -1530, -546, 455,
+};
+
+/* Stereo (L=R) expansion of tone_mono, fed to I2S. Filled once on first use. */
+static int16_t tone_block[BLOCK_FRAMES * AUDIO_CHANNELS];
+static bool tone_ready;
+
+static void tone_block_fill(void)
+{
+	for (uint32_t i = 0; i < BLOCK_FRAMES; i++) {
+		tone_block[i * AUDIO_CHANNELS] = tone_mono[i];      /* left  */
+		tone_block[i * AUDIO_CHANNELS + 1U] = tone_mono[i]; /* right */
+	}
+
+	tone_ready = true;
+}
+
+int audio_init(void)
+{
+	struct audio_codec_cfg codec_cfg;
+	struct i2s_config i2s_cfg;
+	int ret;
+
+	if (!device_is_ready(codec_dev)) {
+		LOG_ERR("ES8311 codec not ready");
+		return -ENODEV;
+	}
+
+	if (!device_is_ready(i2s_dev)) {
+		LOG_ERR("I2S device not ready");
+		return -ENODEV;
+	}
+
+	if (!gpio_is_ready_dt(&amp_gpio)) {
+		LOG_ERR("Amp GPIO not ready");
+		return -ENODEV;
+	}
+
+	/* Amp OFF until a beep: configure output-inactive (low). */
+	ret = gpio_pin_configure_dt(&amp_gpio, GPIO_OUTPUT_INACTIVE);
+	if (ret < 0) {
+		LOG_ERR("Amp GPIO configure failed (%d)", ret);
+		return ret;
+	}
+
+	/*
+	 * Configure I2S0 TX as master (no I2S_OPT_*_CLK_TARGET => SoC drives
+	 * BCLK + WS), standard I2S, 16 kHz / 16-bit / stereo. The esp32-i2s
+	 * driver derives MCLK = 256 * Fs = 4.096 MHz, which matches the codec
+	 * coefficient row (MCLK-from-BCLK, LRCK = MCLK/256).
+	 */
+	i2s_cfg.word_size = AUDIO_WORD_BITS;
+	i2s_cfg.channels = AUDIO_CHANNELS;
+	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
+	/* SoC is the I2S controller (master): drives BCLK + WS. */
+	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
+	i2s_cfg.frame_clk_freq = AUDIO_SAMPLE_RATE;
+	i2s_cfg.mem_slab = &tx_slab;
+	i2s_cfg.block_size = BLOCK_SIZE;
+	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
+
+	ret = i2s_configure(i2s_dev, I2S_DIR_TX, &i2s_cfg);
+	if (ret < 0) {
+		LOG_ERR("i2s_configure(TX) failed (%d)", ret);
+		return ret;
+	}
+
+	/* Configure the ES8311 for the same 16 kHz / 16-bit I2S playback. */
+	codec_cfg.mclk_freq = AUDIO_SAMPLE_RATE * 256U; /* 4.096 MHz */
+	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
+	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK;
+	codec_cfg.dai_cfg.i2s = i2s_cfg;
+
+	ret = audio_codec_configure(codec_dev, &codec_cfg);
+	if (ret < 0) {
+		LOG_ERR("audio_codec_configure failed (%d)", ret);
+		return ret;
+	}
+
+	/* Safe low volume; leave the codec configured but the amp OFF. */
+	audio_property_value_t vol = { .vol = AUDIO_VOLUME_DB };
+
+	ret = audio_codec_set_property(codec_dev, AUDIO_PROPERTY_OUTPUT_VOLUME,
+				       AUDIO_CHANNEL_ALL, vol);
+	if (ret < 0) {
+		LOG_WRN("set volume failed (%d); continuing", ret);
+	}
+	(void)audio_codec_apply_properties(codec_dev);
+
+	if (!tone_ready) {
+		tone_block_fill();
+	}
+
+	ready = true;
+	LOG_INF("audio_init OK (16 kHz/16-bit, amp off)");
+	return 0;
+}
+
+bool audio_ready(void)
+{
+	return ready;
+}
+
+void audio_beep(void)
+{
+	uint32_t total_frames;
+	uint32_t blocks;
+	int ret;
+
+	if (!ready) {
+		return;
+	}
+
+	if (!tone_ready) {
+		tone_block_fill();
+	}
+
+	total_frames = (AUDIO_SAMPLE_RATE * TONE_MS) / 1000U;
+	blocks = (total_frames + BLOCK_FRAMES - 1U) / BLOCK_FRAMES;
+	if (blocks < 2U) {
+		blocks = 2U; /* keep the TX queue primed */
+	}
+
+	/* Unmute the codec DAC for the duration of the beep. */
+	audio_codec_start_output(codec_dev);
+
+	/*
+	 * Anti-click sequence:
+	 *  1. Pre-queue two blocks while still stopped so the DMA never starves
+	 *     at START.
+	 *  2. START the I2S TX (clocks begin, DAC sees valid frames).
+	 *  3. Let the clocks/codec settle, THEN enable the amp -> the speaker is
+	 *     only ever driven once a clean signal is already flowing (no pop).
+	 *  4. Feed the rest of the tone.
+	 *  5. DRAIN (flush the queue + stop at block boundary).
+	 *  6. Disable the amp BEFORE the codec mute so the amp is silenced first.
+	 *  7. Mute the codec DAC.
+	 */
+	for (uint32_t i = 0; i < 2U; i++) {
+		ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+		if (ret < 0) {
+			LOG_ERR("prequeue i2s_buf_write failed (%d)", ret);
+			goto stop_amp;
+		}
+	}
+
+	ret = i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
+	if (ret < 0) {
+		LOG_ERR("i2s_trigger(START) failed (%d)", ret);
+		goto stop_amp;
+	}
+
+	k_msleep(AMP_SETTLE_MS);
+
+	/* Speaker amp ON only now that valid frames are already streaming. */
+	(void)gpio_pin_set_dt(&amp_gpio, 1);
+
+	/* Feed the remaining blocks (we already queued 2). */
+	for (uint32_t i = 2U; i < blocks; i++) {
+		ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+		if (ret < 0) {
+			LOG_ERR("i2s_buf_write failed (%d)", ret);
+			break;
+		}
+	}
+
+	/* Flush whatever is queued and stop at the next block boundary. */
+	ret = i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DRAIN);
+	if (ret < 0) {
+		LOG_WRN("i2s_trigger(DRAIN) failed (%d)", ret);
+	}
+
+	/* Give the queued blocks time to drain before cutting the amp. */
+	k_msleep(TONE_MS + AMP_SETTLE_MS);
+
+stop_amp:
+	/*
+	 * Amp OFF first (silence the speaker), then mute the codec. Reached on
+	 * EVERY exit path so the amp is never left enabled. The amp-off is an
+	 * I2C write to the PMIC and can fail on the shared bus; log if it does.
+	 */
+	if (gpio_pin_set_dt(&amp_gpio, 0) < 0) {
+		LOG_ERR("amp OFF failed; speaker may remain enabled");
+	}
+	audio_codec_stop_output(codec_dev);
+}
+
+#endif /* CONFIG_APP_AUDIO */

@@ -1,62 +1,77 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+#include <stdlib.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/sensor.h>
-#include <zephyr/drivers/display.h>
-#include <zephyr/drivers/regulator.h>
 #include <zephyr/input/input.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
 
-#define SLEEP_TIME_MS 1000
+#include "pages.h"
+#include "status.h"
+#include "ui.h"
+#ifdef CONFIG_APP_BLE
+#include "ble.h"
+#endif
+#ifdef CONFIG_APP_AUDIO
+#include "audio.h"
+#endif
+
+#define LOOP_MS 1000
 
 /* KEY1 = G11, KEY2 = G12 (hardware-confirmed; active-low, pull-up). */
 #define KEY1_PIN 11
 #define KEY2_PIN 12
 
-static const char *imu_state = "absent";
-static const char *disp_state = "absent";
+atomic_t app_current_page = ATOMIC_INIT(PAGE_HOME);
 
-/* gpio-keys also reports KEY1/KEY2 via the input subsystem (zephyr,code). */
+/* Given by the input callback so the main loop re-renders immediately on a
+ * button press instead of waiting out its periodic tick.
+ */
+K_SEM_DEFINE(nav_sem, 0, 1);
+
+void app_page_next(void)
+{
+	atomic_val_t v = atomic_get(&app_current_page);
+
+	atomic_set(&app_current_page, (v + 1) % PAGE_COUNT);
+}
+
+void app_page_prev(void)
+{
+	atomic_val_t v = atomic_get(&app_current_page);
+
+	atomic_set(&app_current_page, (v + PAGE_COUNT - 1) % PAGE_COUNT);
+}
+
+/*
+ * gpio-keys reports KEY1/KEY2 via the input subsystem. The callback only
+ * advances the atomic page index (KEY1 next, KEY2 prev) on press; all drawing
+ * happens in the main loop.
+ */
 static void input_cb(struct input_event *evt, void *user_data)
 {
 	ARG_UNUSED(user_data);
 
-	if (evt->type == INPUT_EV_KEY) {
-		printk("BUTTON code=%u %s\n", evt->code,
-		       evt->value ? "PRESSED" : "released");
+	if (evt->type != INPUT_EV_KEY || evt->value == 0) {
+		return; /* press only */
 	}
+
+	if (evt->code == INPUT_KEY_0) {
+		app_page_next();
+	} else if (evt->code == INPUT_KEY_1) {
+		app_page_prev();
+	} else {
+		return;
+	}
+
+	k_sem_give(&nav_sem); /* wake the loop -> instant redraw */
+	printk("BUTTON code=%u -> page=%ld\n", evt->code,
+	       (long)atomic_get(&app_current_page));
 }
 INPUT_CALLBACK_DEFINE(NULL, input_cb, NULL);
-
-#if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_display), okay)
-#define DISPLAY_NODE DT_CHOSEN(zephyr_display)
-#define LCD_W DT_PROP(DISPLAY_NODE, width)
-#define LCD_H DT_PROP(DISPLAY_NODE, height)
-
-static uint8_t line_buf[LCD_W * 2];
-
-static void fill_screen(const struct device *disp, uint16_t color)
-{
-	struct display_buffer_descriptor desc = {
-		.buf_size = sizeof(line_buf),
-		.width = LCD_W,
-		.height = 1,
-		.pitch = LCD_W,
-	};
-
-	for (int i = 0; i < LCD_W; i++) {
-		line_buf[2 * i] = color >> 8;
-		line_buf[2 * i + 1] = color & 0xff;
-	}
-	for (int y = 0; y < LCD_H; y++) {
-		if (display_write(disp, 0, y, &desc, line_buf) != 0) {
-			break;
-		}
-	}
-}
-#endif
 
 int main(void)
 {
@@ -64,93 +79,38 @@ int main(void)
 	printk("Board: %s\n", CONFIG_BOARD);
 
 	const struct device *g0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
-#ifdef CONFIG_APP_DISPLAY_DEMO
-	const struct device *bl = DEVICE_DT_GET(DT_NODELABEL(lcd_backlight));
-	uint32_t tick = 0;
+
+	status_init();
+	ui_init();
+#ifdef CONFIG_APP_AUDIO
+	(void)audio_init();
 #endif
-
-#if DT_NODE_HAS_STATUS(DT_ALIAS(imu0), okay)
-	const struct device *imu = DEVICE_DT_GET(DT_ALIAS(imu0));
-
-	if (device_is_ready(imu)) {
-		struct sensor_value v;
-
-		imu_state = "ready";
-		v.val1 = 2;
-		v.val2 = 0;
-		sensor_attr_set(imu, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_FULL_SCALE, &v);
-		v.val1 = 100;
-		v.val2 = 0;
-		sensor_attr_set(imu, SENSOR_CHAN_ACCEL_XYZ,
-				SENSOR_ATTR_SAMPLING_FREQUENCY, &v);
-	} else {
-		imu_state = "not-ready";
-	}
-#endif
-
-#if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_display), okay)
-	const struct device *disp = DEVICE_DT_GET(DISPLAY_NODE);
-	bool disp_ok = device_is_ready(disp);
-
-	if (disp_ok) {
-		display_set_pixel_format(disp, PIXEL_FORMAT_RGB_565);
-		display_blanking_off(disp);
-		disp_state = "ready";
-		printk("Display: ready (%dx%d)\n", LCD_W, LCD_H);
-		/* Show a stable frame immediately so the panel is never blank. */
-		fill_screen(disp, 0x001F);
-	} else {
-		disp_state = "not-ready";
-		printk("Display: not ready\n");
-	}
-#ifdef CONFIG_APP_DISPLAY_DEMO
-	static const uint16_t colors[] = {0xF800, 0x07E0, 0x001F, 0xFFFF};
-	int ci = 0;
-#endif
+#ifdef CONFIG_APP_BLE
+	(void)ble_init();
 #endif
 
 	while (1) {
-		int k1 = gpio_pin_get_raw(g0, KEY1_PIN);
-		int k2 = gpio_pin_get_raw(g0, KEY2_PIN);
+		struct app_status st;
+		enum app_page page = app_page_get();
 
-#if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_display), okay) && defined(CONFIG_APP_DISPLAY_DEMO)
-		if (disp_ok) {
-			fill_screen(disp, colors[ci]);
-			ci = (ci + 1) % ARRAY_SIZE(colors);
-		}
+		status_sample(&st);
+		ui_render(page, &st);
+#ifdef CONFIG_APP_BLE
+		ble_update(&st);
 #endif
 
-#if DT_NODE_HAS_STATUS(DT_ALIAS(imu0), okay)
-		struct sensor_value acc[3] = {0};
+		int k1 = device_is_ready(g0) ? gpio_pin_get_raw(g0, KEY1_PIN) : -1;
+		int k2 = device_is_ready(g0) ? gpio_pin_get_raw(g0, KEY2_PIN) : -1;
 
-		if (device_is_ready(imu) && sensor_sample_fetch(imu) == 0) {
-			sensor_channel_get(imu, SENSOR_CHAN_ACCEL_XYZ, acc);
-		}
-		printk("M5StickS3 alive uptime_ms=%lld disp=%s KEY1=%d KEY2=%d "
+		printk("alive uptime_ms=%lld page=%d KEY1=%d KEY2=%d imu=%d "
 		       "accel=[%d.%06d %d.%06d %d.%06d]\n",
-		       k_uptime_get(), disp_state, k1, k2,
-		       acc[0].val1, abs(acc[0].val2), acc[1].val1, abs(acc[1].val2),
-		       acc[2].val1, abs(acc[2].val2));
-#else
-		printk("M5StickS3 alive uptime_ms=%lld disp=%s KEY1=%d KEY2=%d imu=%s\n",
-		       k_uptime_get(), disp_state, k1, k2, imu_state);
-#endif
-		k_msleep(SLEEP_TIME_MS);
+		       st.uptime_ms, page, k1, k2, st.imu_ok,
+		       st.accel[0].val1, abs(st.accel[0].val2),
+		       st.accel[1].val1, abs(st.accel[1].val2),
+		       st.accel[2].val1, abs(st.accel[2].val2));
 
-#ifdef CONFIG_APP_DISPLAY_DEMO
-		/*
-		 * B-3: every ~5 s blink the backlight via regulator_disable/enable
-		 * to prove regulator power control works on real hardware (screen
-		 * goes fully dark, then the image returns intact).
-		 */
-		if ((++tick % 5U) == 0U && device_is_ready(bl)) {
-			printk(">>> Backlight OFF (regulator_disable) - screen should go DARK\n");
-			(void)regulator_disable(bl);
-			k_msleep(1500);
-			(void)regulator_enable(bl);
-			printk(">>> Backlight ON (regulator_enable) - screen should be VISIBLE\n");
-		}
-#endif
+		/* Wake early on a button press; otherwise tick every LOOP_MS. */
+		k_sem_take(&nav_sem, K_MSEC(LOOP_MS));
 	}
 
 	return 0;
