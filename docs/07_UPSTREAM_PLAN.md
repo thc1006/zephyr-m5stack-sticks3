@@ -39,6 +39,11 @@ Small PRs beat one giant PR.
      (issue/comment on #109961) rather than carrying it forever out-of-tree.
    - Coordinate with the #109961 author; if it stalls, offer help rather than a
      competing driver.
+   - **Silicon limit (verified 2026-06-01)**: the M5PM1 has no battery-current,
+     charge-current, coulomb-counter or SoC register (voltages only). Any "full
+     PMIC" upstream work is limited to charge-enable + power-source/insertion
+     status; there is no fuel-gauge to contribute, and the current/per-state
+     dataset (issue #4) is not obtainable on-device.
 
 5. **ES8311 audio codec PR (task #21)**
    - The in-repo `drivers/audio/es8311.c` is a standalone driver against the
@@ -47,8 +52,15 @@ Small PRs beat one giant PR.
      PR (codec driver + `everest,es8311` binding + the ztest), separate from the
      board port. Hardware-validated on the StickS3 (HW-006).
 
-6. **IR experimental PRs**
-   - only after verifying subsystem expectations with maintainers.
+6. **IR (NEC) — in-repo on stock PWM drivers; an RMT driver is a separate big PR**
+   - Zephyr 4.4 has no ESP32 RMT driver and no consumer-IR subsystem (verified
+     2026-06-01). The StickS3 IR feature is built in-app on stock LEDC (TX, G46) +
+     MCPWM input capture (RX, G42) with NEC encode/decode, gated `CONFIG_APP_IR`.
+     No new low-level driver, so nothing board-specific to upstream beyond the
+     board DTS pins.
+   - A proper Zephyr **ESP32 RMT driver** (binding + driver + DMA) is a genuine,
+     sizable upstream opportunity on its own, but out of scope here; raise it with
+     maintainers before starting.
 
 ## PR description checklist
 

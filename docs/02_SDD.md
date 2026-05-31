@@ -60,8 +60,9 @@ The DTS should describe:
 - I2C0 bus on G47 (SDA) / G48 (SCL) with BMI270 at 0x68. M5PM1 (0x6e) and
   ES8311 (0x18) remain roadmap items: M5PM1 has no upstream driver and ES8311
   audio is out of scope for v0.1.
-- IR (G46/G42) and I2S (ES8311) pins are documented but not enabled until the
-  RMT/audio strategy is verified.
+- I2S (ES8311 audio) is enabled as of v0.6. IR uses the IR TX LED (G46) and the
+  IR receiver (G42); since Zephyr 4.4 has no ESP32 RMT driver, IR is brought up
+  via the LEDC PWM carrier (TX) and MCPWM input capture (RX), not RMT (v0.7).
 
 Peripherals are enabled incrementally per milestone: boot/console + buttons +
 BMI270 first; LCD and experimental peripherals are added in their own steps.
@@ -117,6 +118,20 @@ sections and the generated `.config`.
 
 Upstream note: the MFD/GPIO/ADC drivers and bindings track Zephyr PR #109961 and
 are removed once it merges. See `docs/07_UPSTREAM_PLAN.md`.
+
+M5PM1 telemetry limit (verified 2026-06-01 against the official register map, the
+datasheet, PR #109961's scope, and Espressif's StickS3 driver — four independent
+sources): the M5PM1 ADC exposes **voltages only** (VREF/VBAT/VIN/5VINOUT + an
+internal temperature + two GPIO analog inputs). There is **no battery-current,
+charge-current, coulomb-counter or state-of-charge register** anywhere in the
+map. So battery *current* and a per-power-state current dataset (issue #4, folded
+into the full-PMIC RFC #1) are not obtainable on-device; they can only come from
+an external USB meter (coarse, whole-board) or a host-side VBAT→SOC estimate.
+What the chip does expose for power control is a charge-enable bit (PWR_CFG 0x06
+b0), a battery low-voltage cutoff (BATT_LVP 0x08), a power-source readback
+(PWR_SRC 0x04: 5VIN/5VINOUT/BAT) and battery insert/remove events (IRQ 0x41).
+Any "full PMIC" work is therefore charge-enable + power-source/insertion status,
+not a fuel gauge.
 
 ### 4.6 Comprehensive demo application architecture (v0.6)
 
@@ -208,6 +223,34 @@ build pulls the Espressif controller HAL blob and requires
   context is freed, which silently left the device non-discoverable. Deferring
   to `k_work` fixes it (found on hardware, HW-012).
 
+### 4.11 IR transmit + receive (gated `CONFIG_APP_IR`)
+
+Optional consumer-IR (NEC) over the on-board IR TX LED (G46) and IR receiver
+(G42), kept off the default build (`app/src/ir.c` compiled only with
+`overlay-ir.conf`; all code under `#ifdef CONFIG_APP_IR`). Uses no binary blobs.
+
+Zephyr 4.4 has no ESP32 RMT driver and no consumer-IR subsystem, so IR is built
+on stock PWM drivers:
+
+- TX: the ESP32-S3 **LEDC** PWM (`espressif,esp32-ledc`, `&ledc0` channel on
+  G46) generates the ~38 kHz carrier (APB 80 MHz / 11-bit ≈ 37.9 kHz, ~33%
+  duty). The NEC envelope (9 ms lead, 4.5 ms space, 560 µs base bit unit) is
+  produced by gating the carrier duty 0↔N from the CPU with `k_busy_wait()`
+  (NEC tolerates ~±20%; IRQs are briefly masked per frame to bound jitter).
+- RX: the ESP32-S3 **MCPWM** input capture (`espressif,esp32-mcpwm`, `&mcpwm0`
+  capture on G42, `CONFIG_PWM_CAPTURE`) timestamps edges; the capture callback
+  collects mark/space durations and an app-side state machine decodes NEC.
+- Pure-logic split for testability: `app/src/nec.c` holds `nec_encode()` and a
+  tolerance-based `nec_decode()`, unit-tested on native_sim
+  (`tests/drivers/ir_nec`) with synthetic ideal/jittered/invalid vectors — the
+  carrier gating and the capture callback are thin shells around these.
+- The AW8737 speaker amp must be OFF during IR receive (vendor warning); it is
+  already off at rest (only high during a beep), so the only rule is "do not beep
+  while capturing" — no change to the audio gating.
+- Demo: a PAGE_IR page transmits a test NEC frame on entry and shows the last
+  decoded `addr:cmd`; the headline self-test transmits on G46 and decodes it back
+  on G42 of the same device (loopback).
+
 ## 5. Non-goals for v0.1
 
 - Full ES8311 audio driver upstreaming.
@@ -252,3 +295,8 @@ build pulls the Espressif controller HAL blob and requires
 - BLE manufacturer-data advertising + connectable GATT telemetry (P4, gated).
 - ES8311 codec driver + I2S audio (P5, gated; also upstream task #21).
 - Integration, polish, evidence (P6).
+
+### v0.7 — IR (NEC) TX + RX
+
+- IR transmit via the LEDC carrier (G46) + receive via MCPWM capture (G42), gated
+  `CONFIG_APP_IR`; NEC encode/decode unit-tested; TX→RX loopback self-test on HW.

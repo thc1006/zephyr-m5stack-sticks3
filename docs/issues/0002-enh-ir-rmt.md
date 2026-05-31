@@ -5,6 +5,17 @@ gh issue create --title "M5StickS3: IR TX/RX via ESP32 RMT" \
 -->
 # Enhancement: M5StickS3 IR TX/RX via ESP32 RMT
 
+> **Update 2026-06-01 (feasibility spike):** Zephyr 4.4 has **no ESP32 RMT
+> driver** and no consumer-IR subsystem (the RMT HAL exists in hal_espressif but
+> has no Zephyr wrapper; the GDMA binding notes "RMT Not Supported yet"). So the
+> "via ESP32 RMT" approach below is revised: bring IR up on stock PWM drivers -
+> **TX via the LEDC 38 kHz carrier on G46** (carrier HW-generated, NEC envelope
+> gated in software) and **RX via MCPWM input capture on G42**
+> (`CONFIG_PWM_CAPTURE`), with NEC encode/decode unit-tested on native_sim. This
+> needs no new low-level driver. A proper Zephyr ESP32 RMT driver remains a
+> worthwhile but separate, larger contribution. Both pins are free and
+> output/input capable on the N8R8; build-proven for the board.
+
 **Is your enhancement proposal related to a problem? Please describe.**
 The M5Stack StickS3 has an IR transmitter (G46) and receiver (G42), but the
 current board port does not enable them. There is no IR/consumer-IR support

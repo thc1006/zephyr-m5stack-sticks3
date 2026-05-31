@@ -106,6 +106,24 @@ by the on-hardware bring-up, which is independent: HW-003/010 for the LCD rail,
 HW-006 for audio). So these are **logic-verified, not silicon-verified** — pair
 with the hardware tests below.
 
+### IR NEC encode/decode
+
+`tests/drivers/ir_nec` unit-tests the protocol logic on `native_sim`, with no
+hardware and no emulator (pure functions):
+
+```bash
+west build -p always -b native_sim -d build_test \
+  tests/drivers/ir_nec -- -DZEPHYR_EXTRA_MODULES=$PWD
+./build_test/zephyr/zephyr.exe
+```
+
+Covers `nec_encode()` (LSB-first addr/~addr/cmd/~cmd framing) and `nec_decode()`
+fed synthetic mark/space duration vectors: an ideal frame, a jittered-but-in-
+tolerance frame, a frame with a bad leader, one with a bad address/command
+checksum, and a repeat frame. Decode must accept the valid ones and reject the
+invalid ones. This is logic-verified; the carrier timing and the MCPWM capture
+path are validated on hardware (HW-005).
+
 ## Hardware tests
 
 ### HW-001 boot + console
@@ -167,12 +185,23 @@ Pass criteria:
 
 - Accel/gyro readings change when board is moved.
 
-### HW-005 IR
+### HW-005 IR (NEC TX + RX)
+
+IR is implemented on stock PWM drivers, not RMT (Zephyr 4.4 has no ESP32 RMT
+driver): TX via the LEDC carrier on G46, RX via MCPWM input capture on G42, with
+NEC encode/decode in `app/src/nec.c` (unit-tested, see "IR NEC encode/decode").
+Gated `CONFIG_APP_IR`.
 
 Pass criteria:
 
-- IR TX produces observable waveform or receiver confirms known protocol.
-- Speaker amplifier interaction is documented.
+- TX: a transmitted NEC frame is observable - the IR LED flashes (visible through
+  a phone camera) and/or a receiver decodes the known address/command.
+- RX: pointing a known NEC remote at G42 decodes a stable, correct address and
+  command on the serial log.
+- Loopback (headline self-test): a frame transmitted on G46 is captured and
+  decoded on G42 of the same device, matching what was sent.
+- Speaker-amp interaction documented: the AW8737 amp is OFF during receive (it is
+  off at rest; the rule is "do not beep while capturing").
 
 ### HW-006 audio
 

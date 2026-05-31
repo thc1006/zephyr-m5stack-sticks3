@@ -15,6 +15,19 @@ VBAT. (This superseded the earlier minimal single-rail
 this RFC proposes the complete, idiomatic Zephyr support (charger, fuel-gauge,
 the remaining GPIOs).
 
+> **Update 2026-06-01 (hardware finding):** the M5PM1 ADC exposes **voltages
+> only** (VBAT/VIN/5VINOUT/VREF + temperature + 2 GPIO analog). There is **no
+> battery-current, charge-current, coulomb-counter or SoC register** in the chip
+> (verified against the official `m5stack/M5PM1` register map, the datasheet,
+> Zephyr PR #109961, and Espressif's StickS3 driver). So the "fuel-gauge (V/I/
+> SOC)" item below is **not implementable** - only battery *voltage* is available;
+> a state-of-charge would be a host-side *estimate*, not a measurement. The real
+> remaining PMIC surface is charge-enable (PWR_CFG 0x06 b0), battery LVP cutoff
+> (0x08), power-source readback (PWR_SRC 0x04) and battery insert/remove events
+> (IRQ 0x41). The on-device current + per-state dataset migrated here from issue
+> #4 is therefore not achievable on this silicon. Scope this RFC to MFD + GPIO +
+> regulator + a small charger-control/status surface; drop the fuel-gauge.
+
 ## Problem description
 
 The minimal regulator models a single GPIO-switched rail. The chip also provides
