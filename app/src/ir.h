@@ -19,6 +19,15 @@ int ir_init(void);
 /* True once ir_init() has succeeded and IR is usable. */
 bool ir_ready(void);
 
+/* Transmit one NEC frame (blocking, ~tens of ms; holds off preemption). */
+void ir_tx_nec(uint8_t addr, uint8_t cmd);
+
+/* Transmit the fixed demo NEC frame used by the IR page. */
+void ir_tx_test(void);
+
+/* Number of NEC frames transmitted so far (for the UI). */
+uint32_t ir_tx_count(void);
+
 #endif /* CONFIG_APP_IR */
 
 #endif /* M5STICKS3_IR_H */

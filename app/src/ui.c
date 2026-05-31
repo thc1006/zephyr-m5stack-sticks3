@@ -194,11 +194,14 @@ static void render_audio_body(const struct app_status *s)
 #ifdef CONFIG_APP_IR
 static void render_ir_body(const struct app_status *s)
 {
+	char line[24];
+
 	ARG_UNUSED(s);
 
-	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "IR NEC");
-	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG,
-		      ir_ready() ? "ready" : "scaffold");
+	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG,
+		      ir_ready() ? "TX ready" : "init failed");
+	snprintf(line, sizeof(line), "sent: %u   ", (unsigned int)ir_tx_count());
+	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
 }
 #endif /* CONFIG_APP_IR */
 
@@ -285,8 +288,18 @@ void ui_render(enum app_page page, const struct app_status *s)
 		if (page_changed) {
 			gfx_clear(HOME_BG);
 			draw_header(page);
+			render_ir_body(s);
+			/*
+			 * Transmit a test NEC frame on ENTER only (page-change
+			 * edge), like the AUDIO beep, so the nav keys are not
+			 * hijacked. ir_tx_nec is blocking (~tens of ms).
+			 */
+			if (ir_ready()) {
+				ir_tx_test();
+			}
+		} else {
+			render_ir_body(s);
 		}
-		render_ir_body(s);
 		break;
 #endif
 	case PAGE_DIAG:
