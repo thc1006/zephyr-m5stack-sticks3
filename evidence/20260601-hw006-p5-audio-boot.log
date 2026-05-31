@@ -1,0 +1,48 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+[m[38;5;3m-[m[38;5;3m-- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+[mESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x29 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x403773aa
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fc900f0,len:0x2cc0
+load:0x40374000,len:0xc0d8
+load:0x50000000,len:0x24
+SHA-256 comparison failed:
+Calculated: c69627acd958e53630c3a24e3f4a7a753f66c3a0929f42b4011c815fd4a87ed4
+Expected: 0000000000120000000000000000000000000000000000000000000000000000
+Attempting to boot anyway...
+entry 0x4037a880
+I (soc_init): ESP Simple boot
+I (soc_init): compile time Jun  1 2026 01:10:02
+W (soc_init): Unicore bootloader
+I (soc_init): chip revision: v0.2
+I (flash_init): Boot SPI Speed : 80MHz
+I (flash_init): SPI Mode       : DIO
+I (flash_init): SPI Flash Size : 8MB
+I (boot): DRAM[2C: lma=00000020h vma=3fc900f0h size=02cc0h ( 11456)
+I (boot): IRAM[2C: lma=00002ce8h vma=40374000h size=0c0d8h ( 49368)
+I (boot): RTC_DATA[6C: lma=0000edc8h vma=50000000h size=00024h (    36)
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0b53ch ( 46396)
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=035d0h ( 13776)
+I (boot): libc heap size 323 kB.
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+I (spi_flash): detected chip: gd
+I (spi_flash): flash io: dio
+*** Booting Zephyr OS build v4.4.0 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.326,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.326,000] <inf> gfx: Display ready (135x240)
+[00:00:00.392,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+alive uptime_ms=392 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.137670 0.172387 10.020039]
+alive uptime_ms=1440 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.130487 0.161613 10.021236]
+alive uptime_ms=2448 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.132882 0.180169 9.999688]
+alive uptime_ms=3457 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.131086 0.173584 10.005674]
+alive uptime_ms=4466 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.135276 0.168796 10.014054]
+alive uptime_ms=5474 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.143656 0.184957 9.997294]
+[captured 2479 chars]

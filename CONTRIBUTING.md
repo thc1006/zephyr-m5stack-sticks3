@@ -65,8 +65,9 @@ On Windows, flash/monitor from the host (ESP32-S3 USB-Serial/JTAG needs
 - Run `bash verify.sh` after edits.
 - If a Zephyr workspace exists, run `bash scripts/build_m5sticks3.sh` after
   board/app changes.
-- Driver logic is unit-tested without hardware:
-  `west build -b native_sim tests/drivers/regulator/m5pm1 -- -DZEPHYR_EXTRA_MODULES=$PWD`.
+- Driver logic is unit-tested without hardware, e.g. the M5PM1 MFD path:
+  `west build -b native_sim tests/drivers/m5pm1_mfd -- -DZEPHYR_EXTRA_MODULES=$PWD`
+  (and `tests/drivers/audio/es8311` for the codec).
 - Save build/flash/serial logs (and photos for hardware milestones) under
   `evidence/`. Never mark a hardware test passed without logs plus photo/video.
 

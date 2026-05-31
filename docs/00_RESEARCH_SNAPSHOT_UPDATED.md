@@ -113,9 +113,10 @@ forums; GitHub-wide + recency + adjacent RTOS) cross-agree:
 
 ### Upstream strategy (revised after finding PR #109961)
 The canonical upstream M5PM1 driver is being introduced by PR #109961 (MFD + gpio +
-adc + regulator, `m5stack,m5pm1*` bindings). Our in-repo `m5stack,m5pm1-l3b-regulator`
-is an **interim out-of-tree** driver; for upstreaming the StickS3 board we should
-**depend on / reuse the #109961 M5PM1 MFD driver** rather than upstream our own.
+adc + regulator, `m5stack,m5pm1*` bindings). We accordingly **vendor the #109961
+MFD/GPIO/ADC drivers** and gate L3B via a stock `regulator-fixed`; for upstreaming
+the StickS3 board we **depend on / reuse #109961** rather than upstream our own.
+(The earlier interim `m5stack,m5pm1-l3b-regulator` driver has since been removed.)
 See `docs/07_UPSTREAM_PLAN.md`.
 
 Sources: https://github.com/zephyrproject-rtos/zephyr/pull/109961 ,

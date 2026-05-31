@@ -12,8 +12,9 @@
   boot/console, buttons KEY1/KEY2 (GPIO G11/G12), Bosch BMI270 IMU (I2C 0x68),
   and the ST7789P3 LCD (135x240, SPI2 mipi-dbi-spi, offsets x=52/y=40).
 - The LCD/audio/IR power rail (L3B) is gated by the M5PM1 PMIC (I2C 0x6e) and is
-  enabled by driving M5PM1 GPIO2 (PYG2) high. This repo ships an interim
-  single-rail regulator driver (`m5stack,m5pm1-l3b-regulator`).
+  enabled by driving M5PM1 GPIO2 (PYG2) high. The repo models the M5PM1 as a
+  multi-function device (MFD parent + GPIO/ADC children, vendored from Zephyr
+  PR #109961) and gates L3B via a `regulator-fixed` on the MFD GPIO child.
 - Roadmap, NOT yet claimed working: full M5PM1 PMIC (charger/fuel-gauge/audio
   rails), IR TX/RX (RMT), ES8311 audio codec, power measurement.
 - No AI tooling is required to build, flash, or contribute. Standard `west`,
@@ -25,10 +26,11 @@
 - README.md: overview, hardware table, quick start, honest scope.
 - CONTRIBUTING.md: conventions, verification levels, Definition of Done.
 - boards/m5stack/m5stack_sticks3/: Zephyr HWMv2 board definition.
-- drivers/regulator/regulator_m5pm1.c: interim M5PM1 L3B-rail regulator.
-- dts/bindings/regulator/m5stack,m5pm1-l3b-regulator.yaml: its binding.
-- app/: minimal hardware-validation application.
-- tests/drivers/regulator/m5pm1/: native_sim ztest for the regulator.
+- drivers/{mfd,gpio,adc}/*_m5pm1.c: M5PM1 PMIC MFD parent + GPIO/ADC children
+  (vendored from Zephyr PR #109961, with a local idle-sleep/wake-retry fix).
+- app/: modular multi-page hardware-validation / demo application.
+- tests/drivers/m5pm1_mfd/: native_sim ztest for the on-board M5PM1 MFD path.
+- tests/drivers/audio/es8311/: native_sim ztest for the ES8311 codec driver.
 - docs/00_RESEARCH_SNAPSHOT_UPDATED.md: prior-art search supporting the
   "first public Zephyr StickS3 board port" claim.
 - docs/05_VALIDATION_MATRIX.md: exactly what is verified and how.

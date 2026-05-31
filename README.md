@@ -109,7 +109,8 @@ flash-verified → runtime-verified → upstream-reviewed) are defined in
 ├── CONTRIBUTING.md                   # Project conventions, rules, Definition of Done
 ├── docs/                             # SDD, TDD, ADRs, prior art, validation, upstream plan
 ├── boards/m5stack/m5stack_sticks3/   # Zephyr HWMv2 board definition (procpu/appcpu)
-├── drivers/regulator/                # M5PM1 L3B-rail regulator (+ native_sim emulator)
+├── drivers/{mfd,gpio,adc}/           # M5PM1 PMIC MFD parent + GPIO/ADC children (+ emulator)
+├── drivers/audio/                    # ES8311 codec driver (+ native_sim emulator)
 ├── dts/bindings/                     # Devicetree bindings for the above
 ├── app/                              # Minimal hardware-validation app
 ├── tests/                            # Host-side integrity + native_sim ztest

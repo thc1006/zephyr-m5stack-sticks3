@@ -26,13 +26,28 @@ Small PRs beat one giant PR.
    - The canonical M5PM1 driver is already being upstreamed: **PR #109961**
      (Benjamin Cabé, draft, 2026-05-27) adds an M5PM1 MFD + gpio + adc + regulator
      suite (`m5stack,m5pm1*` bindings) for the PaperColor board.
-   - This repo's `m5stack,m5pm1-l3b-regulator` is an **interim out-of-tree** driver.
-     For the StickS3 board PR, depend on / reuse the #109961 M5PM1 MFD driver and
-     drop the interim one (align the DTS to the upstream `m5stack,m5pm1` bindings).
+   - This repo **vendors** the #109961 MFD/ADC/GPIO drivers + bindings
+     (`drivers/{mfd,adc,gpio}/*_m5pm1.c`, `dts/bindings/{mfd,adc,gpio}/`) as an
+     interim copy, with the source commit recorded in each file header. **Delete
+     them on merge** and depend on the upstream module. The StickS3 board gates
+     the L3B/LCD rail with a stock `regulator-fixed` on the MFD gpio child, so no
+     M5PM1-specific regulator is needed (the earlier interim
+     `m5stack,m5pm1-l3b-regulator` driver + its ztest have been removed).
+   - **Local delta worth raising on #109961**: `mfd_m5pm1.c` adds an idle-sleep
+     disable (reg 0x09 = 0x00) and a wake-retry on the first I2C transfer, needed
+     for the StickS3's M5PM1 to respond reliably at boot. Offer this upstream
+     (issue/comment on #109961) rather than carrying it forever out-of-tree.
    - Coordinate with the #109961 author; if it stalls, offer help rather than a
      competing driver.
 
-5. **Audio/IR experimental PRs**
+5. **ES8311 audio codec PR (task #21)**
+   - The in-repo `drivers/audio/es8311.c` is a standalone driver against the
+     Zephyr audio codec API (native_sim ztest 9/9). It is **board-independent**
+     and is the natural first audio upstream contribution — propose it as its own
+     PR (codec driver + `everest,es8311` binding + the ztest), separate from the
+     board port. Hardware-validated on the StickS3 (HW-006).
+
+6. **IR experimental PRs**
    - only after verifying subsystem expectations with maintainers.
 
 ## PR description checklist

@@ -7,10 +7,13 @@ File with: gh issue create --title "RFC: Full M5Stack M5PM1 PMIC support" \
 
 ## Introduction
 
-The M5Stack StickS3 board port currently ships a **minimal** M5PM1 driver
-(`m5stack,m5pm1-l3b-regulator`) that only switches one rail (PYG2 / "L3B") to power
-the LCD. The M5PM1 is a full PMIC; this RFC proposes the complete, idiomatic
-Zephyr support.
+The M5Stack StickS3 board port ships a **partial** M5PM1 driver set: an MFD
+parent (`m5stack,m5pm1`) with GPIO and ADC children (vendored from Zephyr PR
+#109961), gating the LCD/L3B rail (PYG2) via a `regulator-fixed` and reading
+VBAT. (This superseded the earlier minimal single-rail
+`m5stack,m5pm1-l3b-regulator` driver, now removed.) The M5PM1 is a full PMIC;
+this RFC proposes the complete, idiomatic Zephyr support (charger, fuel-gauge,
+the remaining GPIOs).
 
 ## Problem description
 
