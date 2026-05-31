@@ -2,9 +2,10 @@
 # Copyright (c) 2026 Hsiu-Chi Tsai
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build the FULL v0.6 comprehensive demo for the M5StickS3: the default app plus
-# BOTH optional features, BLE telemetry (overlay-ble.conf, CONFIG_APP_BLE) and
-# ES8311 audio (overlay-audio.conf, CONFIG_APP_AUDIO).
+# Build the FULL comprehensive demo for the M5StickS3: the default app plus the
+# optional features - BLE telemetry (overlay-ble.conf, CONFIG_APP_BLE), ES8311
+# audio (overlay-audio.conf, CONFIG_APP_AUDIO), and IR NEC (overlay-ir.conf,
+# CONFIG_APP_IR; TX runtime-verified, RX experimental). IR uses no blob.
 #
 # NOTE: BLE pulls in the Espressif Bluetooth controller HAL blob, so this build
 # needs the blob fetched once first:
@@ -35,4 +36,4 @@ export BOARD_ROOT="$REPO_ROOT"
 export ZEPHYR_EXTRA_MODULES="$REPO_ROOT"
 BOARD="${BOARD:-m5stack_sticks3/esp32s3/procpu}"
 west build -p always -b "$BOARD" "$REPO_ROOT/app" \
-  -- -DEXTRA_CONF_FILE="overlay-ble.conf;overlay-audio.conf"
+  -- -DEXTRA_CONF_FILE="overlay-ble.conf;overlay-audio.conf;overlay-ir.conf"

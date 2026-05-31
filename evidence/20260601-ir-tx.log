@@ -1,0 +1,119 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+[m[38;5;3m--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+[m[00:00:35.155,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#27)
+alive uptime_ms=35078 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.046688 0.026337 10.003878]
+[00:00:36.231,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#28)
+alive uptime_ms=36155 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.079011 0.104150 10.031412]
+[00:00:37.308,000] <inf> ir: ir_tx addr=0x04 md=0x1b (#29)
+alive uptime_ms=37231 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.026935 0.067638 10.007469]
+[00:00:38.384,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#30)
+alive uptime_ms=38308 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.087391 0.109538 10.029616]
+[00:00:39.461,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#31)
+alive uptime_ms=39385 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.011971 0.017358 10.026025]
+[00:00:40.538,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#32)
+alive uptime_ms=40461 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.017957 0.037709 10.029616]
+[00:00:41.614,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#33)
+alive uptime_ms=41538 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.062251 0.114925 10.017645]
+[00:00:42.691,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#34)
+alive uptime_ms=42614 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.062849 0.080806 10.022434]
+[00:00:43.767,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#35)
+alive uptime_ms=43691 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.056864 0.020351 10.041588]
+[00:00:44.844,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#36)
+alive uptime_ms=44768 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.041301 0.049082 10.035003]
+[00:00:45.921,000] <inf> ir: ir_tx addr0x04 cmd=0x1b (#37)
+alive uptime_ms=45844 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.076018 0.034118 10.003279]
+[00:00:46.997,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#38)
+alive uptime_ms=46921 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.032322 0.034118 10.019441]
+[00:00:48.074,000] <inf> ir: ir_tx addr=x04 cmd=0x1b (#39)
+alive uptime_ms=47997 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.019154 0.049082 10.018842]
+[00:00:49.150,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#40)
+alive uptime_ms=49074 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.028132 0.013168 10.000885]
+[00:00:50.227,000] <inf> ir: ir_tx add=0x04 cmd=0x1b (#41)
+alive uptime_ms=50151 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.039505 0.004189 10.015251]
+[00:00:51.304,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#42)
+alive uptime_ms=51227 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.013168 0.017358 9.996096]
+[00:00:52.380,000] <inf> ir: ir_tx addr=0x0 cmd=0x1b (#43)
+alive uptime_ms=52304 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.330618 -1.722680 9.296968]
+[00:00:53.457,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#44)
+alive uptime_ms=53380 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.531528 -1.919011 9.705192]
+[00:00:54.533,000] <inf> ir: ir_tx addr=0x4 cmd=0x1b (#45)
+alive uptime_ms=54457 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.174782 -2.230266 9.933247]
+[00:00:55.610,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#46)
+alive uptime_ms=55534 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.240234 -2.271568 9.757866]
+[00:00:56.687,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#47)
+alive uptime_ms=56610 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.036512 -2.967703 9.581288]
+[00:00:57.763,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#48)
+alive uptime_ms=57687 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.653038 -3.377124 9.542381]
+[00:00:58.840,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#49)
+alive uptime_ms=58763 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.574027 -3.800312 9.437033]
+[00:00:59.916,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#50)
+alive uptime_ms=59840 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.044502 -3.353780 9.347847]
+[00:01:00.993,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#51)
+alive uptime_ms=60917 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.203123 -3.021574 9.535797]
+[00:01:02.070,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#52)
+alive uptime_ms=61993 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.119922 -3.012596 9.572908]
+[00:01:03.146,000] <inf> ir: ir_tx addr=x04 cmd=0x1b (#53)
+alive uptime_ms=63070 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.078620 -3.013194 9.654912]
+[00:01:04.223,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#54)
+alive uptime_ms=64146 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.137879 -2.905452 9.611217]
+[00:01:05.299,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#55)
+alive uptime_ms=65223 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.113337 -2.694157 9.616604]
+[00:01:06.376,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#56)
+alive uptime_ms=66300 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.135484 -2.627117 9.636357]
+[00:01:07.453,000] <inf> ir: ir_tx addr=004 cmd=0x1b (#57)
+alive uptime_ms=67376 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.100169 -2.628315 9.676461]
+[00:01:08.529,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#58)
+alive uptime_ms=68453 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.143864 -2.842004 9.575303]
+[00:01:09.606,000] <inf> ir: ir_tx addr=0x4 cmd=0x1b (#59)
+alive uptime_ms=69529 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.907430 -2.753415 9.560937]
+[00:01:10.682,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#60)
+alive uptime_ms=70606 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.601561 -2.895276 9.638751]
+[00:01:11.759,000] <inf> ir: ir_t addr=0x04 cmd=0x1b (#61)
+alive uptime_ms=71683 page=3 KEY1=1 KEY2=1 imu=1 accel=[-5.454756 -4.704749 6.859597]
+[00:01:12.836,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#62)
+alive uptime_ms=72759 page=3 KEY1=1 KEY2=1 imu=1 accel=[-8.887547 0.371112 -1.553285]
+[00:01:13.912,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#63)
+alive uptime_ms=73836 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.928978 -3.004814 10.202603]
+[00:01:14.989,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#64)
+alive uptime_ms=74912 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.659024 1.040910 7.006246]
+[00:01:16.065,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#65)
+alive uptime_ms=75989 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.001795 0.065842 10.018842]
+[00:01:17.142,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#66)
+alive uptime_ms=77066 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.043695 0.040104 10.021835]
+[00:01:18.219,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#67)
+alive uptime_ms=78142 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.085595 0.026935 10.005674]
+[00:01:19.295,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#68)
+alive uptime_ms=79219 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.065243 0.038906 10.014054]
+[00:01:20.372,000] <inf> ir: irtx addr=0x04 cmd=0x1b (#69)
+alive uptime_ms=80295 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.062251 0.029329 10.008068]
+[00:01:21.448,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#70)
+alive uptime_ms=81372 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.070032 0.024541 10.004476]
+[00:01:22.525,000] <inf> ir: ir_tx addr=004 cmd=0x1b (#71)
+alive uptime_ms=82449 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.065842 0.038308 10.006871]
+[00:01:23.602,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#72)
+alive uptime_ms=83525 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.073025 0.017957 10.017645]
+[00:01:24.678,000] <inf> ir: ir_x addr=0x04 cmd=0x1b (#73)
+alive uptime_ms=84602 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.059856 0.042498 9.999089]
+[00:01:25.755,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#74)
+alive uptime_ms=85678 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.081405 0.026935 10.005075]
+[00:01:26.831,000] <inf> ir: ir_tx adr=0x04 cmd=0x1b (#75)
+alive uptime_ms=86755 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.083201 0.038906 10.018842]
+[00:01:27.908,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#76)
+alive uptime_ms=87832 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.079609 0.038906 10.015251]
+[00:01:28.985,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#77)
+alive uptime_ms=88908 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.062849 0.047885 10.005075]
+[00:01:30.061,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#78)
+alive uptime_ms=89985 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.054469 0.034118 10.015849]
+[00:01:31.138,000] <inf> ir: ir_tx addr=0x4 cmd=0x1b (#79)
+alive uptime_ms=91061 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.066441 0.025139 10.018842]
+[00:01:32.214,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#80)
+alive uptime_ms=92138 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.047286 0.035315 10.026025]
+[00:01:33.291,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#81)
+alive uptime_ms=93215 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.228653 -2.895875 9.138348]
+[00:01:34.368,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#82)
+alive uptime_ms=94291 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.550683 -4.335432 9.602238]
+[00:01:35.444,000] 
+[monitor captured 8648 chars]

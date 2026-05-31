@@ -195,13 +195,30 @@ static void render_audio_body(const struct app_status *s)
 static void render_ir_body(const struct app_status *s)
 {
 	char line[24];
+	uint8_t a;
+	uint8_t c;
 
 	ARG_UNUSED(s);
 
 	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG,
 		      ir_ready() ? "TX ready" : "init failed");
-	snprintf(line, sizeof(line), "sent: %u   ", (unsigned int)ir_tx_count());
+	snprintf(line, sizeof(line), "tx: %u   ", (unsigned int)ir_tx_count());
 	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
+
+	if (ir_rx_last(&a, &c)) {
+		snprintf(line, sizeof(line), "NEC %02X:%02X #%u ", a, c,
+			 (unsigned int)ir_rx_count());
+	} else {
+		snprintf(line, sizeof(line), "NEC: --     ");
+	}
+	gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
+
+	/*
+	 * Any remote (any protocol) shows up here as edge activity, even one the
+	 * NEC decoder above does not recognise - a generic "IR received" signal.
+	 */
+	snprintf(line, sizeof(line), "IR act:%u   ", (unsigned int)ir_rx_edges());
+	gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, line);
 }
 #endif /* CONFIG_APP_IR */
 
@@ -288,18 +305,9 @@ void ui_render(enum app_page page, const struct app_status *s)
 		if (page_changed) {
 			gfx_clear(HOME_BG);
 			draw_header(page);
-			render_ir_body(s);
-			/*
-			 * Transmit a test NEC frame on ENTER only (page-change
-			 * edge), like the AUDIO beep, so the nav keys are not
-			 * hijacked. ir_tx_nec is blocking (~tens of ms).
-			 */
-			if (ir_ready()) {
-				ir_tx_test();
-			}
-		} else {
-			render_ir_body(s);
 		}
+		/* TX is driven from the main loop (periodic) so render stays pure. */
+		render_ir_body(s);
 		break;
 #endif
 	case PAGE_DIAG:

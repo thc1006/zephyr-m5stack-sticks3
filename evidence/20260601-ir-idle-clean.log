@@ -1,0 +1,27 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+[m[38;5;3m--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ct[m[38;5;3mrl+H
+[malive uptime_ms=2417 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.089186 0.104150 10.026025]
+alive uptime_ms=3426 page=0 KEY1=1 KEY2=1 imu=1 accel=[-2.513389 -1.513181 9.973949]
+alive uptime_ms=4435 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.052075 0.017957 10.010462]
+alive uptime_ms=5443 page=0 KEY1=0 KEY2=1 imu=1 accel=[0.092179 0.057462 10.026025]
+BUTTON code=11 -> page=1
+alive uptime_ms=5473 page=1 KEY1=0 KEY2=1 imu=1 accel=[0.104749 0.052674 10.009864]
+BUTTON code=11 -> page=2
+alive uptime_ms=5928 page=2 KEY1=0 KEY2=1 imu=1 accel=[0.101756 0.048484 10.029616]
+alive uptime_ms=6975 page=2 KEY1=1 KEY2=1 imu=1 accel=[0.098763 0.065243 10.014054]
+BUTTON code=11 -> page=3
+[00:00:07.171,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#1)
+alive uptime_ms=7056 page=3 KEY1=0 KEY2=1 imu=1 accel=[0.113728 0.046688 10.014054]
+[00:00:08.247,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#2)
+alive uptime_ms=8171 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.090383 0.063448 10.003279]
+[00:00:09.323,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#3)
+alive uptime_ms=9247 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.077813 0.015562 10.024229]
+[00:00:10.399,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#4)
+alive uptime_ms=10323 page=3 KEY1=1 KEY2=1 imu=1 accel=[0.076018 0.035315 10.014652]
+[00:00:11.475,000] <inf> ir: ir_tx addr=0x04 cmd=0x1b (#5)
+alive uptime_ms=11399 page=3 KEY1=1 KEY2=1 imu=1 accel=[-1.780741 -3.568666 7.626962]
+[00:00:12.551,000] 
+[monitor captured 1834 chars]

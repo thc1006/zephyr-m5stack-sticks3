@@ -104,6 +104,35 @@ int main(void)
 #ifdef CONFIG_APP_BLE
 		ble_update(&st);
 #endif
+#ifdef CONFIG_APP_IR
+		/*
+		 * Transmit a test NEC frame once on ENTERING the IR page (a loopback
+		 * blink, phone-camera visible). Stay quiet afterwards so RX can
+		 * receive an external remote cleanly, without TX self-interference.
+		 */
+		{
+			static enum app_page ir_prev = PAGE_COUNT;
+
+			if (page == PAGE_IR && page != ir_prev && ir_ready()) {
+				ir_tx_test();
+			}
+			ir_prev = page;
+		}
+		{
+			static uint32_t ir_rx_seen;
+			uint32_t n = ir_rx_count();
+
+			if (n != ir_rx_seen) {
+				uint8_t a = 0;
+				uint8_t c = 0;
+
+				ir_rx_seen = n;
+				(void)ir_rx_last(&a, &c);
+				printk("IR RX addr=0x%02x cmd=0x%02x (#%u)\n", a, c,
+				       (unsigned int)n);
+			}
+		}
+#endif
 
 		int k1 = device_is_ready(g0) ? gpio_pin_get_raw(g0, KEY1_PIN) : -1;
 		int k2 = device_is_ready(g0) ? gpio_pin_get_raw(g0, KEY2_PIN) : -1;

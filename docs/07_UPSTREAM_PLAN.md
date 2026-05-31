@@ -55,12 +55,16 @@ Small PRs beat one giant PR.
 6. **IR (NEC) — in-repo on stock PWM drivers; an RMT driver is a separate big PR**
    - Zephyr 4.4 has no ESP32 RMT driver and no consumer-IR subsystem (verified
      2026-06-01). The StickS3 IR feature is built in-app on stock LEDC (TX, G46) +
-     MCPWM input capture (RX, G42) with NEC encode/decode, gated `CONFIG_APP_IR`.
-     No new low-level driver, so nothing board-specific to upstream beyond the
-     board DTS pins.
-   - A proper Zephyr **ESP32 RMT driver** (binding + driver + DMA) is a genuine,
-     sizable upstream opportunity on its own, but out of scope here; raise it with
-     maintainers before starting.
+     a GPIO edge interrupt (RX, G42) with NEC encode/decode, gated `CONFIG_APP_IR`.
+     Both TX and RX are HW-verified (TX emits NEC; the G42 receiver gets ~10k
+     edges from a real remote; NEC decodes via on-device loopback). No new
+     low-level driver, so nothing board-specific to upstream beyond the board DTS.
+   - Two genuinely-upstream-worthy but separate, larger efforts (out of scope
+     here): a proper Zephyr **ESP32 RMT driver** (binding + driver + DMA - the
+     right peripheral for IR, with a HW FIFO that avoids the MCPWM edge-drop), and
+     a **Zephyr consumer-IR subsystem** to host protocol decoders (NEC/RC5/RC6/
+     SIRC/...). Without that subsystem, protocol decoders have no upstream home,
+     so the in-repo app supports NEC only. Raise both with maintainers (RFC) first.
 
 ## PR description checklist
 

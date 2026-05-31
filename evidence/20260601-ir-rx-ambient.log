@@ -1,0 +1,29 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200[38;5;3m
+--- Warning: No ELF files found. Please provide [m[38;5;3mthe ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+[mIR RX seq=3 st=-1 lead=9106/120 b0=748/2061 b1=27446/229 last=00:00
+alive uptime_ms=9478 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.069433 0.115523 10.016448]
+alive uptime_ms=10487 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.087989 0.118516 10.032011]
+alive uptime_ms=11496 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.076616 0.110735 10.004476]
+IR RX seq=4 st=-1 lead=9015/82 b0=182/1808 b1=18265/223 last=00:00
+alive uptime_ms=12505 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.079011 0.114326 10.012258]
+alive uptime_ms=13514 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.086792 0.120910 10.018244]
+IR RX seq=5 st=-1 lead=9099/149 b0=699/2136 b1=38926/2175 last=00:00
+alive uptime_ms=14523 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.071828 0.111333 10.035602]
+alive uptime_ms=15531 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.074222 0.125699 10.008068]
+alive uptime_ms=16540 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.067039 0.089186 10.014652]
+alive uptime_ms=17549 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.071828 0.106545 10.003279]
+alive uptime_ms=18558 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.076018 0.143656 10.043982]
+alive uptime_ms=19567 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.058659 0.097566 9.985322]
+alive uptime_ms=20576 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.113129 0.209499 10.002082]
+alive uptime_ms=21584 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.090982 0.196929 10.029018]
+alive uptime_ms=22593 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.080806 0.167000 10.014054]
+alive uptime_ms=23602 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.086792 0.126297 10.023032]
+alive uptime_ms=24611 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.059856 0.096968 10.008068]
+alive uptime_ms=25620 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.062251 0.090982 10.016448]
+alive uptime_ms=26629 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.070631 0.110136 10.011061]
+alive uptime_ms=27637 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.065842 0.119713 10.020638]
+
+[monitor captured 2249 chars]

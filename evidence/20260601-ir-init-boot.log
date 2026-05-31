@@ -1,0 +1,57 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+[m[38;5;3m--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+[mESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x2b (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40377326
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fc90010,len:0x25e8
+load:0x40374000,len:0xc000
+load:0x50000000,len:0x24
+SHA-256 comparison failed:
+Calculated: dd32c1122eec8a3de354753f6bb1d6f3a6ef8a6a44476b757a677deeea500db5
+Expected: 00000000b0190000000000000000000000000000000000000000000000000000
+Attempting to boot anyway...
+entry 0x4037a64c
+I (soc_init): ESP Simple boot
+I (soc_init): compile time Jun  1 2026 03:32:45
+W (soc_init): Unicore bootloader
+I (soc_init): chip revision: v0.2
+I (flash_init): Boot SPI Speed : 80MHz
+I (flash_init): SPI Mode       : DIO
+I (flash_init): SPI Flash Size : 8MB
+I (boot): DRAM[2C: lma=00000020h vma=3fc90010h size=025e8h (  9704)
+I (boot): IRAM[2C: lma=00002610h vma=40374000h size=0c000h ( 49152)
+I (boot): RTC_DATA[6C: lma=0000e618h vma=50000000h size=00024h (    36)
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=099d8h ( 39384)
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=02f5ch ( 12124)
+I (boot): libc heap size 330 kB.
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+I (spi_flash): detected chip: gd
+I (spi_flash): flash io: dio
+*** Booting Zephyr OS build v4.4.0 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.323,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.323,000] <inf> gfx: Display ready (135x240)
+[00:00:00.359,000] <inf> ir: ir_init OK (TX on LEDC ch0, ~38 kHz carrier)
+[00:00:00.359,000] <inf> ir: IR RX capture on ch6 (80000000 Hz cap clk)
+alive uptime_ms=359 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.000000 0.000000 0.000000]
+alive uptime_ms=1407 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.024541 0.082602 10.006871]
+alive uptime_ms=2416 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.028731 0.064046 10.013455]
+alive uptime_ms=3425 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.023942 0.077215 10.006871]
+alive uptime_ms=4434 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.031125 0.082602 10.008666]
+alive uptime_ms=5442 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.022147 0.097566 10.014054]
+alive uptime_ms=6451 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.030527 0.094573 10.019441]
+alive uptime_ms=7460 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.050279 0.107742 10.020638]
+alive uptime_ms=8468 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.024541 0.113129 10.014652]
+alive uptime_ms=9477 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.045491 0.110735 10.013455]
+alive uptime_ms=10486 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.033519 0.115523 10.010462]
+alive uptime_ms=11495 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.041301 0.107742 9.999089]
+alive uptime_ms=12504 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.018555 0.128692 10.024229]
+alive uptime_ms=13512 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.028132 0.014964 9.991308]
+[captured 3226 chars]

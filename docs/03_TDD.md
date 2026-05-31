@@ -203,6 +203,30 @@ Pass criteria:
 - Speaker-amp interaction documented: the AW8737 amp is OFF during receive (it is
   off at rest; the rule is "do not beep while capturing").
 
+Result (2026-06-01): TX and RX both PASS (runtime-verified). IR runs on stock
+drivers (Zephyr 4.4 has no ESP32 RMT driver): TX via the LEDC ~38 kHz carrier on
+G46; RX via a GPIO edge interrupt on G42 (the MCPWM capture path was tried first
+but drops edges during the fast 67 ms NEC burst). NEC encode/decode in
+`app/src/nec.c` (native_sim ztest 9/9).
+
+- TX: emits NEC on hardware (serial `ir_tx addr=0x04 cmd=0x1b (#n)`, also
+  phone-camera-visible); LCD stays lit.
+- RX hardware: a real remote produced ~10k edges in 40 s on the G42 line (HOME
+  page, TX silent), so the receiver works and receives external IR of any
+  protocol.
+- NEC decode: an on-device TX->RX loopback decodes the transmitted NEC frame
+  (`IR RX addr=0x04 cmd=0x1b`); the GPIO RX measures a real 9 ms + 4.5 ms leader.
+- The tested remote is not NEC, so it is not decoded to addr/cmd, but it still
+  registers on the "IR act" edge counter. Decoding other protocols is out of
+  scope (Zephyr has no IR subsystem for protocol decoders); NEC is the supported
+  reference protocol.
+- Ambient/loopback notes: only a real 9 ms + 4.5 ms leader starts a frame, so
+  mains-light flicker is rejected (idle is clean); RX is suspended during a TX
+  burst.
+
+Gated `CONFIG_APP_IR`. Evidence: `evidence/20260601-ir-hw-session.md` +
+`evidence/20260601-ir-rx-edges.log` (real-remote edge activity).
+
 ### HW-006 audio
 
 Pass criteria:

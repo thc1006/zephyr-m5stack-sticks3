@@ -260,12 +260,11 @@
 };
 
 /*
- * IR (NEC) over stock PWM peripherals - Zephyr 4.4 has no ESP32 RMT driver.
- * IR_TX (G46) uses the LEDC PWM as a ~38 kHz carrier gated by a software NEC
- * envelope; IR_RX (G42) uses MCPWM input capture. Like &dma/&i2s0 above, these
- * controller nodes are inert without their driver Kconfig (CONFIG_PWM /
- * CONFIG_PWM_CAPTURE, off in the default build), so the default image is
- * unchanged; overlay-ir.conf turns them on. The gated app code is CONFIG_APP_IR.
+ * IR (NEC) - Zephyr 4.4 has no ESP32 RMT driver. IR_TX (G46) uses the LEDC
+ * ~38 kHz carrier gated by a software NEC envelope; IR_RX (G42) is read as a
+ * plain GPIO edge interrupt (the ESP32 MCPWM capture path drops edges during
+ * the fast NEC burst). The ledc0 node is inert without CONFIG_PWM (off in the
+ * default build); overlay-ir.conf turns it on. Gated app code: CONFIG_APP_IR.
  */
 &ledc0 {
 	status = "okay";
@@ -280,16 +279,14 @@
 	};
 };
 
-&mcpwm0 {
-	status = "okay";
-	pinctrl-0 = <&mcpwm0_cap0_default>;
-	pinctrl-names = "default";
-	/*
-	 * Capture clock = MCPWM group clock (160 MHz) / (prescale + 1). 159 gives a
-	 * 1 us tick, fine for NEC mark/space timing (560 us .. 9 ms) and well within
-	 * the 32-bit capture counter. Tuned further if needed in IR-P4 (RX).
-	 */
-	prescale = <159>;
+/ {
+	zephyr,user {
+		/*
+		 * IR receiver demodulated output: G42 = gpio1 pin 10 (gpio1 covers
+		 * GPIO32..53), idles high; read via a GPIO edge interrupt for RX.
+		 */
+		ir-rx-gpios = <&gpio1 10 GPIO_PULL_UP>;
+	};
 };
 
 &gpio0 {

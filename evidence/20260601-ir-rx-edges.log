@@ -1,0 +1,87 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+--- Using \\.\COM9 instead...
+]0;C:\Python313\python.EXE[?25h[m[33m--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+[m[38;5;3m--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log d[m[38;5;3mecoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+[mIR edges=2190
+alive uptime_ms=11495 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.320234 1.322238 9.896136]
+IR edges=2382
+alive uptime_ms=12504 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.310058 1.321639 9.890748]
+IR edges=2684
+alive uptime_ms=13513 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.340585 1.292309 9.915290]
+IR edges=2980
+alive uptime_ms=14522 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.322029 1.286324 9.900325]
+IR edges=3218
+alive uptime_ms=15530 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.322029 1.285725 9.875784]
+IR edges=3450
+alive uptime_ms=16539 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.308262 1.357553 9.882368]
+IR edges=3726
+alive uptime_ms=17548 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.343578 1.264775 9.891347]
+IR edges=4058
+alive uptime_ms=18557 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.312452 1.310266 9.876981]
+IR edges=4344
+alive uptime_ms=19566 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.322628 1.302485 9.889551]
+IR edges=4618
+alive uptime_ms=20574 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.318438 1.285126 9.850644]
+IR edges=4816
+alive uptime_ms=21583 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.311255 1.365933 9.879376]
+IR edges=5022
+alive uptime_ms=22592 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.335198 1.242030 9.897931]
+IR edges=5302
+alive uptime_ms=23601 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.302277 1.289316 9.849447]
+IR edges=5556
+alive uptime_ms=24610 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.336395 1.329421 9.923670]
+IR edges=5864
+alive uptime_ms=25619 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.312452 1.267169 9.875186]
+IR edges=6144
+alive uptime_ms=26627 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.343578 1.221080 9.884763]
+IR edges=6430
+alive uptime_ms=27636 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.322029 1.286324 9.894340]
+IR edges=6734
+alive uptime_ms=28645 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.313051 1.308471 9.875186]
+IR edges=7050
+alive uptime_ms=29654 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.328015 1.301288 9.881770]
+IR edges=7300
+alive uptime_ms=30663 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.317241 1.306076 9.887756]
+IR edges=7568
+alive uptime_ms=31672 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.317241 1.301288 9.902720]
+IR edges=7868
+alive uptime_ms=32680 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.304072 1.300689 9.872791]
+IR edges=8160
+alive uptime_ms=33689 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.340585 1.304281 9.913494]
+IR edges=8396
+alive uptime_ms=34698 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.301080 1.307274 9.891347]
+IR edges=8678
+alive uptime_ms=35707 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.329811 1.292908 9.886558]
+IR edges=8836
+alive uptime_ms=36716 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.339987 1.319245 9.901523]
+IR edges=9168
+alive uptime_ms=37725 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.326219 1.322238 9.898530]
+IR edges=9436
+alive uptime_ms=38733 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.348366 1.279739 9.899128]
+IR edges=9722
+alive uptime_ms=39742 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.315445 1.276746 9.897931]
+IR edges=10038
+alive uptime_ms=40751 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.327417 1.280936 9.904515]
+IR edges=10294
+alive uptime_ms=41760 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.324424 1.270761 9.900325]
+IR edges=10538
+alive uptime_ms=42769 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.327417 1.300091 9.896734]
+IR edges=10802
+alive uptime_ms=43777 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.321431 1.285126 9.903917]
+IR edges=11002
+alive uptime_ms=44786 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.310058 1.298894 9.873390]
+IR edges=11270
+alive uptime_ms=45795 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.314847 1.282134 9.854236]
+IR edges=11538
+alive uptime_ms=46804 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.326219 1.313858 9.906311]
+IR edges=11764
+alive uptime_ms=47813 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.322029 1.315653 9.873988]
+IR edges=12034
+alive uptime_ms=48822 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.329811 1.297098 9.885361]
+IR edges=12270
+alive uptime_ms=49830 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.351359 1.239635 9.951802]
+IR edges=12498
+alive uptime_ms=50839 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.311255 1.277345 9.869200]
+IR edges=12766
+[monitor captured 4439 chars]

@@ -28,6 +28,18 @@ void ir_tx_test(void);
 /* Number of NEC frames transmitted so far (for the UI). */
 uint32_t ir_tx_count(void);
 
+/* Last NEC frame decoded by RX; returns false if nothing has been decoded. */
+bool ir_rx_last(uint8_t *addr, uint8_t *cmd);
+
+/* Number of NEC frames decoded by RX so far (for the UI). */
+uint32_t ir_rx_count(void);
+
+/*
+ * Total IR edges seen on the RX line; nonzero for any remote of any protocol,
+ * even one the NEC decoder does not recognise (a generic "IR received" signal).
+ */
+uint32_t ir_rx_edges(void);
+
 #endif /* CONFIG_APP_IR */
 
 #endif /* M5STICKS3_IR_H */

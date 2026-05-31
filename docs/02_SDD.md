@@ -237,9 +237,12 @@ on stock PWM drivers:
   duty). The NEC envelope (9 ms lead, 4.5 ms space, 560 µs base bit unit) is
   produced by gating the carrier duty 0↔N from the CPU with `k_busy_wait()`
   (NEC tolerates ~±20%; IRQs are briefly masked per frame to bound jitter).
-- RX: the ESP32-S3 **MCPWM** input capture (`espressif,esp32-mcpwm`, `&mcpwm0`
-  capture on G42, `CONFIG_PWM_CAPTURE`) timestamps edges; the capture callback
-  collects mark/space durations and an app-side state machine decodes NEC.
+- RX: a plain **GPIO edge interrupt** on G42 (the ESP32 MCPWM capture path was
+  tried first but drops edges during the fast 67 ms NEC burst). Each edge is
+  timestamped with the cycle counter; the level that just ended becomes a mark
+  (low) or space (high), and an app-side state machine feeds (mark, space) pairs
+  to the NEC decoder. RX is suspended during a TX burst (the device must not
+  receive its own carrier, and the RX ISR would otherwise jitter the TX timing).
 - Pure-logic split for testability: `app/src/nec.c` holds `nec_encode()` and a
   tolerance-based `nec_decode()`, unit-tested on native_sim
   (`tests/drivers/ir_nec`) with synthetic ideal/jittered/invalid vectors — the
@@ -247,9 +250,17 @@ on stock PWM drivers:
 - The AW8737 speaker amp must be OFF during IR receive (vendor warning); it is
   already off at rest (only high during a beep), so the only rule is "do not beep
   while capturing" — no change to the audio gating.
-- Demo: a PAGE_IR page transmits a test NEC frame on entry and shows the last
-  decoded `addr:cmd`; the headline self-test transmits on G46 and decodes it back
-  on G42 of the same device (loopback).
+- Demo: entering the PAGE_IR page transmits one test NEC frame (phone-camera
+  visible); the page shows the TX/RX counts, the last decoded NEC `addr:cmd`, and
+  an "IR act" edge counter that ticks up for ANY remote (any protocol), so a
+  non-NEC remote still visibly registers.
+- Status (2026-06-01): TX and RX both runtime-verified on hardware. TX emits NEC
+  (loopback + phone camera). The G42 receiver works: a real remote produced ~10k
+  edges in 40 s (so it receives external IR of any protocol), and the NEC decoder
+  recovers addr/cmd from an on-device TX->RX loopback. Decoding non-NEC protocols
+  (RC5/RC6/SIRC/...) is out of scope - Zephyr has no IR subsystem to host protocol
+  decoders; NEC is the supported reference protocol and other remotes still
+  register on the "IR act" counter. See TDD HW-005.
 
 ## 5. Non-goals for v0.1
 
