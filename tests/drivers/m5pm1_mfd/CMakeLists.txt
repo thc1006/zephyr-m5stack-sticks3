@@ -1,7 +1,8 @@
+# Copyright (c) 2026 Hsiu-Chi Tsai
 # SPDX-License-Identifier: Apache-2.0
 
 cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(m5pm1_regulator_test)
+project(m5pm1_mfd_test)
 
-target_sources(app PRIVATE src/test_m5pm1.c)
+target_sources(app PRIVATE src/main.c)

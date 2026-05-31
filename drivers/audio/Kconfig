@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Hsiu-Chi Tsai
+# SPDX-License-Identifier: Apache-2.0
+
+rsource "Kconfig.es8311"
+
+config EMUL_ES8311
+	bool "Everest ES8311 audio codec emulator"
+	default y
+	depends on EMUL
+	depends on DT_HAS_EVEREST_ES8311_ENABLED
+	help
+	  I2C emulator for the Everest ES8311 audio codec, for native_sim driver
+	  unit tests.

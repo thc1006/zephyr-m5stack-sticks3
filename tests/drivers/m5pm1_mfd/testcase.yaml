@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Hsiu-Chi Tsai
+# SPDX-License-Identifier: Apache-2.0
+
+tests:
+  drivers.mfd.m5pm1:
+    tags:
+      - drivers
+      - mfd
+      - gpio
+      - adc
+      - regulator
+    filter: dt_compat_enabled("m5stack,m5pm1")
+    platform_allow:
+      - native_sim

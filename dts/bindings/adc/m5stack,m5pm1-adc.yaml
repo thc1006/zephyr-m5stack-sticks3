@@ -1,0 +1,22 @@
+# Copyright (c) 2026 The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Vendored from Zephyr PR #109961
+# (commit 49788e986286245610c15fc36bd0cd73baba0011), Apache-2.0.
+# Interim copy; remove once #109961 merges upstream.
+# See docs/07_UPSTREAM_PLAN.md.
+
+description: M5Stack M5PM1 ADC
+
+compatible: "m5stack,m5pm1-adc"
+
+include: adc-controller.yaml
+
+on-bus: m5pm1
+
+properties:
+  "#io-channel-cells":
+    const: 1
+
+io-channel-cells:
+  - input

@@ -1,0 +1,23 @@
+# Copyright (c) 2026 The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Vendored from Zephyr PR #109961
+# (commit 3dc118687506d146bca84d527bbf87e002e52df2), Apache-2.0.
+# Interim copy; remove once #109961 merges upstream.
+# See docs/07_UPSTREAM_PLAN.md.
+
+config GPIO_M5PM1
+	bool "M5Stack M5PM1 GPIO driver"
+	default y
+	depends on DT_HAS_M5STACK_M5PM1_GPIO_ENABLED
+	select MFD
+	help
+	  Enable the GPIO controller driver for the M5Stack M5PM1.
+
+config GPIO_M5PM1_INIT_PRIORITY
+	int "M5PM1 GPIO driver initialization priority"
+	depends on GPIO_M5PM1
+	default 82
+	help
+	  Initialization priority for the M5PM1 GPIO driver. It must be
+	  greater than the MFD initialization priority.

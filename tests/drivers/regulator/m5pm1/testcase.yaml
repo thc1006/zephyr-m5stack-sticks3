@@ -1,8 +1,0 @@
-tests:
-  drivers.regulator.m5pm1:
-    tags:
-      - drivers
-      - regulator
-    filter: dt_compat_enabled("m5stack,m5pm1-l3b-regulator")
-    platform_allow:
-      - native_sim

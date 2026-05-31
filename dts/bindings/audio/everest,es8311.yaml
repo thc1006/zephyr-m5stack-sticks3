@@ -1,0 +1,36 @@
+# Copyright (c) 2026 Hsiu-Chi Tsai
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Everest Semiconductor ES8311 low-power mono audio codec.
+
+  The ES8311 is a single-chip mono ADC/DAC with an I2C control interface
+  (7-bit address 0x18 or 0x19, selected by the CE pin) and an I2S/PCM audio
+  data interface. On the M5Stack StickS3 it drives the on-board speaker
+  amplifier and microphone path.
+
+  The codec can derive its internal master clock either from a dedicated MCLK
+  pin or from the I2S bit clock (BCLK). The StickS3 bring-up uses the
+  MCLK-from-BCLK mode; see drivers/audio/es8311.c for the register sequence
+  and its hardware-validated source.
+
+compatible: "everest,es8311"
+
+include: [i2c-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reset-gpios:
+    type: phandle-array
+    description: |
+      GPIO connected to the codec reset pin (active low), if a discrete reset
+      line is wired. When absent, the driver relies on the software reset via
+      register 0x00.
+
+  enable-gpios:
+    type: phandle-array
+    description: |
+      GPIO that enables the external speaker amplifier / codec power, if such a
+      switch is present. Driven active to power up the analog output path.

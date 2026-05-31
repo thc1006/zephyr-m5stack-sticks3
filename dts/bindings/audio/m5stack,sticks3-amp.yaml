@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Hsiu-Chi Tsai
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  M5Stack StickS3 on-board AW8737 speaker-amplifier enable line.
+
+  The AW8737 mono amplifier shutdown/enable pin is driven by the M5PM1 PMIC
+  GPIO3 (PYG3): driving it active un-mutes the speaker path. This node only
+  carries the enable GPIO so the application (app/src/audio.c) can read it via
+  GPIO_DT_SPEC_GET and drive the amp high strictly for the duration of a
+  playback (anti-pop), leaving it inactive the rest of the time. No driver is
+  bound to this compatible; it is a board-description leaf node.
+
+  The M5PM1 GPIO child performs masked register writes, so toggling pin 3 does
+  not disturb the neighbouring L3B/LCD power-rail bit on pin 2.
+
+compatible: "m5stack,sticks3-amp"
+
+properties:
+  amp-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      GPIO that enables the AW8737 speaker amplifier (active high). On the
+      StickS3 this is the M5PM1 PMIC GPIO3 (PYG3).

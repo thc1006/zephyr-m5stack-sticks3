@@ -1,0 +1,68 @@
+/*
+ * Copyright (c) 2026 Hsiu-Chi Tsai
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Mirrors the on-board M5PM1 topology (boards/m5stack/m5stack_sticks3): the
+ * `m5stack,m5pm1` MFD parent on I2C, a `m5stack,m5pm1-gpio` child, a
+ * `m5stack,m5pm1-adc` child with VBAT on channel 1, and a top-level
+ * `regulator-fixed` whose enable line is the MFD GPIO child's pin 2 (PYG2,
+ * the L3B / LCD rail). regulator-boot-on auto-enables the rail at init.
+ *
+ * The devices init at boot in the documented POST_KERNEL order I2C(50) <
+ * MFD(80) < adc(81) < gpio(82) < regulator-fixed(83) (set via
+ * CONFIG_REGULATOR_FIXED_INIT_PRIORITY=83 in prj.conf, matching app/prj.conf).
+ * The emulator backend (i2c0 emul controller, priority 50) seeds its register
+ * file and injects the wake-drop fault BEFORE the MFD inits, so the boot path
+ * exercised here is the same one the board runs.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/adc/adc.h>
+
+/ {
+	/*
+	 * L3B (LCD/peripheral) power rail, switched by M5PM1 GPIO2 (PYG2),
+	 * exactly as on the board. Modeled as a regulator-fixed enabled at boot.
+	 */
+	lcd_power: lcd-l3b {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-l3b";
+		enable-gpios = <&m5pm1_gpio 2 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+};
+
+&i2c0 {
+	status = "okay";
+
+	m5pm1: pmic@6e {
+		compatible = "m5stack,m5pm1";
+		reg = <0x6e>;
+		status = "okay";
+
+		m5pm1_gpio: gpio {
+			compatible = "m5stack,m5pm1-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <5>;
+			status = "okay";
+		};
+
+		m5pm1_adc: adc {
+			compatible = "m5stack,m5pm1-adc";
+			#io-channel-cells = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			/* Channel 1 = VBAT (battery voltage, reported in mV). */
+			channel@1 {
+				reg = <1>;
+				zephyr,gain = "ADC_GAIN_1";
+				zephyr,reference = "ADC_REF_INTERNAL";
+				zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+				zephyr,resolution = <12>;
+			};
+		};
+	};
+};

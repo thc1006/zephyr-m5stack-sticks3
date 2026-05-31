@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Hsiu-Chi Tsai
+# SPDX-License-Identifier: Apache-2.0
+
+config AUDIO_CODEC_ES8311
+	bool "Everest Semiconductor ES8311 audio codec"
+	default y
+	depends on AUDIO_CODEC
+	depends on DT_HAS_EVEREST_ES8311_ENABLED
+	select I2C
+	help
+	  Enable support for the Everest Semiconductor ES8311 mono audio codec
+	  (I2C control, I2S/PCM data). Used on the M5Stack StickS3 for the speaker
+	  amplifier and microphone path.

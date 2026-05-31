@@ -36,6 +36,26 @@
 		};
 	};
 
+	/*
+	 * I2S0 to the ES8311 codec (hardware-verified StickS3 pins):
+	 *   MCLK         G18  (codec master clock out)
+	 *   BCLK (O_BCK) G17  (bit clock)
+	 *   WS   (O_WS)  G15  (word select / LRCK)
+	 *   DOUT (O_SD)  G14  (SoC->codec, DSDIN at the codec)
+	 *   DIN  (I_SD)  G16  (codec->SoC, ASDOUT at the codec)
+	 * The SoC is the I2S master, so MCLK/BCLK/WS/DOUT are outputs and DIN is
+	 * the only input. MCLK is derived from BCLK at the codec (MCLK = 256*Fs).
+	 */
+	i2s0_default: i2s0_default {
+		group1 {
+			pinmux = <I2S0_MCLK_GPIO18>,
+				 <I2S0_O_BCK_GPIO17>,
+				 <I2S0_O_WS_GPIO15>,
+				 <I2S0_O_SD_GPIO14>,
+				 <I2S0_I_SD_GPIO16>;
+		};
+	};
+
 	/* M5Stack PinMap: LCD MOSI G39, SCK G40 (CS G41 handled as GPIO). */
 	spim2_default: spim2_default {
 		group1 {

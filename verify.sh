@@ -8,6 +8,6 @@ python3 tools/check_file_integrity.py
 
 while IFS= read -r -d '' script; do
   bash -n "$script"
-done < <(find . -path './.git' -prune -o -type f -name '*.sh' -print0)
+done < <(find . \( -path './.git' -o -path './.claude' \) -prune -o -type f -name '*.sh' -print0)
 
 echo "verify.sh: OK"

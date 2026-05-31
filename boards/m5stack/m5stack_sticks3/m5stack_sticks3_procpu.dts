@@ -11,6 +11,7 @@
 
 #include <espressif/esp32s3/esp32s3_pico_n8r8.dtsi>
 #include "m5stack_sticks3-pinctrl.dtsi"
+#include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <espressif/partitions_0x0_amp.dtsi>
 
@@ -35,6 +36,7 @@
 		accel0 = &bmi270;
 		watchdog0 = &wdt0;
 		i2c-0 = &i2c0;
+		adc-0 = &m5pm1_adc;
 	};
 
 	/*
@@ -56,6 +58,37 @@
 			gpios = <&gpio0 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 			zephyr,code = <INPUT_KEY_1>;
 		};
+	};
+
+	/*
+	 * AW8737 speaker-amplifier enable. The amp shutdown pin is gated by the
+	 * M5PM1 PMIC GPIO3 (PYG3): driving it high un-mutes the speaker path.
+	 * Modeled as a plain (driver-less) node carrying an amp-gpios spec that
+	 * app/src/audio.c reads via GPIO_DT_SPEC_GET. Deliberately NOT a gpio-leds
+	 * / regulator node so nothing enables it at boot; audio.c configures it
+	 * output-inactive and drives it high only for the duration of playback
+	 * (anti-pop). The MFD gpio child performs masked register writes, so
+	 * toggling pin 3 preserves the neighbouring L3B/LCD-rail bit on pin 2.
+	 */
+	sound_amp: sound-amp {
+		compatible = "m5stack,sticks3-amp";
+		status = "okay";
+		amp-gpios = <&m5pm1_gpio 3 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * LCD/peripheral power rail (L3B). The M5PM1 PMIC gates this domain via
+	 * its GPIO2 (PYG2); driving it high powers the LCD/MIC/SPK domain. Modeled
+	 * as a regulator-fixed switched by the MFD gpio child (m5pm1_gpio pin 2).
+	 * regulator-boot-on enables it at init, before the display; the 100 ms
+	 * startup-delay matches the vendor settle time (HW-003 power-before-init).
+	 */
+	lcd_power: lcd-l3b {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-l3b";
+		enable-gpios = <&m5pm1_gpio 2 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		startup-delay-us = <100000>;
 	};
 
 	/*
@@ -139,16 +172,56 @@
 	};
 
 	/*
-	 * M5PM1 PMIC (0x6e). Used here only to switch on the LCD/peripheral power
-	 * rail (L3B) by driving M5PM1 GPIO2 high. regulator-boot-on enables it at
-	 * init, before the display. startup-delay matches the vendor 100 ms settle.
+	 * ES8311 mono audio codec (I2C control @ 0x18, I2S audio data on i2s0).
+	 * The binding requires only reg; the StickS3 has no discrete codec
+	 * reset/enable line (the speaker amp is enabled separately via the
+	 * sound_amp node), so no reset-/enable-gpios are added here. The driver
+	 * (CONFIG_AUDIO_CODEC_ES8311) only compiles when CONFIG_AUDIO_CODEC is
+	 * enabled (overlay-audio.conf), so this node is inert in the default
+	 * build even though it is present.
 	 */
-	lcd_power: regulator@6e {
-		compatible = "m5stack,m5pm1-l3b-regulator";
+	es8311: es8311@18 {
+		compatible = "everest,es8311";
+		reg = <0x18>;
+		status = "okay";
+	};
+
+	/*
+	 * M5PM1 PMIC (0x6e), modeled as a multi-function device (MFD) with a GPIO
+	 * controller child and an ADC child, matching upstream Zephyr PR #109961.
+	 *  - m5pm1_gpio: the 5 PYG GPIOs. PYG2 gates the LCD/peripheral L3B rail
+	 *    (driven by the top-level lcd_power regulator-fixed).
+	 *  - m5pm1_adc: power telemetry. Logical channel 1 = VBAT (battery mV).
+	 */
+	m5pm1: pmic@6e {
+		compatible = "m5stack,m5pm1";
 		reg = <0x6e>;
-		regulator-name = "lcd-l3b";
-		regulator-boot-on;
-		gpio = <2>;
+		status = "okay";
+
+		m5pm1_gpio: gpio {
+			compatible = "m5stack,m5pm1-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <5>;
+			status = "okay";
+		};
+
+		m5pm1_adc: adc {
+			compatible = "m5stack,m5pm1-adc";
+			#io-channel-cells = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			/* Channel 1 = VBAT (battery voltage, reported in mV). */
+			channel@1 {
+				reg = <1>;
+				zephyr,gain = "ADC_GAIN_1";
+				zephyr,reference = "ADC_REF_INTERNAL";
+				zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+				zephyr,resolution = <12>;
+			};
+		};
 	};
 };
 
@@ -159,6 +232,31 @@
 	pinctrl-0 = <&spim2_default>;
 	pinctrl-names = "default";
 	cs-gpios = <&gpio1 9 GPIO_ACTIVE_LOW>; /* LCD CS = G41 */
+};
+
+/*
+ * GDMA controller. The esp32-i2s driver hard-requires the GDMA node to be
+ * status "okay" (it #errors otherwise) and the i2s0 node references its
+ * channels via dmas = <&dma 2>,<&dma 3>. Enabling the controller node here is
+ * inert for builds without CONFIG_DMA (the GDMA driver only compiles when
+ * CONFIG_DMA=y, which the default build leaves off), so the default image is
+ * unchanged; the audio overlay (overlay-audio.conf) turns CONFIG_DMA on.
+ */
+&dma {
+	status = "okay";
+};
+
+/*
+ * I2S0 carries audio data to/from the ES8311 codec. The SoC dtsi already
+ * provides the GDMA channels (dmas/dma-names = "rx","tx"), which the
+ * esp32-i2s driver requires; here we only enable the controller and bind the
+ * pin group. Pins (M5Stack StickS3, hardware-verified): MCLK G18, BCLK G17,
+ * WS/LRCK G15, DSDIN/DOUT (SoC->codec) G14, ASDOUT/DIN (codec->SoC) G16.
+ */
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
 };
 
 &gpio0 {
