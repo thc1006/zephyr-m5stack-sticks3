@@ -67,4 +67,24 @@
 			output-low;
 		};
 	};
+
+	/*
+	 * IR (NEC) over stock PWM peripherals (Zephyr 4.4 has no ESP32 RMT
+	 * driver). IR_TX on G46 via the LEDC carrier output; IR_RX on G42 via
+	 * MCPWM capture 0 input. Pins from the StickS3 PinMap (IR_TX G46,
+	 * IR_RX G42, see docs/00_RESEARCH_SNAPSHOT.md).
+	 */
+	ledc0_default: ledc0_default {
+		group1 {
+			pinmux = <LEDC_CH0_GPIO46>;
+			output-enable;
+		};
+	};
+
+	mcpwm0_cap0_default: mcpwm0_cap0_default {
+		group1 {
+			pinmux = <MCPWM0_CAP0_GPIO42>;
+			bias-pull-up;
+		};
+	};
 };

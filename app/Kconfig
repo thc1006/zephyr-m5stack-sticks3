@@ -45,4 +45,19 @@ config APP_AUDIO
 	  unchanged; enable it via -DEXTRA_CONF_FILE=overlay-audio.conf, which
 	  turns on the codec, I2S, and DMA Kconfigs.
 
+config APP_IR
+	bool "IR transmit + receive (NEC)"
+	default n
+	help
+	  When enabled, the app brings up consumer-IR (NEC) on the StickS3 IR LED
+	  (G46) and IR receiver (G42), and adds an IR page that transmits a test NEC
+	  frame on entry and shows the last decoded address/command.
+
+	  Zephyr 4.4 has no ESP32 RMT driver, so IR uses stock PWM peripherals: the
+	  LEDC PWM generates the ~38 kHz carrier (TX) and MCPWM input capture reads
+	  the receiver (RX); the NEC envelope and decoding live in app/src/nec.c. It
+	  is off by default so the standard build is unchanged; enable it via
+	  -DEXTRA_CONF_FILE=overlay-ir.conf, which turns on CONFIG_PWM and
+	  CONFIG_PWM_CAPTURE. Uses no binary blobs.
+
 source "Kconfig.zephyr"

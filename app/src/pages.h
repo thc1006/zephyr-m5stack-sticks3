@@ -23,6 +23,9 @@ enum app_page {
 #ifdef CONFIG_APP_BLE
 	PAGE_BLE,
 #endif
+#ifdef CONFIG_APP_IR
+	PAGE_IR,
+#endif
 	PAGE_DIAG,
 	PAGE_COUNT,
 };

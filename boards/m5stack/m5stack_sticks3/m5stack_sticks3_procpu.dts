@@ -259,6 +259,39 @@
 	pinctrl-names = "default";
 };
 
+/*
+ * IR (NEC) over stock PWM peripherals - Zephyr 4.4 has no ESP32 RMT driver.
+ * IR_TX (G46) uses the LEDC PWM as a ~38 kHz carrier gated by a software NEC
+ * envelope; IR_RX (G42) uses MCPWM input capture. Like &dma/&i2s0 above, these
+ * controller nodes are inert without their driver Kconfig (CONFIG_PWM /
+ * CONFIG_PWM_CAPTURE, off in the default build), so the default image is
+ * unchanged; overlay-ir.conf turns them on. The gated app code is CONFIG_APP_IR.
+ */
+&ledc0 {
+	status = "okay";
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	ir_tx: channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
+};
+
+&mcpwm0 {
+	status = "okay";
+	pinctrl-0 = <&mcpwm0_cap0_default>;
+	pinctrl-names = "default";
+	/*
+	 * Capture clock = MCPWM group clock (160 MHz) / (prescale + 1). 159 gives a
+	 * 1 us tick, fine for NEC mark/space timing (560 us .. 9 ms) and well within
+	 * the 32-bit capture counter. Tuned further if needed in IR-P4 (RX).
+	 */
+	prescale = <159>;
+};
+
 &gpio0 {
 	status = "okay";
 };

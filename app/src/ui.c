@@ -8,6 +8,9 @@
 #ifdef CONFIG_APP_AUDIO
 #include "audio.h"
 #endif
+#ifdef CONFIG_APP_IR
+#include "ir.h"
+#endif
 
 #include <stdio.h>
 
@@ -60,6 +63,10 @@ static const char *page_name(enum app_page page)
 #ifdef CONFIG_APP_BLE
 	case PAGE_BLE:
 		return "BLE";
+#endif
+#ifdef CONFIG_APP_IR
+	case PAGE_IR:
+		return "IR";
 #endif
 	case PAGE_DIAG:
 		return "DIAG";
@@ -184,6 +191,17 @@ static void render_audio_body(const struct app_status *s)
 }
 #endif /* CONFIG_APP_AUDIO */
 
+#ifdef CONFIG_APP_IR
+static void render_ir_body(const struct app_status *s)
+{
+	ARG_UNUSED(s);
+
+	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "IR NEC");
+	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG,
+		      ir_ready() ? "ready" : "scaffold");
+}
+#endif /* CONFIG_APP_IR */
+
 void ui_init(void)
 {
 	if (gfx_init()) {
@@ -260,6 +278,15 @@ void ui_render(enum app_page page, const struct app_status *s)
 			draw_header(page);
 		}
 		render_ble_body(s);
+		break;
+#endif
+#ifdef CONFIG_APP_IR
+	case PAGE_IR:
+		if (page_changed) {
+			gfx_clear(HOME_BG);
+			draw_header(page);
+		}
+		render_ir_body(s);
 		break;
 #endif
 	case PAGE_DIAG:

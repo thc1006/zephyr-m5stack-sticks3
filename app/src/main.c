@@ -18,6 +18,9 @@
 #ifdef CONFIG_APP_AUDIO
 #include "audio.h"
 #endif
+#ifdef CONFIG_APP_IR
+#include "ir.h"
+#endif
 
 #define LOOP_MS 1000
 
@@ -87,6 +90,9 @@ int main(void)
 #endif
 #ifdef CONFIG_APP_BLE
 	(void)ble_init();
+#endif
+#ifdef CONFIG_APP_IR
+	(void)ir_init();
 #endif
 
 	while (1) {
