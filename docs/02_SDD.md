@@ -262,6 +262,50 @@ on stock PWM drivers:
   decoders; NEC is the supported reference protocol and other remotes still
   register on the "IR act" counter. See TDD HW-005.
 
+### 4.12 Wi-Fi station: scan + connect (gated `CONFIG_APP_WIFI`)
+
+Optional ESP32-S3 native Wi-Fi in station mode, kept off the default build
+(`app/src/wifi.c` + `wifi_glue.c` compiled only with `overlay-wifi.conf`; all
+code under `#ifdef CONFIG_APP_WIFI`). Mutually exclusive with BLE — Wi-Fi + BLE
+coexistence is not a validated Zephyr configuration on the ESP32-S3, enforced by
+`APP_WIFI depends on !APP_BLE`, `overlay-wifi.conf` forcing `CONFIG_APP_BLE=n`,
+and a `BUILD_ASSERT(!(IS_ENABLED(CONFIG_WIFI) && IS_ENABLED(CONFIG_BT)))` in
+main.c. Needs the `hal_espressif` blob (already fetched for BLE).
+
+- Driver / supplicant: the in-tree `drivers/wifi/esp32` driver (DT
+  `espressif,esp32-wifi`, `&wifi` enabled by `overlay-wifi.overlay`) with its
+  bundled ESP-IDF supplicant — NOT Zephyr's hostap `CONFIG_WIFI_NM_WPA_SUPPLICANT`
+  (the two conflict). WPA2-PSK only; WPA3-SAE does not build against this
+  workspace's tf-psa-crypto. SPIRAM left off (it breaks Wi-Fi on R8).
+- Pure-logic split for testability: `app/src/wifi.c` holds config validation,
+  security/RSSI/bars labels, scan dedupe (by BSSID, keep strongest) + RSSI sort,
+  and a connection state machine, unit-tested on native_sim
+  (`tests/drivers/wifi`, 52 cases). `app/src/wifi_glue.c` is the thin
+  `net_mgmt`/`wifi_mgmt` shell (scan + connect requests, event callbacks, IPv4
+  capture), HW only — mirrors the nec.c (pure) under ir.c (HW) split.
+- Scan: `NET_REQUEST_WIFI_SCAN` → `SCAN_RESULT`/`SCAN_DONE` feed the pure
+  dedupe+sort; up to 24 APs (first-arrival cap, not strongest-N — fine because
+  connect is by SSID and the page shows the top few). The result dump is paced
+  (`k_msleep`) so the ESP32-S3 USB-Serial/JTAG TX ring buffer is not overwritten
+  mid-burst. A periodic background scan (~15 s) keeps the list fresh and self-
+  heals a scan stuck in SCANNING; it is suppressed once CONNECTED (scanning while
+  associated drops frames).
+- Connect + DHCP: `NET_REQUEST_WIFI_CONNECT` with the validated SSID/PSK →
+  `CONNECT_RESULT`/`DISCONNECT_RESULT` drive the UI state; `NET_EVENT_IPV4_ADDR_ADD`
+  captures the DHCP lease. Reconnect and DHCP have exactly one owner each: the
+  ESP-IDF supplicant owns reconnect (the app FSM is a UI-state mirror that never
+  drives retries), and `CONFIG_ESP32_WIFI_STA_AUTO_DHCPV4` owns DHCP (the glue
+  never calls `net_dhcpv4_start`).
+- Credentials: SSID/PSK come from `CONFIG_APP_WIFI_SSID` / `CONFIG_APP_WIFI_PSK`
+  (default empty → scan-only). Real credentials live in a LOCAL, untracked overlay
+  (`app/wifi-creds.local.conf`, gitignored); they are baked into the firmware for
+  the demo but never committed, and only the SSID is ever logged.
+- Demo: a PAGE_WIFI page shows the scan list (SSID + signal bars + security) and,
+  once connected, the connection state and the DHCP IPv4 address.
+- Status (2026-06-02): scan and connect+DHCP both runtime-verified on hardware
+  (24 APs deduped/sorted; associated to a WPA2-PSK AP and obtained a DHCP lease).
+  See TDD HW-014/HW-015.
+
 ## 5. Non-goals for v0.1
 
 - Full ES8311 audio driver upstreaming.
@@ -311,3 +355,11 @@ on stock PWM drivers:
 
 - IR transmit via the LEDC carrier (G46) + receive via MCPWM capture (G42), gated
   `CONFIG_APP_IR`; NEC encode/decode unit-tested; TX→RX loopback self-test on HW.
+
+### v0.8 — Wi-Fi station (scan + connect + DHCP)
+
+- ESP32-S3 native Wi-Fi station, gated `CONFIG_APP_WIFI` (mutually exclusive with
+  BLE); pure scan/connect/config logic unit-tested on native_sim; scan list +
+  WPA2-PSK connect + DHCP lease runtime-verified on HW (HW-014/HW-015).
+  Credentials kept local and untracked. Seeds an upstream follow-up that enables
+  `&wifi` on the in-tree board.

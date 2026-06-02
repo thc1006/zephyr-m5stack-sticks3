@@ -1,0 +1,34 @@
+WIFI-H3 evidence: ESP32-S3 station connect + DHCP on m5stack_sticks3/esp32s3/procpu
+Date: 2026-06-02  Port: COM9  Build: overlay-wifi.conf + local creds overlay (untracked)
+Configured SSID: <ssid> (WPA2-PSK); passphrase from app/wifi-creds.local.conf
+  (gitignored, never committed; firmware logs the SSID only, never the PSK;
+  the home SSID is redacted to <ssid> here for privacy, rest is the raw capture).
+Path: wifi_glue_connect -> wifi_cfg_validate -> net_mgmt(NET_REQUEST_WIFI_CONNECT)
+  -> NET_EVENT_WIFI_CONNECT_RESULT (drives the UI-mirror wifi_fsm)
+  + NET_EVENT_IPV4_ADDR_ADD; DHCP owned by CONFIG_ESP32_WIFI_STA_AUTO_DHCPV4.
+Firmware: post adversarial-review fixes (UI-mirror FSM never latches FAILED;
+  enum-ABI BUILD_ASSERT; IPv4 log snapshot; reset-on-sync-fail).
+Serial transcript below (connect-path lines; the H2 scan dump is in the H2 log):
+----------------------------------------------------------------------
+alive uptime_ms=3441 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.046688 0.199323 10.012856]
+alive uptime_ms=4483 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.024541 0.210696 10.015849]
+WIFI connecting to "<ssid>"
+alive uptime_ms=5492 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.033519 0.204111 9.996096]
+alive uptime_ms=6504 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.031724 0.205309 10.017046]
+alive uptime_ms=7513 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.036512 0.215484 10.015251]
+alive uptime_ms=8522 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.044294 0.204111 9.996695]
+alive uptime_ms=9532 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.033519 0.237631 10.005674]
+WIFI got IPv4 192.168.50.49
+WIFI connect result: status=0 state=2
+alive uptime_ms=10541 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.035315 0.210097 10.006871]
+alive uptime_ms=11550 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.047885 0.217879 10.008666]
+alive uptime_ms=12559 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.039505 0.208301 10.003878]
+alive uptime_ms=13568 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.041899 0.219076 10.030215]
+alive uptime_ms=14578 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.036512 0.224463 10.024828]
+alive uptime_ms=15587 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.042498 0.213689 10.030813]
+alive uptime_ms=16596 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.028132 0.207104 10.015849]
+alive uptime_ms=17606 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.032322 0.208301 10.015251]
+alive uptime_ms=18615 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.032921 0.203513 10.015251]
+alive uptime_ms=19624 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.044892 0.213090 10.015251]
+alive uptime_ms=20633 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.020949 0.206506 10.009265]
+alive uptime_ms=21643 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.054469 0.219076 10.024229]

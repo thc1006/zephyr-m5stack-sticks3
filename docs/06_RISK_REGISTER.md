@@ -43,3 +43,17 @@
 | IR RX assumes G42 is a demodulated receiver (envelope, not raw 38 kHz) | **Open** | If MCPWM capture shows the 38 kHz carrier rather than the NEC envelope, the RX decode approach must be revisited. Confirm early on hardware |
 | IR receive vs speaker amp | **Mitigated** | The AW8737 amp is off at rest (only high during a beep); the rule for RX is "do not beep while capturing" - no audio-gating change needed |
 | IR RX only decodes NEC, not other remote protocols | **Accepted (scope)** | The G42 receiver works (a real remote produced ~10k edges in 40 s) and NEC is decoded (on-device loopback). Other protocols (RC5/RC6/SIRC/...) are not decoded - Zephyr has no IR subsystem to host protocol decoders, so adding them is out of scope; non-NEC remotes still register on the "IR act" counter. A proper ESP32 RMT driver + an IR decoder framework would be a separate, larger upstream effort |
+
+## Update 2026-06-02 (Wi-Fi station: scan + connect + DHCP)
+
+| Risk | Status | Notes / Mitigation |
+|---|---|---|
+| Wi-Fi + BLE assumed to coexist | **Mitigated** | Not a validated Zephyr config; enforced three ways: `APP_WIFI depends on !APP_BLE`, `overlay-wifi.conf` forces `CONFIG_APP_BLE=n`, and a `BUILD_ASSERT(!(IS_ENABLED(CONFIG_WIFI) && IS_ENABLED(CONFIG_BT)))` in main.c. One radio at a time |
+| Cannot connect to a WPA3-only AP | **Accepted (build limit)** | WPA2-PSK only: `CONFIG_ESP32_WIFI_ENABLE_WPA3_SAE` pulls an ECC/PSA path that does not build against this workspace's tf-psa-crypto. WPA2 connect is HW-verified (HW-015); WPA3 is a future enhancement |
+| Reconnect driven by two owners (FSM + supplicant) | **Resolved** | The bundled ESP-IDF supplicant owns reconnect; the app `wifi_fsm` is a UI-state mirror that never drives retries (`wifi_fsm_should_retry`/backoff exercised only by native_sim). The glue never drives the failure-count path, so the mirror cannot latch a terminal FAILED while the supplicant keeps retrying |
+| DHCP started twice | **Resolved** | `CONFIG_ESP32_WIFI_STA_AUTO_DHCPV4=y` is the single DHCP owner; the glue only reads the lease via `NET_EVENT_IPV4_ADDR_ADD` and never calls `net_dhcpv4_start` |
+| Scan list incomplete in a dense RF environment | **Accepted (display limit)** | The scan keeps the first 24 APs (first-arrival cap, not strongest-N); fine because connect is by SSID (never from this list) and the page shows the top few after the RSSI sort |
+| Scanning while associated disrupts the link | **Mitigated** | The periodic background scan is suppressed once CONNECTED; only an explicit page-entry scan can run while associated |
+| Scan stuck in SCANNING (request accepted, no SCAN_DONE) | **Mitigated** | A scan in SCANNING past a timeout is treated as lost and re-issued, so the device keeps scanning instead of freezing. The related v3.7-branch driver latch (a failed scan that never clears `scan_cb`, so all later scans return `-EINPROGRESS` — issue #110290) does NOT affect us: v4.4's `esp32_wifi_scan` clears `scan_cb` on every failure path (PR #106329) |
+| Wi-Fi credentials committed by accident | **Mitigated** | SSID/PSK default empty in committed Kconfig (clean checkout = scan-only); real values live only in the gitignored `app/wifi-creds.local.conf` (`*.local.conf`, `.config`, `*.config`, `twister-out*/` all ignored). Only the SSID is logged, never the PSK; no secret is in any tracked file or git history |
+| SPIRAM breaks Wi-Fi (R8 silicon) | **Mitigated** | `CONFIG_ESP_SPIRAM` left off for the Wi-Fi build (system heap); scan + connect verified working without it |

@@ -1,0 +1,49 @@
+WIFI-H2 evidence: ESP32-S3 native Wi-Fi scan on m5stack_sticks3/esp32s3/procpu
+Date: 2026-06-02  Port: COM9  Build: overlay-wifi.conf (CONFIG_APP_WIFI), WPA2 only
+Path: net_mgmt(NET_REQUEST_WIFI_SCAN) -> SCAN_RESULT/DONE -> wifi_ap_set_ssid/bssid
+      -> wifi_scan_dedupe (by BSSID) -> wifi_scan_sort (RSSI desc).
+Result: scan done status=0, 24 APs, sorted strongest-first, distinct BSSIDs kept,
+        security mapped (WPA2-PSK / Open / enterprise+others -> Unknown).
+Firmware: post adversarial-review fixes (scan-error state, stuck-scan recovery,
+          WPA-PSK mapping, first-arrival 24-cap documented).
+----------------------------------------------------------------------
+alive uptime_ms=9525 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.626102 0.164007 9.994301]
+alive uptime_ms=10534 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.618321 0.170592 9.978738]
+alive uptime_ms=11543 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.602758 0.176577 9.977541]
+alive uptime_ms=12552 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.611138 0.171789 9.985921]
+alive uptime_ms=13561 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.627299 0.175380 9.984125]
+alive uptime_ms=14570 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.620117 0.200520 9.987717]
+alive uptime_ms=15578 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.626701 0.201717 9.993702]
+alive uptime_ms=16587 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.639271 0.186154 9.993702]
+alive uptime_ms=17596 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.622511 0.190344 9.973351]
+WIFI scan started
+alive uptime_ms=18605 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.618321 0.202316 9.986519]
+alive uptime_ms=19615 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.625504 0.202316 9.979337]
+alive uptime_ms=20625 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.614730 0.186154 9.984125]
+WIFI scan done: status=0 aps=24
+WIFI [0] NYCU                 ch=6 rssi=-49 bars=4 Unknown
+WIFI [1] NYCU-Alumni          ch=6 rssi=-49 bars=4 Unknown
+WIFI [2] eduroam              ch=6 rssi=-51 bars=4 Unknown
+WIFI [3] IoT_Dormitory        ch=1 rssi=-67 bars=2 Unknown
+WIFI [4] jay-rumi             ch=3 rssi=-72 bars=2 WPA2-PSK
+WIFI [5] TP-Link_7B6A         ch=4 rssi=-73 bars=2 WPA2-PSK
+WIFI [6] KK                   ch=2 rssi=-74 bars=2 WPA2-PSK
+WIFI [7] IoT_Dormitory        ch=1 rssi=-77 bars=1 Unknown
+WIFI [8] NYCU                 ch=1 rssi=-77 bars=1 Unknown
+WIFI [9] IoT_Dormitory        ch=1 rssi=-77 bars=1 Unknown
+WIFI [10] eduroam              ch=1 rssi=-78 bars=1 Unknown
+WIFI [11] NYCU-Seminar         ch=1 rssi=-78 bars=1 Open
+WIFI [12] DIRECT-d1-HP M155 LaserJet ch=6 rssi=-78 bars=1 WPA2-PSK
+WIFI [13] DIRECT-f7-HP M183 LaserJet ch=6 rssi=-78 bars=1 WPA2-PSK
+WIFI [14] eduroam              ch=1 rssi=-79 bars=1 Unknown
+WIFI [15] NYCU                 ch=1 rssi=-79 bars=1 Unknown
+WIFI [16] NYCU-Guest           ch=1 rssi=-79 bars=1 Open
+WIFI [17] NYCU-Alumni          ch=1 rssi=-80 bars=1 Unknown
+WIFI [18] wwwww                ch=1 rssi=-83 bars=1 Unknown
+WIFI [19] TP-Link_133A         ch=4 rssi=-84 bars=1 WPA2-PSK
+WIFI [20] Yao-Wireless         ch=3 rssi=-86 bars=0 Unknown
+WIFI [21] IoT_Dormitory        ch=1 rssi=-89 bars=0 Unknown
+WIFI [22] IoT_Dormitory        ch=1 rssi=-90 bars=0 Unknown
+WIFI [23] BoarRider_MLO        ch=3 rssi=-90 bars=0 Open
+alive uptime_ms=21634 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.633285 0.178972 9.982329]
+alive uptime_ms=22643 page=0 KEY1=1 KEY2=1 imu=1 accel=[0.618920 0.200520 9.981731]

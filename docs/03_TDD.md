@@ -124,6 +124,26 @@ checksum, and a repeat frame. Decode must accept the valid ones and reject the
 invalid ones. This is logic-verified; the carrier timing and the MCPWM capture
 path are validated on hardware (HW-005).
 
+### Wi-Fi station logic
+
+`tests/drivers/wifi` unit-tests the pure station logic on `native_sim`, with no
+hardware and no driver (the esp32 wifi driver does not build on native_sim):
+
+```bash
+west build -p always -b native_sim -d build_test \
+  tests/drivers/wifi -- -DZEPHYR_EXTRA_MODULES=$PWD
+./build_test/zephyr/zephyr.exe
+```
+
+52 cases over six suites: `wifi_cfg` (SSID 1..32, PSK 8..63 / SAE 8..128, open
+ignores key, unknown security rejected), `wifi_sec` (needs-psk + labels),
+`wifi_rssi` (bar thresholds at -55/-65/-75/-85 dBm), `wifi_scan` (dedupe by BSSID
+keeping strongest + RSSI-descending sort), `wifi_fsm` (connect counting,
+exponential backoff doubling + cap + overflow guard, give-up, reset, disconnect),
+and `wifi_ap` (SSID clamp/terminate, short-MAC zero-fill). Logic-verified; the
+`net_mgmt`/`wifi_mgmt` glue and the IPv4 capture are validated on hardware
+(HW-014/HW-015).
+
 ## Hardware tests
 
 ### HW-001 boot + console
@@ -339,6 +359,38 @@ stopped advertising after the first connect/disconnect (no restart). Fixed by
 deferring bt_le_adv_start to a k_work (inline restart in the disconnect callback
 returned -EAGAIN); after the fix a re-scan saw 28 adverts in 8 s following a
 disconnect. Evidence: `evidence/20260601-hw011-012-p4-ble.md`.
+
+### HW-014 Wi-Fi scan
+
+Verifies the ESP32-S3 native Wi-Fi scan path end to end (gated `CONFIG_APP_WIFI`,
+WPA2 build). The glue issues `NET_REQUEST_WIFI_SCAN` and feeds `SCAN_RESULT` /
+`SCAN_DONE` into the pure dedupe+sort.
+
+Pass criteria:
+
+- `WIFI scan done: status=0` with a non-empty, BSSID-deduplicated, RSSI-sorted AP
+  list (SSID + channel + RSSI + bars + security).
+
+Result (2026-06-02): PASS — a scan returned `status=0 aps=24`, sorted strongest
+first, distinct BSSIDs kept, security mapped (WPA2-PSK / Open / enterprise+other
+→ Unknown), in a dense campus RF environment. SPIRAM off; the bundled ESP-IDF
+supplicant (not hostap). Evidence: `evidence/20260602-wifi-h2-scan.log`.
+
+### HW-015 Wi-Fi connect + DHCP
+
+Verifies station association to a WPA2-PSK AP and obtaining a DHCP IPv4 lease.
+Credentials come from a LOCAL, untracked overlay (`app/wifi-creds.local.conf`);
+only the SSID is logged, never the passphrase.
+
+Pass criteria:
+
+- `connect result status=0` (CONNECTED) and a DHCP IPv4 address acquired.
+
+Result (2026-06-02): PASS — serial shows `WIFI connecting to "<ssid>"` → `WIFI got
+IPv4 192.168.50.49` → `WIFI connect result: status=0 state=2` (CONNECTED), stable,
+with the background scan suppressed while associated. Reconnect is owned by the ESP-IDF supplicant and DHCP
+by `CONFIG_ESP32_WIFI_STA_AUTO_DHCPV4`; the app FSM is a UI-state mirror only.
+Evidence: `evidence/20260602-wifi-h3-connect.log`.
 
 ## Evidence filenames
 

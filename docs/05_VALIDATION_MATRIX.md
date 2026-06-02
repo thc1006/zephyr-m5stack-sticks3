@@ -1,6 +1,6 @@
 # Validation Matrix
 
-Last hardware run: 2026-05-30 on a physical M5Stack StickS3
+Last hardware run: 2026-06-02 on a physical M5Stack StickS3
 (ESP32-S3-PICO-1, MAC 70:04:1d:db:ab:b8), Zephyr 4.4.0, Zephyr SDK 1.0.1.
 
 | Area | Status | Evidence | Notes |
@@ -29,6 +29,9 @@ Last hardware run: 2026-05-30 on a physical M5Stack StickS3
 | Battery / M5PM1 MFD+ADC (P3, v0.6) | **Verified PASS (HW-010)** | `evidence/20260601-hw010-p3-battery-boot.log` + user-confirmed VBAT 4182 mV | M5PM1 restructured to vendored #109961 MFD + ADC + GPIO; L3B rail now `regulator-fixed` on the gpio child; VBAT via Zephyr ADC API (4182 mV, matches issue #4); LCD still lit through the new path; MFD adds idle-sleep + wake-retry (local delta vs #109961) |
 | BLE advert + GATT (P4, v0.6) | **Verified PASS (HW-011/012)** | `evidence/20260601-hw011-012-p4-ble.md` (PC bleak) | Connectable adv "StickS3" + decoded manufacturer telemetry (uptime/bat/accel); custom GATT service read + ~1 Hz notify; adv-restart-after-disconnect bug found on HW and fixed (k_work-deferred bt_le_adv_start). Gated `CONFIG_APP_BLE`; default build blob-free |
 | ES8311 audio (P5, v0.6) | **Verified PASS (HW-006/013)** | `evidence/20260601-hw006-p5-audio-boot.log` + user-confirmed beep | In-repo ES8311 codec driver (Zephyr audio codec API, native_sim ztest 9/9) + I2S + AW8737 amp via MFD gpio child; 440 Hz beep audible on the AUDIO page; LCD stayed lit when the amp toggled (masked write preserves L3B). Gated `CONFIG_APP_AUDIO`. Also the upstream task #21 driver |
+| Wi-Fi station logic (unit) | **Verified** | `tests/drivers/wifi` (native_sim) | 52/52 pass: config validate (SSID/PSK/SAE lengths, open, unknown), security/RSSI/bars, scan dedupe-by-BSSID + RSSI sort, connection FSM (backoff/cap/overflow/give-up/reset), AP SSID clamp + short-MAC zero-fill. Logic-verified; the glue is HW-verified |
+| Wi-Fi scan (HW) | **Verified PASS (HW-014)** | `evidence/20260602-wifi-h2-scan.log` | ESP32-S3 native Wi-Fi (gated `CONFIG_APP_WIFI`, WPA2 build); `NET_REQUEST_WIFI_SCAN` → `scan done status=0 aps=24`, BSSID-deduped + RSSI-sorted, security/bars mapped. SPIRAM off; bundled ESP-IDF supplicant (not hostap) |
+| Wi-Fi connect + DHCP (HW) | **Verified PASS (HW-015)** | `evidence/20260602-wifi-h3-connect.log` | Associated to a WPA2-PSK AP and obtained a DHCP lease (`status=0` CONNECTED, IPv4 192.168.50.49), stable; background scan suppressed while connected (a page entry can still scan once). Supplicant owns reconnect, `ESP32_WIFI_STA_AUTO_DHCPV4` owns DHCP. Credentials kept local/untracked, SSID-only logging. Gated `CONFIG_APP_WIFI`; mutually exclusive with BLE |
 | Upstream PR | Pending | — | After button/LCD evidence; split per `docs/07_UPSTREAM_PLAN.md` |
 
 ## Verification levels (per `CONTRIBUTING.md`)
