@@ -66,6 +66,21 @@ Small PRs beat one giant PR.
      SIRC/...). Without that subsystem, protocol decoders have no upstream home,
      so the in-repo app supports NEC only. Raise both with maintainers (RFC) first.
 
+7. **Wi-Fi (station) — enable `&wifi` on the in-tree board**
+   - The esp32 wifi driver is already upstream, so the contribution is
+     board-level: enable the `&wifi` node on `m5stack_sticks3` and document Wi-Fi
+     under `zephyr:board-supported-hw`, backed by the captured scan + connect
+     evidence (HW-014/HW-015). The radio is the SoC's; nothing board-specific
+     beyond turning the node on.
+   - Keep it a focused follow-up after the board skeleton PR (#110205) lands,
+     consistent with the LCD/PMIC/audio/IR roadmap. WPA2-PSK only (WPA3-SAE does
+     not build against the current tree); SPIRAM stays off for Wi-Fi.
+   - Do NOT upstream the demo's build-time auto-connect / credentials path. For a
+     board Wi-Fi sample the idiom is runtime credentials (the existing
+     `samples/net/wifi/shell` or `net config`), so the binary carries no secret
+     and one image works against any AP. Our `CONFIG_APP_WIFI_SSID/PSK`
+     auto-connect is a local demo convenience only.
+
 ## PR description checklist
 
 - What hardware is being added?
