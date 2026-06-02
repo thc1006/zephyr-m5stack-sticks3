@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/*
+ * Enable the ESP32-S3 native Wi-Fi node for the Wi-Fi build only. The board DTS
+ * keeps &wifi disabled until the feature is runtime-verified on hardware, so
+ * this overlay is what turns it on (paired with overlay-wifi.conf).
+ */
+
+&wifi {
+	status = "okay";
+};

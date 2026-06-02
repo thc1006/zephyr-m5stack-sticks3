@@ -11,6 +11,9 @@
 #ifdef CONFIG_APP_IR
 #include "ir.h"
 #endif
+#ifdef CONFIG_APP_WIFI
+#include "wifi_glue.h"
+#endif
 
 #include <stdio.h>
 
@@ -67,6 +70,10 @@ static const char *page_name(enum app_page page)
 #ifdef CONFIG_APP_IR
 	case PAGE_IR:
 		return "IR";
+#endif
+#ifdef CONFIG_APP_WIFI
+	case PAGE_WIFI:
+		return "Wi-Fi";
 #endif
 	case PAGE_DIAG:
 		return "DIAG";
@@ -222,6 +229,69 @@ static void render_ir_body(const struct app_status *s)
 }
 #endif /* CONFIG_APP_IR */
 
+#ifdef CONFIG_APP_WIFI
+static void render_wifi_body(const struct app_status *s)
+{
+	struct wifi_ap found[3];
+	char line[24];
+	size_t n;
+
+	ARG_UNUSED(s);
+
+	switch (wifi_glue_conn_state()) {
+	case M5WIFI_STATE_CONNECTED: {
+		char ip[16];
+
+		(void)wifi_glue_ipv4(ip, sizeof(ip));
+		snprintf(line, sizeof(line), "IP %.15s", ip[0] ? ip : "(dhcp..)");
+		break;
+	}
+	case M5WIFI_STATE_CONNECTING:
+		snprintf(line, sizeof(line), "connecting  ");
+		break;
+	case M5WIFI_STATE_RETRY_WAIT:
+		snprintf(line, sizeof(line), "retrying    ");
+		break;
+	case M5WIFI_STATE_FAILED:
+		snprintf(line, sizeof(line), "conn failed ");
+		break;
+	default: /* IDLE: no connection attempt, show the scan state */
+		switch (wifi_glue_state()) {
+		case WIFI_GLUE_SCANNING:
+			snprintf(line, sizeof(line), "scanning... ");
+			break;
+		case WIFI_GLUE_DONE:
+			snprintf(line, sizeof(line), "scan done   ");
+			break;
+		case WIFI_GLUE_ERROR:
+			snprintf(line, sizeof(line), "scan error  ");
+			break;
+		case WIFI_GLUE_NO_IFACE:
+			snprintf(line, sizeof(line), "no iface    ");
+			break;
+		default:
+			snprintf(line, sizeof(line), "idle        ");
+			break;
+		}
+		break;
+	}
+	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, line);
+
+	n = wifi_glue_snapshot(found, ARRAY_SIZE(found));
+	for (uint16_t i = 0; i < ARRAY_SIZE(found); i++) {
+		if (i < n) {
+			snprintf(line, sizeof(line), "%-8.8s %u %.4s ", found[i].ssid,
+				 wifi_rssi_bars(found[i].rssi),
+				 wifi_sec_str(found[i].security));
+		} else {
+			snprintf(line, sizeof(line), "            ");
+		}
+		gfx_draw_text(MARGIN_X, body_line_y((uint16_t)(i + 1)), HOME_FG,
+			      HOME_BG, line);
+	}
+}
+#endif /* CONFIG_APP_WIFI */
+
 void ui_init(void)
 {
 	if (gfx_init()) {
@@ -308,6 +378,16 @@ void ui_render(enum app_page page, const struct app_status *s)
 		}
 		/* TX is driven from the main loop (periodic) so render stays pure. */
 		render_ir_body(s);
+		break;
+#endif
+#ifdef CONFIG_APP_WIFI
+	case PAGE_WIFI:
+		if (page_changed) {
+			gfx_clear(HOME_BG);
+			draw_header(page);
+		}
+		/* The scan is started from the main loop on page entry. */
+		render_wifi_body(s);
 		break;
 #endif
 	case PAGE_DIAG:

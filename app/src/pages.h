@@ -26,6 +26,9 @@ enum app_page {
 #ifdef CONFIG_APP_IR
 	PAGE_IR,
 #endif
+#ifdef CONFIG_APP_WIFI
+	PAGE_WIFI,
+#endif
 	PAGE_DIAG,
 	PAGE_COUNT,
 };
