@@ -1,0 +1,7 @@
+tests:
+  app.wifi.logic:
+    tags:
+      - wifi
+      - net
+    platform_allow:
+      - native_sim
