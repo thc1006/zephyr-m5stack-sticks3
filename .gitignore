@@ -1,11 +1,21 @@
 # Zephyr/build artifacts
 build/
+twister-out*/
 zephyrproject*/
 *.elf
 *.bin
 *.hex
 *.map
 *.uf2
+# A Kconfig .config can carry a baked-in CONFIG_APP_WIFI_PSK (build dir or a
+# stray twister output), so never commit one.
+.config
+*.config
+
+# Local Wi-Fi credentials overlay (provides CONFIG_APP_WIFI_SSID/PSK). Never
+# commit credentials; scripts/build_wifi.sh includes it only if it is present.
+# Repo-wide (not just app/) so a differently placed local conf cannot slip in.
+*.local.conf
 
 # Evidence: keep logs but do not accidentally commit huge videos unless intended
 evidence/*.mp4

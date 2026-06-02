@@ -313,6 +313,7 @@
 	status = "okay";
 };
 
-&wifi {
-	status = "okay";
-};
+/*
+ * &wifi is enabled only in the Wi-Fi build via app/overlay-wifi.overlay; it is
+ * kept disabled here until the Wi-Fi feature is runtime-verified on hardware.
+ */

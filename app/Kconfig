@@ -60,4 +60,43 @@ config APP_IR
 	  -DEXTRA_CONF_FILE=overlay-ir.conf, which turns on CONFIG_PWM and
 	  CONFIG_PWM_CAPTURE. Uses no binary blobs.
 
+config APP_WIFI
+	bool "Wi-Fi station (scan + connect)"
+	default n
+	depends on !APP_BLE
+	help
+	  When enabled, the app brings up the ESP32-S3 native Wi-Fi in station
+	  mode and adds a Wi-Fi page that scans for nearby APs (SSID, signal bars,
+	  security) and, with credentials configured, connects and obtains a DHCP
+	  lease. The pure scan/connect/config logic lives in app/src/wifi.c
+	  (unit-tested on native_sim); the wifi_mgmt/net_mgmt glue is in
+	  app/src/wifi_glue.c.
+
+	  This pulls in the full Wi-Fi driver, networking stack, and the driver's
+	  bundled (ESP-IDF) supplicant, so it needs the Espressif HAL blob (west
+	  blobs fetch hal_espressif). It is mutually exclusive with CONFIG_APP_BLE
+	  because Wi-Fi + BLE coexistence is not a validated Zephyr configuration on
+	  the ESP32-S3. Enable it via -DEXTRA_CONF_FILE=overlay-wifi.conf together with
+	  -DEXTRA_DTC_OVERLAY_FILE=overlay-wifi.overlay (scripts/build_wifi.sh),
+	  which also enables the &wifi node and the Wi-Fi/net Kconfigs.
+
+config APP_WIFI_SSID
+	string "Wi-Fi SSID to auto-connect to"
+	depends on APP_WIFI
+	default ""
+	help
+	  SSID the station auto-connects to a few seconds after boot. Leave it
+	  empty (the default) to scan only, with no connection attempt. Provide a
+	  real value from a LOCAL, untracked overlay (scripts/build_wifi.sh picks up
+	  app/wifi-creds.local.conf if present) so credentials are never committed.
+
+config APP_WIFI_PSK
+	string "Wi-Fi WPA2 passphrase for CONFIG_APP_WIFI_SSID"
+	depends on APP_WIFI
+	default ""
+	help
+	  WPA2-PSK passphrase (8..63 characters) for CONFIG_APP_WIFI_SSID. An empty
+	  value (the default) treats the configured SSID as an open network. Keep
+	  this in a LOCAL, untracked overlay; never commit credentials.
+
 source "Kconfig.zephyr"
