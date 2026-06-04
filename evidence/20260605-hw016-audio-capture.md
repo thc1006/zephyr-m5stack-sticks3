@@ -90,9 +90,10 @@ power/charge-pump ordering, ADC OSR/clock coupling.
   to the shipping build.
 - Build + flash logs for the reverted shipping build are saved alongside
   (`20260605-hw016-audio-build.log`, `20260605-hw016-audio-flash.log`).
-- Still owed for a full HW milestone: an LCD photo of the AUDIO page showing
-  `mic bar=0 rms=0`. Not captured this session. #6 stays OPEN, so this is an
-  interim record, not a "capture works" claim.
+- LCD photo of the AUDIO page showing `mic bar=0 rms`:
+  `evidence/PXL_20260604_190722170.MP.jpg` (2026-06-04, the same shipping-build
+  state on hardware). #6 stays OPEN, so this is an interim record of "mic reads
+  zero", not a "capture works" claim.
 
 ## Reproduce
 
