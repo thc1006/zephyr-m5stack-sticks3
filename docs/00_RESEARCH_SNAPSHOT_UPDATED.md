@@ -31,6 +31,8 @@ All pins used in this repo's DTS were confirmed against the official PinMap:
 | IMU BMI270 | I2C 0x68, SCL G48, SDA G47 | confirmed; **runtime-verified ready** |
 | PMIC M5PM1 | I2C 0x6e, SCL G48, SDA G47 | confirmed |
 | Audio ES8311 | I2C 0x18; I2S MCLK G18, DOUT G14, BCLK G17, LRCK G15, DIN G16 | confirmed |
+| Mic (analog MEMS) | MSM381A3729H9BPC (U21) into ES8311 MIC1P/MIC1N (analog ADC input) | confirmed (schematic V0.6); capture not yet HW-verified, issue #6 / HW-016 |
+| Speaker amp | AW8737, gated by M5PM1 PYG3 (`sound_amp`) | confirmed; HW-006 |
 | Buttons | KEY1 G11, KEY2 G12 | confirmed |
 | IR | TX G46, RX G42 | confirmed |
 | Grove PORT.A | G9, G10 | confirmed |

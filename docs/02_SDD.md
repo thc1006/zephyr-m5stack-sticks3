@@ -190,18 +190,38 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   against the Zephyr **audio codec API** (`zephyr/audio/codec.h`):
   `audio_codec_configure()` / `start_output()` / `set_property()`. I2C control
   is at 0x18; the codec runs MCLK-derived-from-BCLK so no separate MCLK pin is
-  needed. This driver is also the standalone upstream candidate (task #21).
-- Data path: SoC I2S0 as master (16 kHz / 16-bit, standard I2S) → ES8311 →
-  AW8737 speaker amp. The app plays a short 440 Hz beep on entering the AUDIO
-  page.
+  needed. `configure()` handles the playback (DAC), capture (ADC) and combined
+  `PLAYBACK_CAPTURE` routes. This driver is also the standalone upstream
+  candidate (task #21).
+- Playback data path: SoC I2S0 as master (16 kHz / 16-bit, standard I2S) →
+  ES8311 DAC → AW8737 speaker amp. The app plays a short 440 Hz beep on entering
+  the AUDIO page.
+- Capture data path (issue #6): on-board analog MEMS mic (MSM381A3729H9BPC) →
+  ES8311 MIC1 ADC → SoC I2S0 RX (DIN G16). The driver's ADC block programs a
+  single-ended analog MIC1 (0x14), ADC power (0x0E), ADC serial-out format (0x0A),
+  ~0 dB ADC volume (0x17) and an ADC high-pass filter (0x1B/0x1C, cancels the
+  digital DC offset), with 0x44 = 0x08 keeping ASDOUT as plain ADC data
+  (no digital DAC feedback; ESP-ADF's capture default 0x58 mixes a digital DAC
+  copy into the captured stream, which we avoid). The analog PGA is at 30 dB max,
+  tunable in the follow-up if it clips. Capture is always-on once configured (no
+  per-stream codec start), matching the in-tree wm8904/da7212 pattern. The ADC
+  register values are reference-derived (ESP-ADF). HW-016 status (2026-06-05):
+  the ASDOUT serial output, the I2S0 RX path and the capture DSP are
+  runtime-verified via a `0x44 = 0x68` digital-mux loopback (bit-stable
+  rms=4089/peak=5800), but the real-ADC route (`0x44 = 0x08`) captures rms=0
+  during the beep, so the on-board analog mic is NOT yet validated. The fault is
+  not localized (analog front end, ADC modulator/power/clock, or the 0x08 mux
+  routing) and is not yet separated from an unconfirmed acoustic stimulus, so
+  issue #6 stays open. See `evidence/20260605-hw016-audio-capture.md`.
 - Amp enable: the AW8737 is gated by M5PM1 PMIC GPIO3 (PYG3, `sound_amp` /
   `amp-gpios`), driven through the **MFD gpio child** with a per-pin
   read-modify-write so toggling PYG3 preserves the neighbouring PYG2/L3B bit
   (the LCD rail). The amp is driven high ONLY for the duration of a beep
-  (anti-pop, speaker muted at rest).
-- Test: `tests/drivers/audio/es8311` (native_sim ztest, 9/9) covers chip-ID
-  read, configure sequence + write ordering, volume/mute, unsupported-format
-  rejection, and I2C-error propagation.
+  (anti-pop, speaker muted at rest). The mic and speaker share the L3B rail
+  (PYG2), so capture needs L3B powered (already up for the LCD).
+- Test: `tests/drivers/audio/es8311` (native_sim ztest, 11/11) covers chip-ID
+  read, the playback and capture configure sequences + write ordering,
+  volume/mute, unsupported-route/format rejection, and I2C-error propagation.
 
 ### 4.10 BLE telemetry (gated `CONFIG_APP_BLE`)
 

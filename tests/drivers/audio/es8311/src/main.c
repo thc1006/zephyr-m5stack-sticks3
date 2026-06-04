@@ -38,6 +38,17 @@ extern void emul_es8311_set_chip_id(const struct emul *target, uint8_t id1, uint
 #define ES8311_REG_DAC_MUTE    0x31
 #define ES8311_REG_DAC_VOLUME  0x32
 #define ES8311_REG_DAC_EQ      0x37
+/* ADC / capture path registers. */
+#define ES8311_REG_SDP_OUT     0x0A
+#define ES8311_REG_SYSTEM_0E   0x0E
+#define ES8311_REG_ADC_PGA     0x14
+#define ES8311_REG_ADC_OSR     0x15
+#define ES8311_REG_ADC_CTRL    0x16
+#define ES8311_REG_ADC_VOLUME  0x17
+#define ES8311_REG_ADC_HPF1    0x1B
+#define ES8311_REG_ADC_HPF2    0x1C
+#define ES8311_REG_ADC_MUX     0x44
+#define ES8311_REG_ADC_GP45    0x45
 #define ES8311_REG_CHIP_ID1    0xFD
 #define ES8311_REG_CHIP_ID2    0xFE
 
@@ -213,9 +224,9 @@ ZTEST(es8311, test_configure_rejects_unsupported)
 		      "non-I2S DAI must be rejected");
 
 	make_cfg_16k_16bit(&cfg);
-	cfg.dai_route = AUDIO_ROUTE_CAPTURE;
+	cfg.dai_route = AUDIO_ROUTE_BYPASS;
 	zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
-		      "capture-only route must be rejected");
+		      "bypass route must be rejected (only playback/capture supported)");
 
 	make_cfg_16k_16bit(&cfg);
 	cfg.dai_cfg.i2s.frame_clk_freq = AUDIO_PCM_RATE_44P1K;
@@ -288,6 +299,78 @@ ZTEST(es8311, test_configure_propagates_i2c_error)
 
 	emul_es8311_set_fail(emul, 0); /* clear injection */
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure() should recover");
+}
+
+/*
+ * configure() with a capture route must additionally emit the ADC register
+ * sequence. These ADC values are reference-derived (ESP-ADF es8311_start(ADC))
+ * for a single-ended analog MIC1 at 16 kHz / 16-bit; they are hardware-validated
+ * at HW-016. The test pins the driver's contract. PLAYBACK_CAPTURE is the
+ * acoustic-loopback route, so the DAC sequence must still be emitted too.
+ */
+ZTEST(es8311, test_configure_capture_sequence)
+{
+	struct audio_codec_cfg cfg;
+
+	/* Poison the ADC registers the capture path is expected to set. */
+	reg_put(ES8311_REG_SDP_OUT, 0xFF);
+	reg_put(ES8311_REG_SYSTEM_0E, 0xFF);
+	reg_put(ES8311_REG_ADC_PGA, 0x00);
+	reg_put(ES8311_REG_ADC_OSR, 0x00);
+	reg_put(ES8311_REG_ADC_CTRL, 0x00);
+	reg_put(ES8311_REG_ADC_VOLUME, 0x00);
+	reg_put(ES8311_REG_ADC_HPF1, 0xFF);
+	reg_put(ES8311_REG_ADC_HPF2, 0x00);
+	reg_put(ES8311_REG_ADC_MUX, 0xFF);
+	reg_put(ES8311_REG_ADC_GP45, 0xFF);
+
+	make_cfg_16k_16bit(&cfg);
+	cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
+	zassert_ok(audio_codec_configure(codec, &cfg),
+		   "configure(PLAYBACK_CAPTURE) failed");
+
+	/* ADC serial-data-out port: standard I2S, 16-bit (bit6=0 leaves the ADC SDP unmuted). */
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT), 0x0CU, "0x0A should be 0x0C");
+	/* ADC power up. */
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "0x0E should be 0x02");
+	/* Single-ended analog MIC1 + PGA. */
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU, "0x14 should be 0x1A");
+	/* ADC ramp. */
+	zassert_equal(reg_get(ES8311_REG_ADC_OSR), 0x40U, "0x15 should be 0x40");
+	/* ADC control. */
+	zassert_equal(reg_get(ES8311_REG_ADC_CTRL), 0x24U, "0x16 should be 0x24");
+	/* ADC digital volume ~0 dB. */
+	zassert_equal(reg_get(ES8311_REG_ADC_VOLUME), 0xBFU, "0x17 should be 0xBF");
+	/* ADC HPF + EQ bypass: cancels the digital DC offset (all Espressif refs). */
+	zassert_equal(reg_get(ES8311_REG_ADC_HPF1), 0x0AU, "0x1B should be 0x0A");
+	zassert_equal(reg_get(ES8311_REG_ADC_HPF2), 0x6AU, "0x1C should be 0x6A");
+	/* 0x44 ADCDAT mux = plain ADC data on ASDOUT (no digital DAC feedback). */
+	zassert_equal(reg_get(ES8311_REG_ADC_MUX), 0x08U, "0x44 should be 0x08");
+	zassert_equal(reg_get(ES8311_REG_ADC_GP45), 0x00U, "0x45 should be 0x00");
+
+	/* PLAYBACK_CAPTURE must also still emit the DAC path (spot-check). */
+	zassert_equal(reg_get(ES8311_REG_SDP_IN), 0x0CU, "0x09 (DAC SDP) should be 0x0C");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0x00U, "0x12 (DAC power) should be 0x00");
+}
+
+/*
+ * A capture-only route must be accepted and power the ADC (0x0E) without
+ * powering the DAC (0x12 left untouched).
+ */
+ZTEST(es8311, test_configure_capture_only)
+{
+	struct audio_codec_cfg cfg;
+
+	reg_put(ES8311_REG_SYSTEM_0E, 0xFF);
+	reg_put(ES8311_REG_SYSTEM_12, 0xFF);
+
+	make_cfg_16k_16bit(&cfg);
+	cfg.dai_route = AUDIO_ROUTE_CAPTURE;
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure(CAPTURE) failed");
+
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "ADC power 0x0E should be set");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0xFFU,
+		      "capture-only must not touch DAC power 0x12");
 }
 
 ZTEST_SUITE(es8311, NULL, NULL, NULL, NULL, NULL);

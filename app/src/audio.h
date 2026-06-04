@@ -7,6 +7,7 @@
 #define M5STICKS3_AUDIO_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /*
  * ES8311 audio (P5). The whole module is gated behind CONFIG_APP_AUDIO; when
@@ -28,8 +29,29 @@ bool audio_ready(void);
 /*
  * Play a short 440 Hz tone on the speaker. The amplifier is enabled only for
  * the duration of the tone (anti-pop) and disabled again afterwards.
+ *
+ * The PAGE_AUDIO entry now runs audio_loopback() instead; audio_beep() is kept
+ * as the standalone, HW-006-verified playback primitive (and the eventual
+ * codec-sample reference) and is exercised by tests / future callers.
  */
 void audio_beep(void);
+
+/*
+ * Acoustic loopback self-test (issue #6): play the 440 Hz tone on the speaker
+ * while capturing the on-board mic over I2S, printing per-block RMS/peak on
+ * serial (the RMS rises during the beep vs the surrounding silence, so the mic
+ * is verified to hear the speaker). Blocking, ~0.3 s; the amp is on only for the
+ * beep phase.
+ */
+void audio_loopback(void);
+
+/*
+ * Peak per-block mic RMS (0..32767) from the last audio_loopback() run (0 before
+ * the first run); audio_mic_bars() maps it to a 0..4 level for the PAGE_AUDIO
+ * meter.
+ */
+uint16_t audio_mic_level(void);
+uint8_t audio_mic_bars(void);
 
 #endif /* CONFIG_APP_AUDIO */
 

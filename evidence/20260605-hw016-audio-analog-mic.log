@@ -1,0 +1,87 @@
+# HW-016 ES8311 analog mic capture (0x44=0x08, shipping config) - 2026-06-05 COM9
+
+--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+*** Booting Zephyr OS build v4.4.0 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.327,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.327,000] <inf> gfx: Display ready (135x240)
+[00:00:00.396,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+MIC SIL[0] rms=0 peak=2
+MIC SIL[1] rms=0 peak=1
+MIC SIL[2] rms=0 peak=1
+MIC SIL[3] rms=1 peak=1
+MIC BEEP[0] rms=0 peak=1
+MIC slot-probe: slot0 rms=0 slot1 rms=0 (using slot 0)
+MIC BEEP[1] rms=0 peak=1
+MIC BEEP[2] rms=0 peak=1
+MIC BEEP[3] rms=0 peak=1
+MIC BEEP[4] rms=0 peak=3
+MIC BEEP[5] rms=0 peak=1
+MIC BEEP[6] rms=0 peak=1
+MIC BEEP[7] rms=0 peak=1
+MIC BEEP[8] rms=0 peak=1
+MIC BEEP[9] rms=0 peak=1
+MIC BEEP[10] rms=0 peak=1
+MIC BEEP[11] rms=0 peak=1
+MIC SIL[0] rms=0 peak=3
+MIC SIL[1] rms=0 peak=1
+MIC SIL[2] rms=0 peak=1
+MIC SIL[3] rms=0 peak=0
+MIC loopback done: peak rms=1
+MIC SIL[0] rms=0 peak=2
+MIC SIL[1] rms=0 peak=1
+MIC SIL[2] rms=0 peak=1
+MIC SIL[3] rms=0 peak=1
+MIC BEEP[0] rms=0 peak=1
+MIC slot-probe: slot0 rms=0 slot1 rms=0 (using slot 0)
+MIC BEEP[1] rms=0 peak=1
+MIC BEEP[2] rms=0 peak=1
+MIC BEEP[3] rms=0 peak=1
+MIC BEEP[4] rms=0 peak=5
+MIC BEEP[5] rms=0 peak=2
+MIC BEEP[6] rms=0 peak=2
+MIC BEEP[7] rms=0 peak=2
+MIC BEEP[8] rms=0 peak=2
+MIC BEEP[9] rms=0 peak=2
+MIC BEEP[10] rms=0 peak=2
+MIC BEEP[11] rms=0 peak=2
+MIC SIL[0] rms=1 peak=5
+MIC SIL[1] rms=0 peak=1
+MIC SIL[2] rms=0 peak=1
+MIC SIL[3] rms=1 peak=1
+MIC loopback done: peak rms=1
+MIC SIL[0] rms=0 peak=1
+MIC SIL[1] rms=0 peak=1
+MIC SIL[2] rms=0 peak=1
+MIC SIL[3] rms=0 peak=1
+MIC BEEP[0] rms=0 peak=1
+MIC slot-probe: slot0 rms=0 slot1 rms=0 (using slot 0)
+MIC BEEP[1] rms=0 peak=1
+MIC BEEP[2] rms=0 peak=1
+MIC BEEP[3] rms=0 peak=1
+MIC BEEP[4] rms=1 peak=7
+MIC BEEP[5] rms=0 peak=3
+MIC BEEP[6] rms=0 peak=3
+MIC BEEP[7] rms=0 peak=3
+MIC BEEP[8] rms=0 peak=4
+MIC BEEP[9] rms=0 peak=3
+MIC BEEP[10] rms=0 peak=3
+MIC BEEP[11] rms=0 peak=4
+MIC SIL[0] rms=0 peak=8
+MIC SIL[1] rms=0 peak=1
+MIC SIL[2] rms=0 peak=1
+MIC SIL[3] rms=0 peak=1
+MIC loopback done: peak rms=1
+[00:00:15.064,000] <err> audio: loopback prequeue failed
+alive uptime_ms=17566 page=0 KEY1=1 KEY2=1 imu=1 accel=[6.711152 0.141860 7.359401]
+alive uptime_ms=18614 page=0 KEY1=1 KEY2=1 imu=1 accel=[6.706363 0.154430 7.356409]
+alive uptime_ms=19623 page=0 KEY1=1 KEY2=1 imu=1 accel=[6.717137 0.140663 7.368979]
+alive uptime_ms=20632 page=0 KEY1=1 KEY2=1 imu=1 accel=[6.713546 0.147846 7.358803]
+alive uptime_ms=21640 page=0 KEY1=1 KEY2=1 imu=1 accel=[6.708159 0.149043 7.352817]
+alive uptime_ms=22649 page=0 KEY1=1 KEY2=1 imu=1 accel=[6.715940 0.138269 7.354014]
+[monitor captured 3087 chars]

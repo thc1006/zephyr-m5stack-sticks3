@@ -49,6 +49,15 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_REG_DAC_MUTE   0x31U /* DAC mute control */
 #define ES8311_REG_DAC_VOLUME 0x32U /* DAC digital volume */
 #define ES8311_REG_DAC_EQ     0x37U /* DAC EQ bypass */
+#define ES8311_REG_SYSTEM_0E  0x0EU /* power up/down: ADC */
+#define ES8311_REG_ADC_PGA    0x14U /* ADC analog: MIC select + PGA gain */
+#define ES8311_REG_ADC_OSR    0x15U /* ADC OSR / ramp */
+#define ES8311_REG_ADC_CTRL   0x16U /* ADC control / mic-gain scale */
+#define ES8311_REG_ADC_VOLUME 0x17U /* ADC digital volume */
+#define ES8311_REG_ADC_HPF1   0x1BU /* ADC high-pass filter (stage 1) */
+#define ES8311_REG_ADC_HPF2   0x1CU /* ADC HPF (stage 2) + EQ bypass / DC-offset cancel */
+#define ES8311_REG_GPIO       0x44U /* GPIO + ADCDAT digital mux */
+#define ES8311_REG_ADC_GP45   0x45U /* GP control */
 #define ES8311_REG_CHIP_ID1   0xFDU /* chip id high: 0x83 */
 #define ES8311_REG_CHIP_ID2   0xFEU /* chip id low: 0x11 */
 
@@ -83,6 +92,32 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_VOL_DB_MIN        (-95)
 #define ES8311_VOL_0DB_CODE      0xBFU
 #define ES8311_VOL_DEFAULT_CODE  0xC0U /* ~+0.5 dB; project bring-up default */
+
+/*
+ * ADC / capture sequence values for a single-ended analog MIC1 at 16 kHz /
+ * 16-bit. Reference-derived from Espressif's esp-bsp / ESP-ADF es8311 driver +
+ * the Everest user guide; unlike the playback path these are NOT yet
+ * hardware-verified (validated at HW-016). The analog PGA (0x14) is at the 30 dB
+ * maximum (esp-bsp's mic default) and may need lowering at HW-016 if the captured
+ * signal clips - the per-block peak readout flags that.
+ *
+ * 0x44 is the GPIO / ADCDAT digital mux, NOT an analog input select: 0x08 sets
+ * ADCDAT_SEL=0 so ASDOUT carries plain ADC data with no digital DAC feedback
+ * (equivalent for capture to the reset default 0x00, plus ESP-ADF's I2C
+ * noise-immunity bit). ESP-ADF's capture default 0x58 (ADCDAT_SEL=5) would inject
+ * a digital copy of DACR onto the ADC serial stream - a digital feedback/test
+ * path, not an analog loopback - which we avoid so the acoustic loopback captures
+ * only the microphone.
+ */
+#define ES8311_ADC_PWR_ON        0x02U /* 0x0E: power up ADC (PGA + modulator) */
+#define ES8311_ADC_PGA_MIC1_SE   0x1AU /* 0x14: analog MIC1 single-ended + 30 dB PGA */
+#define ES8311_ADC_OSR_RAMP      0x40U /* 0x15: ADC ramp */
+#define ES8311_ADC_CTRL_DEFAULT  0x24U /* 0x16: ADC control (ESP-ADF/esp_codec_dev default) */
+#define ES8311_ADC_VOL_0DB       0xBFU /* 0x17: ADC digital volume ~0 dB */
+#define ES8311_ADC_HPF1_VAL      0x0AU /* 0x1B: ADC HPF stage 1 */
+#define ES8311_ADC_HPF2_DCBLOCK  0x6AU /* 0x1C: ADC HPF stage 2 + EQ bypass (DC-offset cancel) */
+#define ES8311_GPIO_ADCDAT_PLAIN 0x08U /* 0x44: ADCDAT_SEL=0, plain ADC, no DAC feedback */
+#define ES8311_ADC_GP45_DEFAULT  0x00U /* 0x45 */
 
 struct es8311_config {
 	struct i2c_dt_spec bus;
@@ -209,6 +244,8 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	audio_pcm_width_t width;
 	uint8_t wordlen;
 	uint8_t sdp;
+	bool playback = false;
+	bool capture = false;
 	int ret;
 
 	if (cfg->dai_type != AUDIO_DAI_TYPE_I2S) {
@@ -216,8 +253,19 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		return -ENOTSUP;
 	}
 
-	if (cfg->dai_route != AUDIO_ROUTE_PLAYBACK) {
-		LOG_INF("Unsupported route %u (only playback)", cfg->dai_route);
+	switch (cfg->dai_route) {
+	case AUDIO_ROUTE_PLAYBACK:
+		playback = true;
+		break;
+	case AUDIO_ROUTE_CAPTURE:
+		capture = true;
+		break;
+	case AUDIO_ROUTE_PLAYBACK_CAPTURE:
+		playback = true;
+		capture = true;
+		break;
+	default:
+		LOG_INF("Unsupported route %u (playback/capture only)", cfg->dai_route);
 		return -ENOTSUP;
 	}
 
@@ -318,46 +366,121 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		goto end;
 	}
 
-	/* Serial data port: I2S format + word length. */
-	ret = es8311_reg_write(dev, ES8311_REG_SDP_IN, sdp);
-	if (ret < 0) {
-		goto end;
+	/* DAC serial data port (data into the codec): I2S format + word length. */
+	if (playback) {
+		ret = es8311_reg_write(dev, ES8311_REG_SDP_IN, sdp);
+		if (ret < 0) {
+			goto end;
+		}
 	}
 
-	/* Power up analog + charge pump, then settle. */
+	/* Power up analog + charge pump (shared by DAC and ADC), then settle. */
 	ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_0D, 0x01U);
 	if (ret < 0) {
 		goto end;
 	}
 	k_msleep(ES8311_PWR_UP_DELAY_MS);
 
-	/* Power up DAC. */
-	ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_12, 0x00U);
-	if (ret < 0) {
-		goto end;
+	if (playback) {
+		/* Power up DAC. */
+		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_12, 0x00U);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/* DAC output / headphone drive. */
+		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_13, 0x10U);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/* DAC digital volume (cached default or set_property override). */
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_VOLUME, data->volume_code);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/* Bypass DAC EQ. */
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_EQ, 0x08U);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/* Unmute (or re-apply cached mute state). */
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE,
+				       data->mute ? ES8311_DAC_MUTE_ON : ES8311_DAC_MUTE_OFF);
+		if (ret < 0) {
+			goto end;
+		}
 	}
 
-	/* DAC output / headphone drive. */
-	ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_13, 0x10U);
-	if (ret < 0) {
-		goto end;
-	}
+	if (capture) {
+		/*
+		 * ADC / capture path for a single-ended analog MIC1. ASDOUT (ADC data
+		 * out of the codec) uses the serial-data-out register 0x0A; 0x0E is the
+		 * ADC power register (a common point of confusion). The values are
+		 * reference-derived (see ES8311_ADC_* above) and validated at HW-016.
+		 * Capture is always-on once configured (no per-stream start, mirroring
+		 * the in-tree wm8904/da7212 codecs); the app reads I2S RX directly.
+		 */
+		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp);
+		if (ret < 0) {
+			goto end;
+		}
 
-	/* DAC digital volume (cached default or set_property override). */
-	ret = es8311_reg_write(dev, ES8311_REG_DAC_VOLUME, data->volume_code);
-	if (ret < 0) {
-		goto end;
-	}
+		/* Power up ADC. */
+		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_0E, ES8311_ADC_PWR_ON);
+		if (ret < 0) {
+			goto end;
+		}
 
-	/* Bypass DAC EQ. */
-	ret = es8311_reg_write(dev, ES8311_REG_DAC_EQ, 0x08U);
-	if (ret < 0) {
-		goto end;
-	}
+		/* Analog: single-ended MIC1 + PGA gain. */
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_PGA, ES8311_ADC_PGA_MIC1_SE);
+		if (ret < 0) {
+			goto end;
+		}
 
-	/* Unmute (or re-apply cached mute state). */
-	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE,
-			       data->mute ? ES8311_DAC_MUTE_ON : ES8311_DAC_MUTE_OFF);
+		/* ADC OSR / ramp. */
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_OSR, ES8311_ADC_OSR_RAMP);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/* ADC control / mic-gain scale. */
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_CTRL, ES8311_ADC_CTRL_DEFAULT);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/* ADC digital volume (~0 dB). */
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_VOLUME, ES8311_ADC_VOL_0DB);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/*
+		 * ADC high-pass filter + EQ bypass to cancel the digital DC offset. All
+		 * three Espressif reference drivers write 0x1C=0x6A; ESP-ADF and
+		 * esp_codec_dev also write 0x1B=0x0A. Omitting them captures fine but
+		 * with a DC bias that inflates the RMS floor.
+		 */
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_HPF1, ES8311_ADC_HPF1_VAL);
+		if (ret < 0) {
+			goto end;
+		}
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_HPF2, ES8311_ADC_HPF2_DCBLOCK);
+		if (ret < 0) {
+			goto end;
+		}
+
+		/* ADCDAT mux: plain ADC data on ASDOUT, no digital DAC feedback. */
+		ret = es8311_reg_write(dev, ES8311_REG_GPIO, ES8311_GPIO_ADCDAT_PLAIN);
+		if (ret < 0) {
+			goto end;
+		}
+
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_GP45, ES8311_ADC_GP45_DEFAULT);
+	}
 
 end:
 	k_mutex_unlock(&data->lock);
@@ -444,6 +567,13 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 		data->mute = val.mute;
 		break;
 	default:
+		/*
+		 * Capture uses a fixed ADC gain (0x14/0x16) and ~0 dB ADC volume set in
+		 * configure(); AUDIO_PROPERTY_INPUT_VOLUME / INPUT_MUTE are not wired.
+		 * TODO(#7): map INPUT_VOLUME to the ADC volume register (0x17) before the
+		 * upstream PR. route_input() is intentionally omitted - the ES8311 is a
+		 * mono single-input codec, so there is nothing to multiplex.
+		 */
 		ret = -ENOTSUP;
 		break;
 	}

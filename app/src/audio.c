@@ -23,12 +23,16 @@
 
 #ifdef CONFIG_APP_AUDIO
 
+#include "audio_dsp.h"
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/audio/codec.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/logging/log.h>
+
+#include <string.h>
 
 LOG_MODULE_REGISTER(audio, LOG_LEVEL_INF);
 
@@ -62,8 +66,32 @@ LOG_MODULE_REGISTER(audio, LOG_LEVEL_INF);
 /* DMA-capable memory must be cache-line aligned on the esp32-i2s path. */
 K_MEM_SLAB_DEFINE_STATIC(tx_slab, BLOCK_SIZE, BLOCK_COUNT, 32);
 
+/* I2S RX (microphone capture) blocks: same geometry as TX. */
+K_MEM_SLAB_DEFINE_STATIC(rx_slab, BLOCK_SIZE, BLOCK_COUNT, 32);
+
 /* I2S write timeout (ms): long enough to block until a TX block frees up. */
 #define I2S_WRITE_TIMEOUT_MS 1000
+
+/*
+ * Loopback I/O timeout (ms): bounds every RX read and TX slab alloc during the
+ * self-test so a wedged shared clock fails fast (we then abort and cut the amp)
+ * instead of hanging the caller. A block is ~16 ms, so 200 ms tolerates jitter
+ * yet caps the worst case at one block-time per failed I/O. The TX-only
+ * playback path (audio_beep) keeps the longer I2S_WRITE_TIMEOUT_MS.
+ */
+#define LOOP_IO_TIMEOUT_MS 200
+
+/*
+ * Acoustic-loopback capture (issue #6). The ES8311 ADC is mono and lands on one
+ * I2S slot, so AUDIO_MIC_SLOT (a slot INDEX 0 or 1, not a channel count) picks
+ * it - confirm which slot carries the ADC at HW-016. AUDIO_MIC_FULL is an
+ * empirical full-scale RMS for the PAGE_AUDIO bar, tuned at HW-016 once a real
+ * mic level is known.
+ */
+#define AUDIO_MIC_SLOT   0U
+#define AUDIO_MIC_FULL   8000U
+#define LOOP_SIL_BLOCKS  4U
+#define LOOP_BEEP_BLOCKS 12U
 
 /* Settle time after START before enabling the amp (clocks must be running). */
 #define AMP_SETTLE_MS 20
@@ -189,12 +217,26 @@ int audio_init(void)
 	/* Configure the ES8311 for the same 16 kHz / 16-bit I2S playback. */
 	codec_cfg.mclk_freq = AUDIO_SAMPLE_RATE * 256U; /* 4.096 MHz */
 	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
-	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK;
+	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
 	codec_cfg.dai_cfg.i2s = i2s_cfg;
 
 	ret = audio_codec_configure(codec_dev, &codec_cfg);
 	if (ret < 0) {
 		LOG_ERR("audio_codec_configure failed (%d)", ret);
+		return ret;
+	}
+
+	/*
+	 * Configure I2S0 RX with the same format for microphone capture. The
+	 * esp32-i2s driver shares BCLK/WS once both TX and RX are configured, so
+	 * audio_loopback() can run full-duplex (I2S_DIR_BOTH). Only the mem_slab
+	 * differs from the TX config above.
+	 */
+	i2s_cfg.mem_slab = &rx_slab;
+	i2s_cfg.timeout = LOOP_IO_TIMEOUT_MS; /* bound a stalled mic read */
+	ret = i2s_configure(i2s_dev, I2S_DIR_RX, &i2s_cfg);
+	if (ret < 0) {
+		LOG_ERR("i2s_configure(RX) failed (%d)", ret);
 		return ret;
 	}
 
@@ -304,6 +346,184 @@ stop_amp:
 		LOG_ERR("amp OFF failed; speaker may remain enabled");
 	}
 	audio_codec_stop_output(codec_dev);
+}
+
+/* Capture scratch + the latest loopback peak RMS (single-threaded use). */
+static int16_t zero_block[BLOCK_FRAMES * AUDIO_CHANNELS];
+static int16_t rx_buf[BLOCK_FRAMES * AUDIO_CHANNELS];
+static int16_t mono_buf[BLOCK_FRAMES];
+static uint16_t mic_rms_peak;
+
+BUILD_ASSERT(sizeof(rx_buf) == BLOCK_SIZE, "rx_buf must hold exactly one I2S block");
+
+/*
+ * Bounded TX write for the loopback. The generic i2s_buf_write() allocates its
+ * slab block with K_FOREVER, which would hang the caller forever if TX DMA
+ * wedges; this mirrors it but with a finite alloc timeout so the loopback can
+ * abort. i2s_write() only takes ownership of the block on success (the esp32
+ * driver does not free on a queue-put failure), so on any failure we free it
+ * here before returning the error.
+ */
+static int loop_tx(const int16_t *block)
+{
+	void *mem;
+	int ret;
+
+	ret = k_mem_slab_alloc(&tx_slab, &mem, K_MSEC(LOOP_IO_TIMEOUT_MS));
+	if (ret < 0) {
+		return ret;
+	}
+	memcpy(mem, block, BLOCK_SIZE);
+	ret = i2s_write(i2s_dev, mem, BLOCK_SIZE);
+	if (ret < 0) {
+		k_mem_slab_free(&tx_slab, mem);
+	}
+	return ret;
+}
+
+/*
+ * Read one captured I2S block, reduce it to a mono RMS/peak on AUDIO_MIC_SLOT,
+ * print it (with the block index) and update the peak-hold. Returns 0, or a
+ * negative errno if the bounded read failed so the caller can abort instead of
+ * spinning on a wedged clock. When probe is set, also logs BOTH slots' RMS once
+ * as an HW-016 aid: it makes a wrong AUDIO_MIC_SLOT obvious (silent slot vs the
+ * one actually carrying the mono ADC) without a reflash.
+ */
+static int capture_report(const char *tag, uint32_t idx, bool probe)
+{
+	size_t size = sizeof(rx_buf);
+	size_t frames;
+	uint16_t rms;
+	uint16_t peak;
+	int ret;
+
+	ret = i2s_buf_read(i2s_dev, rx_buf, &size);
+	if (ret < 0) {
+		LOG_WRN("i2s_buf_read(%s) failed (%d)", tag, ret);
+		return ret;
+	}
+
+	/* Defensive: never let a returned size overrun mono_buf. */
+	if (size > sizeof(rx_buf)) {
+		size = sizeof(rx_buf);
+	}
+	frames = size / AUDIO_FRAME_BYTES;
+
+	audio_deinterleave(rx_buf, frames, AUDIO_MIC_SLOT, mono_buf);
+	rms = audio_rms_i16(mono_buf, frames);
+	peak = audio_peak_i16(mono_buf, frames);
+	if (rms > mic_rms_peak) {
+		mic_rms_peak = rms;
+	}
+	printk("MIC %s[%u] rms=%u peak=%u\n", tag, idx, rms, peak);
+
+	if (probe) {
+		uint16_t rms0;
+		uint16_t rms1;
+
+		audio_deinterleave(rx_buf, frames, 0U, mono_buf);
+		rms0 = audio_rms_i16(mono_buf, frames);
+		audio_deinterleave(rx_buf, frames, 1U, mono_buf);
+		rms1 = audio_rms_i16(mono_buf, frames);
+		printk("MIC slot-probe: slot0 rms=%u slot1 rms=%u (using slot %u)\n",
+		       rms0, rms1, (unsigned int)AUDIO_MIC_SLOT);
+	}
+
+	return 0;
+}
+
+void audio_loopback(void)
+{
+	int ret;
+
+	if (!ready) {
+		return;
+	}
+	if (!tone_ready) {
+		tone_block_fill();
+	}
+
+	mic_rms_peak = 0U;
+
+	/*
+	 * Return both directions to READY first. A prior run that aborted on a
+	 * wedged clock can leave the device in ERROR/STOPPING, and START is only
+	 * valid from READY; DROP also frees any blocks still queued from a failed
+	 * pre-queue, so this run always starts clean (without it a single fault
+	 * would leave the loopback dead until reboot). Harmless when already idle.
+	 */
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+
+	audio_codec_start_output(codec_dev);
+
+	/* Pre-queue two silent TX blocks so the shared clock starts cleanly. */
+	for (uint32_t i = 0; i < 2U; i++) {
+		if (loop_tx(zero_block) < 0) {
+			LOG_ERR("loopback prequeue failed");
+			goto stop;
+		}
+	}
+
+	ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
+	if (ret < 0) {
+		LOG_ERR("i2s_trigger(BOTH START) failed (%d)", ret);
+		goto stop;
+	}
+
+	/*
+	 * Each phase alternates one TX write with one RX read so TX and RX advance
+	 * in lockstep off the shared clock (neither starves). TX must keep streaming
+	 * (silent blocks during the quiet phases) or the shared clock stops and RX
+	 * stalls. Every I/O is bounded (LOOP_IO_TIMEOUT_MS); on the first failure we
+	 * abort to stop:, which cuts the amp - so a wedged clock can never spin with
+	 * the speaker energised. The amp is on only during the beep.
+	 */
+	/* Phase A: baseline silence -> low RMS floor. */
+	for (uint32_t b = 0; b < LOOP_SIL_BLOCKS; b++) {
+		if (loop_tx(zero_block) < 0 || capture_report("SIL", b, false) < 0) {
+			goto stop;
+		}
+	}
+
+	/* Phase B: 440 Hz beep -> RMS should spike (the mic hears the speaker). */
+	k_msleep(AMP_SETTLE_MS);
+	(void)gpio_pin_set_dt(&amp_gpio, 1);
+	for (uint32_t b = 0; b < LOOP_BEEP_BLOCKS; b++) {
+		/* Probe both slots once, on the first beep block (signal present). */
+		if (loop_tx(tone_block) < 0 ||
+		    capture_report("BEEP", b, b == 0U) < 0) {
+			goto stop; /* stop: cuts the amp */
+		}
+	}
+	(void)gpio_pin_set_dt(&amp_gpio, 0);
+
+	/* Phase C: trailing silence -> RMS falls back to the floor. */
+	for (uint32_t b = 0; b < LOOP_SIL_BLOCKS; b++) {
+		if (loop_tx(zero_block) < 0 || capture_report("SIL", b, false) < 0) {
+			goto stop;
+		}
+	}
+
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DRAIN);
+	printk("MIC loopback done: peak rms=%u\n", mic_rms_peak);
+
+stop:
+	if (gpio_pin_set_dt(&amp_gpio, 0) < 0) {
+		LOG_ERR("amp OFF failed; speaker may remain enabled");
+	}
+	/* Flush both directions back to READY so the next run starts clean. */
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	audio_codec_stop_output(codec_dev);
+}
+
+uint16_t audio_mic_level(void)
+{
+	return mic_rms_peak;
+}
+
+uint8_t audio_mic_bars(void)
+{
+	return audio_level_bars(mic_rms_peak, AUDIO_MIC_FULL, 4U);
 }
 
 #endif /* CONFIG_APP_AUDIO */

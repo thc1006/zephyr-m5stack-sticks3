@@ -95,10 +95,13 @@ west build -p always -b native_sim -d build_test \
 ./build_test/zephyr/zephyr.exe
 ```
 
-Result 2026-06-01: 9/9 pass. Covers chip-ID read (and the wrong-ID
-warn-and-continue path), the 16 kHz / 16-bit configure sequence + write
-ordering, volume/mute set, unsupported-format and unsupported-property
-rejection, and I2C-error propagation.
+Result 2026-06-02: 11/11 pass. Covers chip-ID read (and the wrong-ID
+warn-and-continue path), the 16 kHz / 16-bit playback configure sequence + write
+ordering, the capture (ADC) configure sequence for PLAYBACK_CAPTURE and the
+capture-only route (ADC powered, DAC left untouched), volume/mute set,
+unsupported-route/format/property rejection, and I2C-error propagation. The ADC
+register values are reference-derived and pin the driver contract; they are
+silicon-validated at HW-016 (below).
 
 Honesty limits: each emulator is a dumb byte-store, NOT an independent oracle —
 it cannot catch a register *meaning* error shared by driver+emulator (mitigated
@@ -391,6 +394,49 @@ IPv4 192.168.50.49` → `WIFI connect result: status=0 state=2` (CONNECTED), sta
 with the background scan suppressed while associated. Reconnect is owned by the ESP-IDF supplicant and DHCP
 by `CONFIG_ESP32_WIFI_STA_AUTO_DHCPV4`; the app FSM is a UI-state mirror only.
 Evidence: `evidence/20260602-wifi-h3-connect.log`.
+
+### HW-016 Audio capture (microphone, acoustic loopback)
+
+Validates the ES8311 ADC / microphone path added for issue #6 (gated
+`CONFIG_APP_AUDIO`). The on-board analog mic (MSM381A3729H9BPC) feeds the ES8311
+MIC1 ADC; the SoC I2S0 captures it on RX (DIN G16). The driver's ADC register
+values are reference-derived (ESP-ADF) and are first exercised on silicon here
+(see Result below).
+
+Method: an acoustic loopback. With `AUDIO_ROUTE_PLAYBACK_CAPTURE` and
+`I2S_DIR_BOTH`, the app plays the 440 Hz beep on the speaker while simultaneously
+capturing the mic, and prints the per-I2S-block RMS/peak of the captured samples
+on serial. 0x44 = 0x08 keeps ASDOUT as plain ADC data with no digital DAC feedback
+(ESP-ADF's capture default 0x58 would inject a digital copy of the DAC), so the
+captured RMS spike is genuinely the acoustic mic, not a digital echo of the tone.
+
+Preconditions:
+
+- L3B rail (M5PM1 PYG2) powered — the mic and speaker share it; already up for
+  the LCD.
+- TX and RX driven off the same I2S master clock at the same 16 kHz rate (the
+  ES8311 ADC and DAC share one clock tree; the single coefficient row covers it).
+
+Pass criteria:
+
+- The captured per-block RMS rises clearly during the beep versus the silence
+  before/after it (the mic hears the speaker), captured on serial. Optionally an
+  external sound (a tap or speech) also moves the level.
+
+Result (2026-06-05, AUD-H2): SPLIT. A diagnostic `0x44 = 0x68` (DACL+DACR
+digital-mux) loopback captures a bit-stable rms=4089/peak=5800 during the beep,
+so the ASDOUT serial output, the I2S0 full-duplex RX path and the capture DSP are
+runtime-verified end to end. The shipping real-ADC route (`0x44 = 0x08`) captures
+rms=0 (peak <= 8, the LSB floor) on BOTH slots during the same beep: the ADC
+capture route is silent. The 0x68 path bypasses the ADC modulator, so this does
+NOT localize the fault (analog front end, ADC modulator/power/clock, or the 0x08
+mux routing) and does not separate it from an unconfirmed acoustic stimulus
+(the beep audibility was not checked headless). The pass criterion above is NOT
+met; issue #6 stays open. The next discriminating test is a single `0x44 = 0x58`
+(ADCL real-ADC + DACR DAC) capture. Evidence:
+`evidence/20260605-hw016-audio-analog-mic.log` (0x08, rms=0),
+`evidence/20260605-hw016-audio-digital-loopback.log` (0x68, rms=4089/peak=5800),
+`evidence/20260605-hw016-audio-capture.md` (method + scope + DoD gaps).
 
 ## Evidence filenames
 

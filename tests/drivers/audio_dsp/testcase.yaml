@@ -1,0 +1,6 @@
+tests:
+  app.audio_dsp.logic:
+    tags:
+      - audio
+    platform_allow:
+      - native_sim
