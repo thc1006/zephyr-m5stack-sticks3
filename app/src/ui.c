@@ -170,7 +170,8 @@ static void render_power_body(const struct app_status *s)
 	if (s->soc_pct >= 0) {
 		uint8_t bars = bat_soc_bars(s->soc_pct, 4);
 
-		snprintf(line, sizeof(line), "SoC: %d%% [%.*s%.*s]  ", s->soc_pct,
+		/* Keep within the 135 px line (~13 chars): no brackets, compact bar. */
+		snprintf(line, sizeof(line), "SoC %d%% %.*s%.*s ", s->soc_pct,
 			 bars, "####", 4 - bars, "----");
 	} else {
 		snprintf(line, sizeof(line), "SoC: n/a     ");
