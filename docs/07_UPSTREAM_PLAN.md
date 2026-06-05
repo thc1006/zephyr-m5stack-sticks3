@@ -24,12 +24,13 @@ Small PRs beat one giant PR.
 
 4. **Power/PMIC — reuse upstream, do NOT re-invent**
    - The canonical M5PM1 driver is already being upstreamed: **PR #109961**
-     (Benjamin Cabé, draft, 2026-05-27) adds an M5PM1 MFD + gpio + adc + regulator
+     (Benjamin Cabé, MERGED 2026-06-03) adds an M5PM1 MFD + gpio + adc + regulator
      suite (`m5stack,m5pm1*` bindings) for the PaperColor board.
    - This repo **vendors** the #109961 MFD/ADC/GPIO drivers + bindings
      (`drivers/{mfd,adc,gpio}/*_m5pm1.c`, `dts/bindings/{mfd,adc,gpio}/`) as an
      interim copy, with the source commit recorded in each file header. **Delete
-     them on merge** and depend on the upstream module. The StickS3 board gates
+     them on the next Zephyr bump past 4.4.0** (#109961 merged 2026-06-03) and depend
+     on the upstream module. The StickS3 board gates
      the L3B/LCD rail with a stock `regulator-fixed` on the MFD gpio child, so no
      M5PM1-specific regulator is needed (the earlier interim
      `m5stack,m5pm1-l3b-regulator` driver + its ztest have been removed).
@@ -44,7 +45,8 @@ Small PRs beat one giant PR.
      PMIC" upstream work is limited to charge-enable + power-source/insertion
      status; there is no fuel-gauge to contribute, and the current/per-state
      dataset (issue #4) is not obtainable on-device.
-   - **Battery SoC% (issue #8) is repo-local until #109961 lands**: the `vbatt`
+   - **Battery SoC% (issue #8) is repo-local until a Zephyr bump** (#109961 merged
+     2026-06-03): the `vbatt`
      (`voltage-divider`) and `fuel_gauge` (`zephyr,fuel-gauge-composite`)
      consumer nodes bind against the vendored M5PM1 ADC, so they cannot ship in
      the upstream board DTS until the MFD/ADC bindings merge. Both are stock

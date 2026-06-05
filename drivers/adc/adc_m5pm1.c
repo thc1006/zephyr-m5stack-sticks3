@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Vendored from Zephyr PR #109961 (commit 49788e986286245610c15fc36bd0cd73baba0011),
- * Apache-2.0. Interim copy; remove once #109961 merges upstream.
+ * Apache-2.0. Interim copy; #109961 MERGED upstream 2026-06-03 (drop when Zephyr is bumped past 4.4.0).
  * See docs/07_UPSTREAM_PLAN.md.
  */
 

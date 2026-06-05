@@ -73,9 +73,11 @@ Negative:
 A pre-post review (verified against the live tracker) changed the timing of the
 decision above: **do not post on #107660 now.**
 
-- The author (nnSiD) has **moved on from #107660**: on the thread they wrote "we
-  have fixed these issues in the new PR #108078. Kindly check." So #107660 is
-  effectively superseded.
+- The author (nnSiD) said on the thread (2026-05-14) "we've fixed these issues in
+  the new PR. Kindly check." No PR number was given in that comment (a "#108078"
+  cited in an earlier draft of this ADR was wrong: #108078 is an unrelated AT581X
+  radar PR). So the author has shifted effort off #107660, but the successor PR is
+  not named in the thread.
 - Maintainer **marekmatej asked the author to focus on the base board PR #107655
   first** ("to speed up reviewing and merging, please focus on #107655. With base
   support up and running, adding new features is more straightforward").
