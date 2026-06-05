@@ -67,3 +67,25 @@ Negative:
   our control); if it goes fully stale, revisit (revive with permission, or a
   fresh clean-split PR after coordinating on the tracker).
 - Our capture route stays unmerged in the meantime.
+
+## Update 2026-06-05 — DO NOT engage #107660 yet (hold)
+
+A pre-post review (verified against the live tracker) changed the timing of the
+decision above: **do not post on #107660 now.**
+
+- The author (nnSiD) has **moved on from #107660**: on the thread they wrote "we
+  have fixed these issues in the new PR #108078. Kindly check." So #107660 is
+  effectively superseded.
+- Maintainer **marekmatej asked the author to focus on the base board PR #107655
+  first** ("to speed up reviewing and merging, please focus on #107655. With base
+  support up and running, adding new features is more straightforward").
+  #107655 (ESP32-S3-BOX-3 board) is OPEN/BLOCKED and actively moving.
+- The thread is freshly sensitive to outside pressure (a "when will [this be]
+  merged?" pile-on comment), so an unsolicited "I have more code to contribute"
+  note on a stalled, superseded, deprioritized PR would read as scope-creep.
+
+Revised plan: **hold.** Wait for the base board (#107655) to land and the ES8311
+work to resume on a live PR; engage there with a **trimmed** comment that drops
+the self-contribution offer and leads only with (a) the mute-register
+confirmation and (b) an offer to run a hardware check on a real StickS3. The
+prepared comment (technically verified, AI-tell-free) is parked, not posted.
