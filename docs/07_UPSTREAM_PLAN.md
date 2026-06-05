@@ -44,6 +44,15 @@ Small PRs beat one giant PR.
      PMIC" upstream work is limited to charge-enable + power-source/insertion
      status; there is no fuel-gauge to contribute, and the current/per-state
      dataset (issue #4) is not obtainable on-device.
+   - **Battery SoC% (issue #8) is repo-local until #109961 lands**: the `vbatt`
+     (`voltage-divider`) and `fuel_gauge` (`zephyr,fuel-gauge-composite`)
+     consumer nodes bind against the vendored M5PM1 ADC, so they cannot ship in
+     the upstream board DTS until the MFD/ADC bindings merge. Both are stock
+     upstream bindings (no new driver), so once #109961 is in, this is a small
+     follow-up board patch (or a board sample overlay) that adds the two nodes on
+     top of the upstream M5PM1 ADC. The SoC is voltage-only OCV (no coulomb
+     counter), so the upstream value is an approximate gauge, consistent with the
+     silicon limit above.
 
 5. **ES8311 audio codec PR (task #21)**
    - The in-repo `drivers/audio/es8311.c` is a standalone driver against the

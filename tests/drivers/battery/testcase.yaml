@@ -1,0 +1,6 @@
+tests:
+  app.battery.logic:
+    tags:
+      - power
+    platform_allow:
+      - native_sim

@@ -147,6 +147,21 @@ and `wifi_ap` (SSID clamp/terminate, short-MAC zero-fill). Logic-verified; the
 `net_mgmt`/`wifi_mgmt` glue and the IPv4 capture are validated on hardware
 (HW-014/HW-015).
 
+### Battery SoC logic
+
+`tests/drivers/battery` unit-tests the pure battery helpers in `app/src/battery.c`
+on `native_sim` (no hardware, no driver): `bat_soc_bars` (map 0-100% to a 0..N
+bar, clamped), `bat_power_source` (VIN mV above/below the present threshold, with
+a guard band), and the display formatting. The SoC% itself comes from the
+upstream `zephyr,fuel-gauge-composite` OCV lookup (not re-implemented here); these
+tests cover only the app-side mapping/formatting. Logic-verified.
+
+```sh
+west build -p always -b native_sim -d build_test \
+  tests/drivers/battery -- -DZEPHYR_EXTRA_MODULES=$PWD
+./build_test/zephyr/zephyr.exe
+```
+
 ## Hardware tests
 
 ### HW-001 boot + console
@@ -437,6 +452,44 @@ met; issue #6 stays open. The next discriminating test is a single `0x44 = 0x58`
 `evidence/20260605-hw016-audio-analog-mic.log` (0x08, rms=0),
 `evidence/20260605-hw016-audio-digital-loopback.log` (0x68, rms=4089/peak=5800),
 `evidence/20260605-hw016-audio-capture.md` (method + scope + DoD gaps).
+
+### HW-017 battery state-of-charge + power source (issue #8)
+
+Validates the voltage-only fuel gauge (SDD 4.5.1): the `zephyr,fuel-gauge-composite`
+SoC% over the M5PM1 VBAT, plus VIN-based external-power detection. Default build
+(no overlay).
+
+Method: read `fuel_gauge_get_prop(FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE)` and the
+raw VBAT (mV) and VIN (mV) each loop and print them on serial; the PAGE_POWER LCD
+shows `bat: <mV>  <soc>%` and the power source.
+
+Pass criteria:
+
+- SoC% is plausible and consistent with VBAT against the LiPo OCV curve (a cell
+  charged to ~4.18 V reads ~100%; the value falls monotonically as VBAT drops).
+- Plugging / unplugging USB flips the power-source indicator (VIN rises to ~5 V
+  with USB present, falls on battery), captured on serial.
+
+Honesty limits: voltage-only SoC has no coulomb counter, no load compensation
+(load sag under-reads), and the default curve saturates at 100% above 4.032 V; it
+is an approximate gauge. "Currently charging" is not shown (no reliable M5PM1
+charge-status read).
+
+Result (2026-06-05): PASS (headless). Serial shows `bat=4170 soc=100 vin=5142`
+stable: the `zephyr,fuel-gauge-composite` initialized and reports a real SoC
+(100%, the expected flat top since VBAT ~4.17 V is above the 4.032 V curve top),
+and VIN ~5.14 V on USB maps to the "USB 5V" source. The fuel gauge being non-`n/a`
+also confirms the composite/voltage-divider init order is fine on this build. The
+OCV interpolation across the curve is unit-tested (`tests/drivers/battery`, 4/4)
+and upstream-tested; this run validates the integration + the top of the curve.
+The LCD photo `evidence/PXL_20260605_070039537.MP.jpg` shows the PAGE_POWER
+rendering on hardware: `VBAT: 4172 mV`, `SoC: 100%`, `src: USB 5V` (matching the
+serial). Cosmetic note: the SoC bar `[####]` overflows the 135 px line width and
+is clipped to `[##` on screen; the data is correct, only the bar glyphs run off
+the edge. The on-battery `src: battery` text (VIN low when USB is unplugged) is
+serial-inferred (VIN drops) but not separately photographed, since unplugging USB
+drops the serial link. Evidence: `evidence/20260605-hw017-battery-soc.log`,
+`evidence/PXL_20260605_070039537.MP.jpg`.
 
 ## Evidence filenames
 

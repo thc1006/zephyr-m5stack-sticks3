@@ -1,0 +1,27 @@
+# HW-017 battery state-of-charge + power source (issue #8) - 2026-06-05 COM9
+
+--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+*** Booting Zephyr OS build v4.4.0 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.324,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.324,000] <inf> gfx: Display ready (135x240)
+alive uptime_ms=360 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5136 imu=1 accel=[0.000000 0.000000 0.000000]
+alive uptime_ms=1410 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5142 imu=1 accel=[0.093376 -8.358413 -5.072869]
+alive uptime_ms=2420 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5144 imu=1 accel=[0.108939 -8.364398 -5.059701]
+alive uptime_ms=3430 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5148 imu=1 accel=[0.096369 -8.359610 -5.074665]
+alive uptime_ms=4441 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5146 imu=1 accel=[0.105946 -8.350033 -5.092023]
+alive uptime_ms=5451 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5142 imu=1 accel=[0.121509 -8.365595 -5.073468]
+alive uptime_ms=6462 page=0 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5142 imu=1 accel=[0.108939 -8.371581 -5.077658]
+alive uptime_ms=7472 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5142 imu=1 accel=[0.096369 -8.375771 -5.095016]
+alive uptime_ms=8482 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5142 imu=1 accel=[0.108340 -8.363800 -5.089629]
+alive uptime_ms=9493 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5150 imu=1 accel=[0.103552 -8.368588 -5.090826]
+alive uptime_ms=10503 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[0.084996 -8.378764 -5.072271]
+alive uptime_ms=11514 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5142 imu=1 accel=[0.102355 -8.360208 -5.075263]
+alive uptime_ms=12524 page=0 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5142 imu=1 accel=[0.109538 -8.390735 -5.077059]
+alive uptime_ms=13535 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5144 imu=1 accel=[0.094573 -8.364997 -5.069278]
+[monitor captured 2204 chars]

@@ -12,6 +12,7 @@
 #include <espressif/esp32s3/esp32s3_pico_n8r8.dtsi>
 #include "m5stack_sticks3-pinctrl.dtsi"
 #include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/battery/battery.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <espressif/partitions_0x0_amp.dtsi>
 
@@ -145,6 +146,27 @@
 			rgb-param = [40 02 14];
 		};
 	};
+
+	/*
+	 * Battery state-of-charge (issue #8). The M5PM1 exposes voltages only, so
+	 * SoC% is derived from VBAT with the upstream voltage-only fuel gauge:
+	 * m5pm1_adc ch1 (VBAT, mV) -> vbatt (unity voltage-divider, microvolt
+	 * passthrough) -> fuel_gauge (zephyr,fuel-gauge-composite, LiPo OCV curve).
+	 * See docs/02_SDD.md section 4.5.1.
+	 */
+	vbatt: vbatt {
+		compatible = "voltage-divider";
+		io-channels = <&m5pm1_adc 1>;
+		output-ohms = <1>; /* unity; full-ohms omitted => unscaled passthrough */
+	};
+
+	fuel_gauge: fuel-gauge {
+		compatible = "zephyr,fuel-gauge-composite";
+		source-primary = <&vbatt>;
+		device-chemistry = "lithium-ion-polymer";
+		ocv-capacity-table-0 = <BATTERY_OCV_CURVE_LITHIUM_ION_POLYMER_DEFAULT>;
+		charge-full-design-microamp-hours = <250000>; /* 250 mAh cell */
+	};
 };
 
 &usb_serial {
@@ -216,6 +238,17 @@
 			/* Channel 1 = VBAT (battery voltage, reported in mV). */
 			channel@1 {
 				reg = <1>;
+				zephyr,gain = "ADC_GAIN_1";
+				zephyr,reference = "ADC_REF_INTERNAL";
+				zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+				zephyr,resolution = <12>;
+			};
+
+			/* Channel 2 = VIN (5V/USB input, reported in mV). Used to
+			 * detect external power present (issue #8).
+			 */
+			channel@2 {
+				reg = <2>;
 				zephyr,gain = "ADC_GAIN_1";
 				zephyr,reference = "ADC_REF_INTERNAL";
 				zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;

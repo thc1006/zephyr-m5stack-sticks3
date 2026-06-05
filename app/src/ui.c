@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "ui.h"
 #include "gfx.h"
+#include "battery.h"
 
 #ifdef CONFIG_APP_BLE
 #include "ble.h"
@@ -164,7 +165,22 @@ static void render_power_body(const struct app_status *s)
 		snprintf(line, sizeof(line), "VBAT: n/a    ");
 	}
 	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, line);
-	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, "M5PM1 ch1");
+
+	/* State-of-charge from the fuel gauge (issue #8); approximate, voltage-only. */
+	if (s->soc_pct >= 0) {
+		uint8_t bars = bat_soc_bars(s->soc_pct, 4);
+
+		snprintf(line, sizeof(line), "SoC: %d%% [%.*s%.*s]  ", s->soc_pct,
+			 bars, "####", 4 - bars, "----");
+	} else {
+		snprintf(line, sizeof(line), "SoC: n/a     ");
+	}
+	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
+
+	/* External 5V/USB power vs battery, from the M5PM1 VIN reading. */
+	snprintf(line, sizeof(line), "src: %s   ",
+		 bat_power_present(s->vin_mv) ? "USB 5V" : "battery");
+	gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
 }
 
 #ifdef CONFIG_APP_BLE

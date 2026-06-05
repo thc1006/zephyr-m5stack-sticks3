@@ -222,10 +222,10 @@ int main(void)
 		int k1 = device_is_ready(g0) ? gpio_pin_get_raw(g0, KEY1_PIN) : -1;
 		int k2 = device_is_ready(g0) ? gpio_pin_get_raw(g0, KEY2_PIN) : -1;
 
-		printk("alive uptime_ms=%lld page=%d KEY1=%d KEY2=%d imu=%d "
-		       "accel=[%d.%06d %d.%06d %d.%06d]\n",
-		       st.uptime_ms, page, k1, k2, st.imu_ok,
-		       st.accel[0].val1, abs(st.accel[0].val2),
+		printk("alive uptime_ms=%lld page=%d KEY1=%d KEY2=%d bat=%d soc=%d "
+		       "vin=%d imu=%d accel=[%d.%06d %d.%06d %d.%06d]\n",
+		       st.uptime_ms, page, k1, k2, st.bat_mv, st.soc_pct, st.vin_mv,
+		       st.imu_ok, st.accel[0].val1, abs(st.accel[0].val2),
 		       st.accel[1].val1, abs(st.accel[1].val2),
 		       st.accel[2].val1, abs(st.accel[2].val2));
 

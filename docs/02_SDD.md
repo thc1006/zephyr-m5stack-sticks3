@@ -133,6 +133,52 @@ b0), a battery low-voltage cutoff (BATT_LVP 0x08), a power-source readback
 Any "full PMIC" work is therefore charge-enable + power-source/insertion status,
 not a fuel gauge.
 
+#### 4.5.1 Battery state-of-charge (issue #8, voltage-only OCV fuel gauge)
+
+Because the M5PM1 exposes voltages only (no SoC register, above), a battery
+percentage is derived externally with the standard upstream Zephyr
+`zephyr,fuel-gauge-composite` (voltage-only open-circuit-voltage lookup), so no
+new driver is written. The data path is:
+
+```
+m5pm1_adc ch1 (VBAT, mV) -> vbatt (voltage-divider, UNITY) -> fuel_gauge
+   (zephyr,fuel-gauge-composite) -> fuel_gauge_get_prop(RELATIVE_STATE_OF_CHARGE)
+```
+
+- `vbatt` is a `compatible = "voltage-divider"` sensor wrapping
+  `io-channels = <&m5pm1_adc 1>`. The divider is UNITY: `output-ohms = <1>` and
+  `full-ohms` is OMITTED, which is the binding's documented passthrough ("if
+  full-ohms is absent the unscaled voltage is returned"); the sensor reports
+  `SENSOR_CHAN_VOLTAGE` in microvolts. The unit math is exact because the M5PM1
+  ADC reports true millivolts with `ref_internal = 4096 mV` at 12-bit, so
+  `adc_raw_to_microvolts(raw_mv) = raw_mv * 4096/4096 * 1000 = raw_mv * 1000`.
+- `fuel_gauge` is `zephyr,fuel-gauge-composite` with `source-primary = <&vbatt>`,
+  `device-chemistry = "lithium-ion-polymer"`,
+  `ocv-capacity-table-0 = <BATTERY_OCV_CURVE_LITHIUM_ION_POLYMER_DEFAULT>` (the
+  in-tree 11-point microvolt curve from `dt-bindings/battery/battery.h`), and
+  `charge-full-design-microamp-hours = <250000>` (the 250 mAh cell).
+  `fuel-gauge-channels` is left UNSET so the composite queries the generic
+  `SENSOR_CHAN_VOLTAGE` the voltage-divider implements (setting it true would
+  request `SENSOR_CHAN_GAUGE_VOLTAGE`, which the voltage-divider rejects with
+  `-ENOTSUP`). The composite tries the source's gauge SoC channel, gets
+  `-ENOTSUP`, and falls back to `battery_soc_lookup(ocv_table, voltage)/1000`.
+- The app reads the percentage with
+  `fuel_gauge_get_prop(dev, FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE, &val)` ->
+  `val.relative_state_of_charge` (0-100).
+
+Accuracy is bounded and stated honestly: this is voltage-only SoC with no coulomb
+counter, so it is approximate, has no load compensation (a current draw sags VBAT
+and under-reads), and ideally wants a rest period for a true open-circuit
+reading. The default LiPo curve tops at 4.032 V, so a freshly charged cell
+(~4.18 V on this board) reads a flat 100% until it drops below 4.03 V. A
+board-profiled curve is a future refinement.
+
+Power source: "on external power vs battery" is shown from the M5PM1 VIN reading
+(`m5pm1_adc` channel 2): VIN above a threshold means USB/5V is present. The chip
+also has the precise `PWR_SRC 0x04` enum (5VIN/5VINOUT/BAT), used as a follow-up;
+a clean "currently charging" status is not reliably exposed, so charge-state is
+out of scope (not claimed).
+
 ### 4.6 Comprehensive demo application architecture (v0.6)
 
 The v0.6 release evolves `app/` from the single-file validation loop into a
