@@ -110,7 +110,7 @@ LOG_MODULE_REGISTER(es8311);
  * only the microphone.
  */
 #define ES8311_ADC_PWR_ON        0x02U /* 0x0E: power up ADC (PGA + modulator) */
-#define ES8311_ADC_PGA_MIC1_SE   0x1AU /* 0x14: analog MIC1 single-ended + 30 dB PGA */
+#define ES8311_ADC_PGA_MIC1_DIFF 0x1AU /* 0x14: MIC1 differential (LINSEL=1; the ES8311 analog input is differential-only) + 30 dB PGA */
 #define ES8311_ADC_OSR_RAMP      0x40U /* 0x15: ADC ramp */
 #define ES8311_ADC_CTRL_DEFAULT  0x24U /* 0x16: ADC control (ESP-ADF/esp_codec_dev default) */
 #define ES8311_ADC_VOL_0DB       0xBFU /* 0x17: ADC digital volume ~0 dB */
@@ -435,7 +435,7 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		}
 
 		/* Analog: single-ended MIC1 + PGA gain. */
-		ret = es8311_reg_write(dev, ES8311_REG_ADC_PGA, ES8311_ADC_PGA_MIC1_SE);
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_PGA, ES8311_ADC_PGA_MIC1_DIFF);
 		if (ret < 0) {
 			goto end;
 		}
