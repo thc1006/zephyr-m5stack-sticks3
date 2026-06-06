@@ -6,7 +6,7 @@
 | LCD is ST7789P3, but Zephyr binding is ST7789V-oriented | Medium | Medium | Start with compatible driver, tune init properties empirically |
 | ESP32-S3 USB/serial console configuration differs from skeleton | High | Medium | First milestone only targets boot + console using nearby ESP32-S3 boards |
 | M5PM1 has no upstream Zephyr driver | Medium | High | Treat as experimental; use M5PM1 docs/library as protocol source |
-| ES8311 support is incomplete | Medium | High | First release only needs roadmap/register read; full audio later |
+| ES8311 support is incomplete | Medium | High | **Resolved**: ES8311 playback (HW-006) + capture/mic + live meter (HW-016d/e) are HW-verified, native_sim 11/11. See the 2026-06 updates below; upstreaming is tracked by #7 |
 | IR RX conflicts with speaker amplifier | Medium | Medium | Follow vendor warning: disable speaker amp before IR RX tests |
 | Overclaiming “first” damages credibility | High | Medium | Use precise prior-art wording and keep evidence directory |
 | Large automated edits drift from scope | Medium | Medium | Use `CONTRIBUTING.md`, small backlog stories, and `bash verify.sh` |
