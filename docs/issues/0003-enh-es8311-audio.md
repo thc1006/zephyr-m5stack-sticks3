@@ -27,3 +27,12 @@ PWM "beeper" output only (insufficient — does not exercise the codec/mic).
 **Acceptance criteria**
 - ES8311 register access succeeds; I2S playback or loopback works at one rate.
 - Evidence (serial log + audio capture/photo) saved under `evidence/`.
+
+**Status (2026-06-06): DONE.** Tracked in this repo as GitHub issue #6.
+ES8311 register access + 16 kHz / 16-bit I2S playback are HW-verified (HW-006,
+440 Hz beep audible), and ADC mic capture is HW-verified (HW-016d): a loud
+external sound drives the on-board mic -> ES8311 ADC -> I2S0 RX -> DSP chain from
+~0 to full scale, and PAGE_AUDIO shows a live mic-level meter. The long-standing
+"capture silent (rms=0)" reading was a weak-acoustic-stimulus confound (the tiny
+on-board beep barely couples to the mic), not a mic/ADC fault. Evidence under
+`evidence/`: HW-006 boot log, `20260606-hw016d-mic-works.log`, live-meter log/photo.

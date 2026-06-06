@@ -82,14 +82,15 @@ K_MEM_SLAB_DEFINE_STATIC(rx_slab, BLOCK_SIZE, BLOCK_COUNT, 32);
 #define LOOP_IO_TIMEOUT_MS 200
 
 /*
- * Acoustic-loopback capture (issue #6). The ES8311 ADC is mono and lands on one
- * I2S slot, so AUDIO_MIC_SLOT (a slot INDEX 0 or 1, not a channel count) picks
- * it - confirm which slot carries the ADC at HW-016. AUDIO_MIC_FULL is an
- * empirical full-scale RMS for the PAGE_AUDIO bar, tuned at HW-016 once a real
- * mic level is known.
+ * Mic capture (issue #6). The ES8311 ADC is mono and lands on one I2S slot, so
+ * AUDIO_MIC_SLOT (a slot INDEX 0 or 1, not a channel count) picks it; HW-016d
+ * confirmed slot 0 carries the ADC. AUDIO_MIC_FULL is the empirical full-scale
+ * RMS for the PAGE_AUDIO live bar: HW-016d measured quiet ~70-100, a normal
+ * voice a few hundred to a few thousand, and a loud clap >= 12000, so 2000 gives
+ * visible bars for speech without pinning the bar to 4 on every breath.
  */
 #define AUDIO_MIC_SLOT   0U
-#define AUDIO_MIC_FULL   8000U
+#define AUDIO_MIC_FULL   2000U
 #define LOOP_SIL_BLOCKS  4U
 #define LOOP_BEEP_BLOCKS 12U
 
@@ -101,7 +102,10 @@ static const struct device *const i2s_dev = DEVICE_DT_GET(DT_NODELABEL(i2s0));
 static const struct gpio_dt_spec amp_gpio =
 	GPIO_DT_SPEC_GET(DT_NODELABEL(sound_amp), amp_gpios);
 
-static bool ready;
+/* Written by audio_init() on the main thread, read by the capture thread too, so
+ * volatile (a plain bool could be cached in the capture loop and never seen set).
+ */
+static volatile bool ready;
 
 /*
  * Precomputed one-block 440 Hz mono sine, 16-bit signed, sampled at 16 kHz
@@ -348,11 +352,16 @@ stop_amp:
 	audio_codec_stop_output(codec_dev);
 }
 
-/* Capture scratch + the latest loopback peak RMS (single-threaded use). */
+/* Capture scratch + the latest mic level. The capture thread (below) is the only
+ * active user of these on hardware (audio_loopback() is a dormant bring-up
+ * primitive); mic_rms_peak is WRITTEN by that thread and READ by the UI thread
+ * via audio_mic_level()/_bars(), so it is volatile (a 16-bit aligned access is
+ * atomic on this unicore SoC).
+ */
 static int16_t zero_block[BLOCK_FRAMES * AUDIO_CHANNELS];
 static int16_t rx_buf[BLOCK_FRAMES * AUDIO_CHANNELS];
 static int16_t mono_buf[BLOCK_FRAMES];
-static uint16_t mic_rms_peak;
+static volatile uint16_t mic_rms_peak;
 
 BUILD_ASSERT(sizeof(rx_buf) == BLOCK_SIZE, "rx_buf must hold exactly one I2S block");
 
@@ -516,14 +525,108 @@ stop:
 	audio_codec_stop_output(codec_dev);
 }
 
+/*
+ * PAGE_AUDIO live mic meter -- a dedicated CONTINUOUS-capture thread (issue #6).
+ *
+ * While capture_on is set (the AUDIO page is up), run ONE full-duplex session and
+ * stream the ADC, updating mic_rms_peak with the peak RMS of each ~128 ms window
+ * so audio_mic_bars()/audio_mic_level() track sound LIVE and fall when quiet.
+ * This is the HW-016d-proven continuous-capture shape (one START, steady reads,
+ * one DROP) -- NOT a per-render start/stop, which corrupted the very next SPI
+ * display write and wedged I2S on hardware (HW-016e). The UI thread only READS
+ * mic_rms_peak and NEVER touches I2S, so redrawing the meter can't break the
+ * display from the UI side. Gated to the page (one START on enter, one DROP on
+ * leave -- bounded churn, like the HW-013-proven audio_loopback). Any bounded-I/O
+ * failure breaks to a DROP-only stop (skips DRAIN) so a wedged clock can't hang.
+ */
+#define CAPTURE_STACK_SIZE    3072
+#define CAPTURE_PRIORITY      7
+#define CAPTURE_WINDOW_BLOCKS 8U /* publish the level every ~128 ms */
+
+static volatile bool capture_on;
+
+void audio_capture_set(bool on)
+{
+	capture_on = on;
+}
+
+static void audio_capture_thread(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	for (;;) {
+		uint16_t wpeak = 0U;
+		uint32_t wc = 0U;
+
+		if (!ready || !capture_on) {
+			mic_rms_peak = 0U;
+			k_msleep(50);
+			continue;
+		}
+
+		/* Start ONE full-duplex session (amp stays OFF for capture). */
+		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+		audio_codec_start_output(codec_dev);
+		if (loop_tx(zero_block) < 0 || loop_tx(zero_block) < 0 ||
+		    i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START) < 0) {
+			(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+			audio_codec_stop_output(codec_dev);
+			k_msleep(50);
+			continue;
+		}
+
+		/* Stream while still on the page. TX must keep feeding silence or
+		 * the shared clock stops and RX stalls.
+		 */
+		while (ready && capture_on) {
+			size_t size = sizeof(rx_buf);
+			size_t frames;
+			uint16_t rms;
+
+			if (loop_tx(zero_block) < 0) {
+				break;
+			}
+			if (i2s_buf_read(i2s_dev, rx_buf, &size) < 0) {
+				break;
+			}
+			if (size > sizeof(rx_buf)) {
+				size = sizeof(rx_buf);
+			}
+			frames = size / AUDIO_FRAME_BYTES;
+			audio_deinterleave(rx_buf, frames, AUDIO_MIC_SLOT, mono_buf);
+			rms = audio_rms_i16(mono_buf, frames);
+			if (rms > wpeak) {
+				wpeak = rms;
+			}
+			if (++wc >= CAPTURE_WINDOW_BLOCKS) {
+				mic_rms_peak = wpeak;
+				wpeak = 0U;
+				wc = 0U;
+			}
+		}
+
+		/* Stop: DROP only (skip DRAIN so a wedged clock can't hang), mute
+		 * the DAC, and clear the level for the next visit.
+		 */
+		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+		audio_codec_stop_output(codec_dev);
+		mic_rms_peak = 0U;
+	}
+}
+
+K_THREAD_DEFINE(audio_capture_tid, CAPTURE_STACK_SIZE, audio_capture_thread,
+		NULL, NULL, NULL, CAPTURE_PRIORITY, 0, 0);
+
 uint16_t audio_mic_level(void)
 {
 	return mic_rms_peak;
 }
 
-uint8_t audio_mic_bars(void)
+uint8_t audio_mic_bars(uint16_t level)
 {
-	return audio_level_bars(mic_rms_peak, AUDIO_MIC_FULL, 4U);
+	return audio_level_bars(level, AUDIO_MIC_FULL, 4U);
 }
 
 #endif /* CONFIG_APP_AUDIO */

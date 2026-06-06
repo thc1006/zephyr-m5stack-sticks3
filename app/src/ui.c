@@ -208,15 +208,32 @@ static void render_ble_body(const struct app_status *s)
 static void render_audio_body(const struct app_status *s)
 {
 	char line[24];
+	char meter[6];
+	uint16_t lvl;
+	uint8_t bars;
 
 	ARG_UNUSED(s);
 
-	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "audio loopback");
-	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG,
-		      audio_ready() ? "enter=beep+mic" : "init failed");
-	/* Mic level from the last loopback run (bar 0..4 + raw RMS). */
-	snprintf(line, sizeof(line), "mic bar=%u rms=%u  ", audio_mic_bars(),
-		 audio_mic_level());
+	/* Read the level ONCE so the bar and the printed RMS are always from the
+	 * same sample (the capture thread updates mic_rms_peak asynchronously).
+	 */
+	lvl = audio_mic_level();
+	bars = audio_mic_bars(lvl);
+	for (uint8_t i = 0; i < 4U; i++) {
+		meter[i] = (i < bars) ? '#' : '.';
+	}
+	meter[4] = '\0';
+
+	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG,
+		      audio_ready() ? "speak now" : "init failed");
+	/*
+	 * Bar and RMS on SEPARATE lines: the 10px font fits only ~13 chars on the
+	 * 135px panel, so "[####] rms=NNNNN" clips the RMS to ~2 digits. The fixed
+	 * %-6u field clears stale digits as the level swings 1..32767.
+	 */
+	snprintf(line, sizeof(line), "[%s]", meter);
+	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
+	snprintf(line, sizeof(line), "rms=%-6u", lvl);
 	gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
 }
 #endif /* CONFIG_APP_AUDIO */
@@ -369,20 +386,15 @@ void ui_render(enum app_page page, const struct app_status *s)
 		if (page_changed) {
 			gfx_clear(HOME_BG);
 			draw_header(page);
-			render_audio_body(s);
-			/*
-			 * Run the acoustic loopback on ENTER only (page-change
-			 * edge), so the nav keys KEY1/KEY2 are not hijacked. It is
-			 * blocking (~0.3 s: silence, then the 440 Hz beep with the
-			 * amp on, then silence) and prints per-block mic RMS on
-			 * serial - the RMS spikes during the beep (mic hears speaker).
-			 */
-			if (audio_ready()) {
-				audio_loopback();
-			}
-		} else {
-			render_audio_body(s);
 		}
+		/*
+		 * Live mic meter. The capture thread (enabled for this page from
+		 * main.c via audio_capture_set) streams the ADC and updates the
+		 * level; the UI only READS it here and never touches I2S, so
+		 * redrawing the bar cannot disturb the SPI display (HW-016e). The
+		 * main loop ticks faster on this page so the bar updates smoothly.
+		 */
+		render_audio_body(s);
 		break;
 #endif
 #ifdef CONFIG_APP_BLE

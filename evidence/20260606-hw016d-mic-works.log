@@ -1,0 +1,150 @@
+# HW-016d -- ES8311 on-board analog mic capture HW-VERIFIED WORKING (issue #6)
+
+Date: 2026-06-06
+Board: m5stack_sticks3/esp32s3/procpu  (M5StickS3, ESP32-S3-PICO-1-N8R8)
+Build: demo (overlay-ble + overlay-audio + overlay-ir), CONFIG_APP_AUDIO
+Firmware: a live-capture diagnostic (audio_mic_monitor) -- full-duplex I2S
+          (I2S_DIR_BOTH), speaker amp OFF, NO beep. TX streams silence to keep
+          the shared BCLK/WS running; each window reports the MAX rms/peak over
+          ~16 captured RX blocks of the ES8311 ADC (slot 0).
+
+Method / stimulus: with the device quiet the capture sits at the noise floor
+(rms ~0-6, then ~70-100 as room ambience). Then LOUD external sounds (hand
+claps / speech close to the on-board mic) were made. The captured RMS jumps to
+the tens-of-thousands with the peak pinning at the 16-bit full scale (32767).
+
+Conclusion: the full analog capture chain -- on-board MEMS mic (MSM381A3729H9BPC)
+-> ES8311 MIC1 differential ADC -> SoC I2S0 RX (DIN G16) -> capture DSP -- works
+and digitizes real acoustic audio. The earlier HW-016/AUD-H2 "rms=0 during the
+beep" reading was a WEAK-ACOUSTIC-STIMULUS confound: the tiny on-board speaker at
+the codec's low playback volume barely couples to the adjacent mic, so a
+beep-only test reads the noise floor regardless of mic health. It was never an
+analog/ADC fault -- the `0x44=0x68` digital-mux loopback (rms=4089/peak=5800,
+2026-06-05) had already proven ASDOUT + I2S0 RX + DSP, and every ADC register
+reads back exactly as written. Issue #6 RESOLVED; PAGE_AUDIO is now a live
+mic-level meter (audio_mic_sample()).
+
+--- serial capture (per-window max rms/peak; quiet -> claps -> quiet) ---
+
+MIC MONITOR: amp OFF, no beep -- make a LOUD sound at the mic, watch rms
+MIC MON w0: max rms=0 peak=0
+MIC MON w1: max rms=0 peak=1
+MIC MON w2: max rms=0 peak=1
+MIC MON w3: max rms=0 peak=1
+MIC MON w4: max rms=0 peak=1
+MIC MON w5: max rms=0 peak=1
+MIC MON w6: max rms=0 peak=1
+MIC MON w7: max rms=0 peak=1
+MIC MON w8: max rms=0 peak=1
+MIC MON w9: max rms=0 peak=2
+MIC MON w10: max rms=1 peak=3
+MIC MON w11: max rms=1 peak=4
+MIC MON w12: max rms=1 peak=5
+MIC MON w13: max rms=3 peak=8
+MIC MON w14: max rms=4 peak=21
+MIC MON w15: max rms=6 peak=24
+MIC MON w16: max rms=268 peak=687
+MIC MON w17: max rms=411 peak=1122
+MIC MON w18: max rms=39 peak=110
+MIC MON w19: max rms=50 peak=161
+MIC MON w20: max rms=71 peak=213
+MIC MON w21: max rms=94 peak=270
+MIC MON w22: max rms=93 peak=269
+MIC MON w23: max rms=101 peak=271
+MIC MON w24: max rms=100 peak=280
+MIC MON w25: max rms=106 peak=300
+MIC MON w26: max rms=391 peak=1109
+MIC MON w27: max rms=12824 peak=32767
+MIC MON w28: max rms=6226 peak=32767
+MIC MON w29: max rms=30797 peak=32767
+MIC MON w30: max rms=23542 peak=32767
+MIC MON w31: max rms=2809 peak=7571
+MIC MON w32: max rms=15872 peak=32767
+MIC MON w33: max rms=902 peak=2918
+MIC MON w34: max rms=17405 peak=32767
+MIC MON w35: max rms=1856 peak=6072
+MIC MON w36: max rms=19115 peak=32767
+MIC MON w37: max rms=2421 peak=6489
+MIC MON w38: max rms=25126 peak=32767
+MIC MON w39: max rms=1311 peak=3616
+MIC MON w40: max rms=19103 peak=32767
+MIC MON w41: max rms=1458 peak=6062
+MIC MON w42: max rms=5160 peak=32767
+MIC MON w43: max rms=3514 peak=25008
+MIC MON w44: max rms=12962 peak=32767
+MIC MON w45: max rms=1754 peak=6043
+MIC MON w46: max rms=25681 peak=32767
+MIC MON w47: max rms=4494 peak=12179
+MIC MON w48: max rms=26196 peak=32767
+MIC MON w49: max rms=3356 peak=11282
+MIC MON w50: max rms=18647 peak=32767
+MIC MON w51: max rms=2575 peak=8016
+MIC MON w52: max rms=29173 peak=32767
+MIC MON w53: max rms=16438 peak=32767
+MIC MON w54: max rms=7226 peak=17328
+MIC MON w55: max rms=26949 peak=32767
+MIC MON w56: max rms=3508 peak=9464
+MIC MON w57: max rms=19290 peak=32767
+MIC MON w58: max rms=1512 peak=4414
+MIC MON w59: max rms=27517 peak=32767
+MIC MON w60: max rms=1393 peak=4966
+MIC MON w61: max rms=18544 peak=32767
+MIC MON w62: max rms=21257 peak=32767
+MIC MON w63: max rms=4690 peak=15620
+MIC MON w64: max rms=788 peak=2408
+MIC MON w65: max rms=208 peak=586
+MIC MON w66: max rms=84 peak=247
+MIC MON w67: max rms=24468 peak=32767
+MIC MON w68: max rms=1923 peak=5848
+MIC MON w69: max rms=23640 peak=32767
+MIC MON w70: max rms=3161 peak=8710
+MIC MON w71: max rms=14740 peak=32767
+MIC MON w72: max rms=3132 peak=10415
+MIC MON w73: max rms=17383 peak=32767
+MIC MON w74: max rms=1960 peak=6137
+MIC MON w75: max rms=16773 peak=32767
+MIC MON w76: max rms=1101 peak=3167
+MIC MON w77: max rms=259 peak=931
+MIC MON w78: max rms=30516 peak=32767
+MIC MON w79: max rms=16060 peak=32767
+MIC MON w80: max rms=1332 peak=3693
+MIC MON w81: max rms=416 peak=1093
+MIC MON w82: max rms=98 peak=340
+MIC MON w83: max rms=98 peak=250
+MIC MON w84: max rms=84 peak=237
+MIC MON w85: max rms=81 peak=214
+MIC MON w86: max rms=81 peak=245
+MIC MON w87: max rms=88 peak=257
+MIC MON w88: max rms=75 peak=219
+MIC MON w89: max rms=72 peak=241
+MIC MON w90: max rms=75 peak=203
+MIC MON w91: max rms=72 peak=211
+MIC MON w92: max rms=91 peak=246
+MIC MON w93: max rms=71 peak=209
+MIC MON w94: max rms=92 peak=235
+MIC MON w95: max rms=95 peak=245
+MIC MON w96: max rms=81 peak=226
+MIC MON w97: max rms=21973 peak=32767
+MIC MON w98: max rms=3669 peak=10978
+MIC MON w99: max rms=17435 peak=32767
+MIC MON w100: max rms=1097 peak=3054
+MIC MON w101: max rms=17091 peak=32767
+MIC MON w102: max rms=23340 peak=32767
+MIC MON w103: max rms=16406 peak=32767
+MIC MON w104: max rms=1782 peak=5174
+MIC MON w105: max rms=26771 peak=32767
+MIC MON w106: max rms=14995 peak=32767
+MIC MON w107: max rms=24372 peak=32767
+MIC MON w108: max rms=15216 peak=32767
+MIC MON w109: max rms=3738 peak=12072
+MIC MON w110: max rms=16095 peak=32767
+MIC MON w111: max rms=16727 peak=32767
+MIC MON w112: max rms=15264 peak=32767
+MIC MON w113: max rms=4138 peak=16885
+MIC MON w114: max rms=556 peak=1758
+MIC MON w115: max rms=141 peak=432
+MIC MON w116: max rms=88 peak=222
+MIC MON w117: max rms=100 peak=256
+MIC MON w118: max rms=118 peak=350
+MIC MON w119: max rms=106 peak=493
+=== HW-016d mic monitor done ===

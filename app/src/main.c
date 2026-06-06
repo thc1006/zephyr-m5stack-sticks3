@@ -127,8 +127,27 @@ int main(void)
 		struct app_status st;
 		enum app_page page = app_page_get();
 
+#ifdef CONFIG_APP_AUDIO
+		/*
+		 * Stop capture BEFORE painting a non-AUDIO page (the start is
+		 * deferred until AFTER the AUDIO page is painted, below) so a page's
+		 * first paint is never concurrent with the I2S session start/stop,
+		 * which corrupts the in-flight SPI display write (HW-016e).
+		 * Steady-state body redraws while the stream already runs are fine.
+		 */
+		if (page != PAGE_AUDIO) {
+			audio_capture_set(false);
+		}
+#endif
+
 		status_sample(&st);
 		ui_render(page, &st);
+
+#ifdef CONFIG_APP_AUDIO
+		if (page == PAGE_AUDIO) {
+			audio_capture_set(true);
+		}
+#endif
 #ifdef CONFIG_APP_BLE
 		ble_update(&st);
 #endif
@@ -229,8 +248,17 @@ int main(void)
 		       st.accel[1].val1, abs(st.accel[1].val2),
 		       st.accel[2].val1, abs(st.accel[2].val2));
 
-		/* Wake early on a button press; otherwise tick every LOOP_MS. */
-		k_sem_take(&nav_sem, K_MSEC(LOOP_MS));
+		/*
+		 * Wake early on a button press; otherwise tick every LOOP_MS, but
+		 * faster on the AUDIO page so the live mic meter updates smoothly.
+		 */
+		uint32_t tick_ms = LOOP_MS;
+#ifdef CONFIG_APP_AUDIO
+		if (page == PAGE_AUDIO) {
+			tick_ms = 250;
+		}
+#endif
+		k_sem_take(&nav_sem, K_MSEC(tick_ms));
 	}
 
 	return 0;

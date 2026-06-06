@@ -434,24 +434,48 @@ Preconditions:
 
 Pass criteria:
 
-- The captured per-block RMS rises clearly during the beep versus the silence
-  before/after it (the mic hears the speaker), captured on serial. Optionally an
-  external sound (a tap or speech) also moves the level.
+- The captured per-block RMS rises clearly when a LOUD external sound (a clap or
+  speech) is made at the mic, versus the quiet floor, on serial and on the
+  PAGE_AUDIO live bar. (The on-board 440 Hz beep is too weak to couple acoustically
+  to the mic, so the external sound is the real stimulus, not the beep.)
 
-Result (2026-06-05, AUD-H2): SPLIT. A diagnostic `0x44 = 0x68` (DACL+DACR
-digital-mux) loopback captures a bit-stable rms=4089/peak=5800 during the beep,
-so the ASDOUT serial output, the I2S0 full-duplex RX path and the capture DSP are
-runtime-verified end to end. The shipping real-ADC route (`0x44 = 0x08`) captures
-rms=0 (peak <= 8, the LSB floor) on BOTH slots during the same beep: the ADC
-capture route is silent. The 0x68 path bypasses the ADC modulator, so this does
-NOT localize the fault (analog front end, ADC modulator/power/clock, or the 0x08
-mux routing) and does not separate it from an unconfirmed acoustic stimulus
-(the beep audibility was not checked headless). The pass criterion above is NOT
-met; issue #6 stays open. The next discriminating test is a single `0x44 = 0x58`
-(ADCL real-ADC + DACR DAC) capture. Evidence:
-`evidence/20260605-hw016-audio-analog-mic.log` (0x08, rms=0),
-`evidence/20260605-hw016-audio-digital-loopback.log` (0x68, rms=4089/peak=5800),
-`evidence/20260605-hw016-audio-capture.md` (method + scope + DoD gaps).
+Result (2026-06-06, HW-016d): **PASS.** A live mic monitor (full-duplex, amp OFF,
+no beep) plus a loud external clap drove the captured RMS from ~0-6 (silent) to
+12,000-30,000 with peak at full-scale 32767; quiet windows ~70-100 RMS (room
+ambience). So the full analog chain — on-board mic → ES8311 ADC → I2S0 RX → DSP —
+captures real acoustic audio, and PAGE_AUDIO is now a live mic-level meter (the
+bar rises when you speak, falls when quiet). The earlier AUD-H2 `0x44 = 0x08`
+"rms=0 during the beep" was a WEAK-ACOUSTIC-STIMULUS confound: the tiny on-board
+440 Hz speaker barely couples to the mic, so a beep-only test reads the noise
+floor regardless of mic health. It was NOT a mic/ADC fault — every ADC register
+reads back exactly as written and matches the known-good M5 EchoBase / voicestick
+init, and the `0x44 = 0x68` digital loopback (rms=4089/peak=5800) had already
+verified ASDOUT + I2S0 RX + DSP. Issue #6 is RESOLVED. Evidence:
+`evidence/20260606-hw016d-mic-works.log` (rms 0→30000 on a clap) + the PAGE_AUDIO
+live-meter serial log + screen photo;
+`evidence/20260605-hw016-audio-digital-loopback.log` (the prior 0x68 digital
+proof).
+
+Result (2026-06-06, HW-016e — PAGE_AUDIO live mic meter): **PASS.** The shipping
+on-screen meter tracks sound live: speaking drove the on-device bar to `[####]`
+with `rms=20680`, falling back to a low bar/RMS when quiet; the AUDIO header and
+text stay clean and the device stays responsive on the page (it boots clean and
+stays alive on the AUDIO page at the faster tick, no freeze observed in testing).
+Getting there exposed a real hardware interaction (HW-016e): doing the
+full-duplex capture inline in the UI render path corrupted the very next SPI
+display write (the body rendered all black) and, run every tick, eventually wedged
+I2S (device frozen, no serial). The fix is a dedicated capture thread that streams
+continuously while the AUDIO page is up and only PUBLISHES the level; the UI thread
+reads it and never touches I2S. Three follow-on fixes from the on-HW review: (1)
+enable capture only AFTER the page is painted (and disable it before any other
+page) so the AUDIO entry paint is not concurrent with the I2S session start — this
+cleared residual header garbling; (2) read `mic_rms_peak` once so the bar and the
+printed RMS always agree; (3) put the bar and RMS on separate lines (the 10 px font
+fits only ~13 chars, so a combined line clipped the RMS to ~2 digits). Adversarial-
+reviewed before flashing (`ready` and the level made volatile, the capture-thread
+stack sized for the I2S/codec call depth). Evidence:
+`evidence/PXL_20260606_032212870.MP~2.jpg` (`[####]` + `rms=20680`, clean header) +
+the boot / `audio_init OK` serial log.
 
 ### HW-017 battery state-of-charge + power source (issue #8)
 

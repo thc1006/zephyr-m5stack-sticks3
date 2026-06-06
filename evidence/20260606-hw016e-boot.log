@@ -1,0 +1,22 @@
+# HW-016e boot / audio_init serial (capture-thread live-meter build)
+# Board: m5stack_sticks3/esp32s3/procpu  demo (ble+audio+ir)
+# Captured via esp_idf_monitor (clean run-mode reset). audio_init OK on boot;
+# the main loop stays alive on page 3 (AUDIO) at the faster ~250 ms tick while the
+# capture thread streams -- no FATAL / stack fault / freeze.
+
+*** Booting Zephyr OS build v4.4.0 ***
+Board: m5stack_sticks3
+[00:00:00.339,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.339,000] <inf> gfx: Display ready (135x240)
+[00:00:00.409,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+[00:00:00.442,000] <inf> ble: BLE advertising as "StickS3"
+[00:00:00.442,000] <inf> ir: ir_init OK (TX on LEDC ch0, ~38 kHz carrier)
+[00:00:00.442,000] <inf> ir: IR RX on GPIO edge interrupt (G42)
+alive uptime_ms=442 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5142 imu=1
+alive uptime_ms=1471 page=1 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5148 imu=1
+alive uptime_ms=1891 page=2 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5148 imu=1
+alive uptime_ms=2275 page=3 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5146 imu=1
+alive uptime_ms=2573 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5146 imu=1
+alive uptime_ms=2833 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5146 imu=1
+# page 3 = AUDIO; ~280 ms between ticks = the 250 ms AUDIO-page loop + render.
+# Stayed alive on the AUDIO page with the capture thread streaming; no freeze.

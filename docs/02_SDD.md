@@ -240,25 +240,44 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   `PLAYBACK_CAPTURE` routes. This driver is also the standalone upstream
   candidate (task #21).
 - Playback data path: SoC I2S0 as master (16 kHz / 16-bit, standard I2S) →
-  ES8311 DAC → AW8737 speaker amp. The app plays a short 440 Hz beep on entering
-  the AUDIO page.
+  ES8311 DAC → AW8737 speaker amp. (`audio_beep()` is the HW-006-verified playback
+  primitive; the AUDIO page itself is a mic meter and does not beep.)
+- PAGE_AUDIO live mic meter: a dedicated capture thread (`audio_capture_thread`),
+  enabled only while the AUDIO page is up (`audio_capture_set()` from main.c), runs
+  ONE continuous full-duplex session (amp off, silent TX) and publishes the peak
+  RMS of each ~128 ms window to `mic_rms_peak`; the UI thread only READS that level
+  and draws a 0-4 bar (`audio_level_bars()`), so the bar tracks sound live and
+  falls when quiet. The UI never touches I2S — this shape is forced by HW-016e:
+  a full-duplex capture run inline in the render path corrupted the very next SPI
+  display write (black body) and eventually wedged I2S, whereas a continuous
+  capture in its own thread (UI reads only) keeps the SPI display stable. Capture
+  is gated to the page (one START on enter, one DROP on leave) and enabled only
+  AFTER the AUDIO page is painted, so the entry paint is not concurrent with the
+  I2S session start (the leave-time DROP can briefly overlap the next page's clear,
+  which is harmless as it is then overwritten). The loop ticks 250 ms on this page (vs 1 s) for a smooth
+  bar; bar and RMS come from one `mic_rms_peak` read and sit on separate lines (the
+  10 px font fits ~13 chars on the 135 px panel).
 - Capture data path (issue #6): on-board analog MEMS mic (MSM381A3729H9BPC) →
   ES8311 MIC1 ADC → SoC I2S0 RX (DIN G16). The driver's ADC block programs a
-  single-ended analog MIC1 (0x14), ADC power (0x0E), ADC serial-out format (0x0A),
+  differential analog MIC1 (0x14 = 0x1A, LINSEL=1; the ES8311 analog input is
+  differential-only), ADC power (0x0E), ADC serial-out format (0x0A),
   ~0 dB ADC volume (0x17) and an ADC high-pass filter (0x1B/0x1C, cancels the
   digital DC offset), with 0x44 = 0x08 keeping ASDOUT as plain ADC data
   (no digital DAC feedback; ESP-ADF's capture default 0x58 mixes a digital DAC
   copy into the captured stream, which we avoid). The analog PGA is at 30 dB max,
   tunable in the follow-up if it clips. Capture is always-on once configured (no
   per-stream codec start), matching the in-tree wm8904/da7212 pattern. The ADC
-  register values are reference-derived (ESP-ADF). HW-016 status (2026-06-05):
-  the ASDOUT serial output, the I2S0 RX path and the capture DSP are
-  runtime-verified via a `0x44 = 0x68` digital-mux loopback (bit-stable
-  rms=4089/peak=5800), but the real-ADC route (`0x44 = 0x08`) captures rms=0
-  during the beep, so the on-board analog mic is NOT yet validated. The fault is
-  not localized (analog front end, ADC modulator/power/clock, or the 0x08 mux
-  routing) and is not yet separated from an unconfirmed acoustic stimulus, so
-  issue #6 stays open. See `evidence/20260605-hw016-audio-capture.md`.
+  register values are reference-derived (ESP-ADF) and read back exactly as
+  written (matching the known-good M5 EchoBase / voicestick mic init). HW-016d
+  (2026-06-06): the on-board analog mic capture is **HW-VERIFIED WORKING** — a
+  live mic monitor (full-duplex, amp off, no beep) plus a loud external clap drove
+  RMS from ~0-6 (silent) to 12,000-30,000 with peak at full-scale 32767. The
+  earlier `0x44 = 0x08` "rms=0 during the beep" was a WEAK-ACOUSTIC-STIMULUS
+  confound (the tiny on-board 440 Hz speaker barely couples to the mic), NOT a
+  mic/ADC fault; the `0x44 = 0x68` digital-mux loopback (rms=4089/peak=5800) had
+  already verified ASDOUT + I2S0 RX + the capture DSP. So the full chain (analog
+  mic → ES8311 ADC → I2S0 RX → DSP) is verified and issue #6 is resolved. See
+  `evidence/`.
 - Amp enable: the AW8737 is gated by M5PM1 PMIC GPIO3 (PYG3, `sound_amp` /
   `amp-gpios`), driven through the **MFD gpio child** with a per-pin
   read-modify-write so toggling PYG3 preserves the neighbouring PYG2/L3B bit
