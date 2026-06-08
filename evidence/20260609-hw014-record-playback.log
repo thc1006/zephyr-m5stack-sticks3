@@ -1,0 +1,11 @@
+# HW-014 record->playback fix (2026-06-09, dell-0830, MAC 70:04:1d:db:ab:b8)
+# overlay-audio.conf build; resilient-restart do_record.
+# Recording now full-length with real audio (was 256 ms / rms=0):
+REC start: up to 5000 ms, speak now
+REC done: 5000 ms peak_rms=684 restarts=1
+PLAY start: 5000 ms gain_q8=1024
+PLAY done
+PLAY start: 5000 ms gain_q8=1024
+PLAY done
+PLAY start: 5000 ms gain_q8=1024
+PLAY done

@@ -655,10 +655,22 @@ static size_t fill_play_block(uint32_t pos, uint16_t gain_q8)
 	return n;
 }
 
-/* Capture up to AUDIO_REC_SAMPLES mono samples into rec_buf (amp OFF). */
+/* Capture up to AUDIO_REC_SAMPLES mono samples into rec_buf (amp OFF).
+ *
+ * The esp32-i2s RX returns an error after a bounded run (the live meter survives
+ * the very same hiccup by re-entering its session from the thread loop; a single
+ * pass would stop at the first one -- the 256 ms / rms=0 bug). So capture across
+ * session restarts: on a read error, drop + restart the full-duplex session and
+ * keep accumulating into rec_buf until it is full or the user stops. A guard
+ * bails if several restarts in a row make no progress (so a truly dead clock
+ * can't spin forever).
+ */
 static void do_record(void)
 {
 	uint16_t peak = 0U;
+	uint32_t restarts = 0U;
+	uint32_t empty = 0U;
+	bool logged = false;
 
 	rec_samples = 0U;
 	rec_peak = 0U;
@@ -667,52 +679,71 @@ static void do_record(void)
 	printk("REC start: up to %u ms, speak now\n",
 	       (unsigned int)(AUDIO_REC_SAMPLES * 1000U / AUDIO_SAMPLE_RATE));
 
-	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
-	audio_codec_start_output(codec_dev);
-	if (loop_tx(zero_block) < 0 || loop_tx(zero_block) < 0 ||
-	    i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START) < 0) {
+	while (rec_samples < AUDIO_REC_SAMPLES && !rec_abort && empty < 3U) {
+		uint32_t before = rec_samples;
+
+		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+		audio_codec_start_output(codec_dev);
+		if (loop_tx(zero_block) < 0 || loop_tx(zero_block) < 0 ||
+		    i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START) < 0) {
+			(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+			audio_codec_stop_output(codec_dev);
+			LOG_ERR("record: I2S start failed");
+			break;
+		}
+
+		/* Read blocks, keep TX fed with silence (shared clock), append mono. */
+		while (rec_samples < AUDIO_REC_SAMPLES && !rec_abort) {
+			size_t size = sizeof(rx_buf);
+			size_t frames;
+			uint32_t remain;
+			uint16_t r;
+			int rc;
+
+			if (loop_tx(zero_block) < 0) {
+				break;
+			}
+			rc = i2s_buf_read(i2s_dev, rx_buf, &size);
+			if (rc < 0) {
+				if (!logged) { /* log the first hiccup's errno only */
+					LOG_WRN("rec: i2s_buf_read %d at %u ms (restarting)",
+						rc, (unsigned int)(rec_samples * 1000U /
+								   AUDIO_SAMPLE_RATE));
+					logged = true;
+				}
+				break;
+			}
+			if (size > sizeof(rx_buf)) {
+				size = sizeof(rx_buf);
+			}
+			frames = size / AUDIO_FRAME_BYTES;
+			remain = AUDIO_REC_SAMPLES - rec_samples;
+			if (frames > remain) {
+				frames = remain; /* never overrun rec_buf */
+			}
+			audio_deinterleave(rx_buf, frames, AUDIO_MIC_SLOT,
+					   &rec_buf[rec_samples]);
+			r = audio_rms_i16(&rec_buf[rec_samples], frames);
+			if (r > peak) {
+				peak = r;
+			}
+			rec_samples += frames;
+		}
+
 		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
 		audio_codec_stop_output(codec_dev);
-		rec_state = AUDIO_REC_IDLE;
-		LOG_ERR("record: I2S start failed");
-		return;
+
+		if (rec_samples < AUDIO_REC_SAMPLES && !rec_abort) {
+			restarts++;
+			empty = (rec_samples == before) ? (empty + 1U) : 0U;
+		}
 	}
 
-	/* Read blocks, keep TX fed with silence (shared clock), append mono. */
-	while (rec_samples < AUDIO_REC_SAMPLES && !rec_abort) {
-		size_t size = sizeof(rx_buf);
-		size_t frames;
-		uint32_t remain;
-		uint16_t r;
-
-		if (loop_tx(zero_block) < 0) {
-			break;
-		}
-		if (i2s_buf_read(i2s_dev, rx_buf, &size) < 0) {
-			break;
-		}
-		if (size > sizeof(rx_buf)) {
-			size = sizeof(rx_buf);
-		}
-		frames = size / AUDIO_FRAME_BYTES;
-		remain = AUDIO_REC_SAMPLES - rec_samples;
-		if (frames > remain) {
-			frames = remain; /* never overrun rec_buf on the last block */
-		}
-		audio_deinterleave(rx_buf, frames, AUDIO_MIC_SLOT, &rec_buf[rec_samples]);
-		r = audio_rms_i16(&rec_buf[rec_samples], frames);
-		if (r > peak) {
-			peak = r;
-		}
-		rec_samples += frames;
-	}
-
-	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
-	audio_codec_stop_output(codec_dev);
 	rec_peak = peak;
 	rec_state = (rec_samples > 0U) ? AUDIO_REC_REVIEW : AUDIO_REC_IDLE;
-	printk("REC done: %u ms peak_rms=%u\n",
-	       (unsigned int)(rec_samples * 1000U / AUDIO_SAMPLE_RATE), peak);
+	printk("REC done: %u ms peak_rms=%u restarts=%u\n",
+	       (unsigned int)(rec_samples * 1000U / AUDIO_SAMPLE_RATE), peak,
+	       (unsigned int)restarts);
 }
 
 /* Play the held clip back through the speaker (amp anti-pop, gain applied). */
