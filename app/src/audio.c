@@ -630,6 +630,7 @@ static int16_t play_block[BLOCK_FRAMES * AUDIO_CHANNELS]; /* one block, stereo T
 
 static volatile enum audio_rec_state rec_state = AUDIO_REC_IDLE;
 static volatile uint8_t rec_cmd;      /* REC_CMD_*, set by the UI thread */
+static volatile bool rec_abort;       /* UI request to stop a recording early */
 static volatile uint32_t rec_samples; /* mono samples currently held in rec_buf */
 static volatile uint16_t rec_peak;    /* peak capture RMS of the last recording */
 
@@ -661,6 +662,7 @@ static void do_record(void)
 
 	rec_samples = 0U;
 	rec_peak = 0U;
+	rec_abort = false;
 	rec_state = AUDIO_REC_RECORDING;
 	printk("REC start: up to %u ms, speak now\n",
 	       (unsigned int)(AUDIO_REC_SAMPLES * 1000U / AUDIO_SAMPLE_RATE));
@@ -677,7 +679,7 @@ static void do_record(void)
 	}
 
 	/* Read blocks, keep TX fed with silence (shared clock), append mono. */
-	while (rec_samples < AUDIO_REC_SAMPLES) {
+	while (rec_samples < AUDIO_REC_SAMPLES && !rec_abort) {
 		size_t size = sizeof(rx_buf);
 		size_t frames;
 		uint32_t remain;
@@ -840,6 +842,11 @@ void audio_play_request(void)
 	if (ready && rec_samples > 0U) {
 		rec_cmd = REC_CMD_PLAY;
 	}
+}
+
+void audio_record_stop_request(void)
+{
+	rec_abort = true;
 }
 
 enum audio_rec_state audio_rec_get_state(void)

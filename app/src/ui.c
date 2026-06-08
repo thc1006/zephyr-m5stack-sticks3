@@ -63,6 +63,8 @@ static const char *page_name(enum app_page page)
 #ifdef CONFIG_APP_AUDIO
 	case PAGE_AUDIO:
 		return "AUDIO";
+	case PAGE_AUDIO_REC:
+		return "REC";
 #endif
 #ifdef CONFIG_APP_BLE
 	case PAGE_BLE:
@@ -236,6 +238,58 @@ static void render_audio_body(const struct app_status *s)
 	snprintf(line, sizeof(line), "rms=%-6u", lvl);
 	gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
 }
+
+/*
+ * PAGE_AUDIO_REC body (issue #14): the modal recorder. Reads audio_rec_get_state()
+ * and draws the matching screen; the UI only READS state and NEVER touches I2S
+ * (the record/playback runs on the audio thread). Lines are padded to a fixed
+ * ~13-char width (the 10px font on the 135px panel) so within-a-mode refreshes
+ * overwrite stale digits cleanly; the whole screen is cleared on a mode change
+ * (handled in ui_render). English only -- the bundled cfb_font is ASCII.
+ */
+static void render_audio_rec_body(const struct app_status *s)
+{
+	char line[20];
+
+	ARG_UNUSED(s);
+
+	switch (audio_rec_get_state()) {
+	case AUDIO_REC_RECORDING: {
+		uint32_t total = (uint32_t)CONFIG_APP_AUDIO_REC_SECONDS * 1000U;
+		uint32_t el = audio_rec_len_ms();
+		uint32_t left = (el < total) ? (total - el) : 0U;
+
+		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "* SPEAK NOW *");
+		snprintf(line, sizeof(line), "%u.%us left  ",
+			 left / 1000U, (left % 1000U) / 100U);
+		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1: stop     ");
+		break;
+	}
+	case AUDIO_REC_REVIEW:
+		snprintf(line, sizeof(line), "rec %u.%us    ",
+			 audio_rec_len_ms() / 1000U, (audio_rec_len_ms() % 1000U) / 100U);
+		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, line);
+		snprintf(line, sizeof(line), "peak=%-6u", audio_rec_peak());
+		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1: play     ");
+		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "hold: re-rec ");
+		gfx_draw_text(MARGIN_X, body_line_y(5), HOME_FG, HOME_BG, "K2: exit     ");
+		break;
+	case AUDIO_REC_PLAYING:
+		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "> playing... ");
+		snprintf(line, sizeof(line), "peak=%-6u", audio_rec_peak());
+		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
+		break;
+	case AUDIO_REC_IDLE:
+	default:
+		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG,
+			      audio_ready() ? "ready        " : "init failed  ");
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1: record   ");
+		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "K2: exit     ");
+		break;
+	}
+}
 #endif /* CONFIG_APP_AUDIO */
 
 #ifdef CONFIG_APP_IR
@@ -396,6 +450,22 @@ void ui_render(enum app_page page, const struct app_status *s)
 		 */
 		render_audio_body(s);
 		break;
+	case PAGE_AUDIO_REC: {
+		/* Clear on a page change OR a mode change so each modal screen starts
+		 * clean (no residue from a longer previous line); within a mode only
+		 * the fixed-width dynamic lines are redrawn (no flash).
+		 */
+		static int last_rec_st = -1;
+		int st = (int)audio_rec_get_state();
+
+		if (page_changed || st != last_rec_st) {
+			gfx_clear(HOME_BG);
+			draw_header(page);
+			last_rec_st = st;
+		}
+		render_audio_rec_body(s);
+		break;
+	}
 #endif
 #ifdef CONFIG_APP_BLE
 	case PAGE_BLE:

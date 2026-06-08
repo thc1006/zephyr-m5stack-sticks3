@@ -19,6 +19,7 @@ enum app_page {
 	PAGE_POWER,
 #ifdef CONFIG_APP_AUDIO
 	PAGE_AUDIO,
+	PAGE_AUDIO_REC, /* modal record -> playback page (issue #14) */
 #endif
 #ifdef CONFIG_APP_BLE
 	PAGE_BLE,

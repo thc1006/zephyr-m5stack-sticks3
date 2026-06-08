@@ -90,6 +90,10 @@ void audio_record_request(void);
 /* Ask the audio thread to play the held clip back. No-op if nothing is held. */
 void audio_play_request(void);
 
+/* Ask the audio thread to stop the in-progress recording early (keeps what was
+ * captured so far). A no-op when not recording. */
+void audio_record_stop_request(void);
+
 /* Current record/playback state, for the UI. */
 enum audio_rec_state audio_rec_get_state(void);
 

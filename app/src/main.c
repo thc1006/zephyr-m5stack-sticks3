@@ -74,17 +74,90 @@ void app_page_prev(void)
 	atomic_set(&app_current_page, (v + PAGE_COUNT - 1) % PAGE_COUNT);
 }
 
+#ifdef CONFIG_APP_AUDIO
 /*
- * gpio-keys reports KEY1/KEY2 via the input subsystem. The callback only
- * advances the atomic page index (KEY1 next, KEY2 prev) on press; all drawing
- * happens in the main loop.
+ * PAGE_AUDIO_REC modal state machine (issue #14). While on the REC page the two
+ * buttons drive record/play/re-record/exit instead of page nav; every other
+ * page is unchanged. K1 short = record (IDLE) / play (REVIEW) / stop (RECORDING);
+ * K1 long (held) in REVIEW = re-record; K2 = exit to the next page.
+ */
+#define REC_LONGPRESS_MS 1000
+
+static void rec_page_k1(bool long_press)
+{
+	switch (audio_rec_get_state()) {
+	case AUDIO_REC_IDLE:
+		audio_record_request();
+		break;
+	case AUDIO_REC_REVIEW:
+		if (long_press) {
+			audio_record_request(); /* hold = re-record */
+		} else {
+			audio_play_request();   /* tap = play */
+		}
+		break;
+	case AUDIO_REC_RECORDING:
+		audio_record_stop_request(); /* tap = stop early */
+		break;
+	default: /* PLAYING: ignore input */
+		break;
+	}
+	k_sem_give(&nav_sem);
+	printk("REC-PAGE K1 %s\n", long_press ? "long" : "short");
+}
+
+static void rec_page_k2(void)
+{
+	if (audio_rec_get_state() == AUDIO_REC_RECORDING) {
+		return; /* don't leave mid-recording */
+	}
+	app_page_next(); /* exit -> next page */
+	k_sem_give(&nav_sem);
+}
+#endif /* CONFIG_APP_AUDIO */
+
+/*
+ * gpio-keys reports KEY1/KEY2 via the input subsystem. On most pages the
+ * callback only advances the atomic page index (KEY1 next, KEY2 prev) on press.
+ * On PAGE_AUDIO_REC it is modal (see above): K1 is decided on RELEASE so a short
+ * vs long press can be told apart, and K2 exits on press. All drawing happens in
+ * the main loop.
  */
 static void input_cb(struct input_event *evt, void *user_data)
 {
 	ARG_UNUSED(user_data);
 
-	if (evt->type != INPUT_EV_KEY || evt->value == 0) {
-		return; /* press only */
+	if (evt->type != INPUT_EV_KEY) {
+		return;
+	}
+
+#ifdef CONFIG_APP_AUDIO
+	if (app_page_get() == PAGE_AUDIO_REC) {
+		/* k1_armed guards against the RELEASE of the very press that
+		 * navigated INTO this page firing a spurious action (that press
+		 * was handled below as page-nav, so it never armed K1 here).
+		 */
+		static int64_t k1_down_ms;
+		static bool k1_armed;
+
+		if (evt->code == INPUT_KEY_0) {
+			if (evt->value != 0) {
+				k1_down_ms = k_uptime_get();
+				k1_armed = true;
+			} else if (k1_armed) {
+				k1_armed = false;
+				rec_page_k1((k_uptime_get() - k1_down_ms) >=
+					    REC_LONGPRESS_MS);
+			}
+		} else if (evt->code == INPUT_KEY_1 && evt->value != 0) {
+			rec_page_k2();
+		}
+		return;
+	}
+#endif
+
+	if (evt->value == 0) {
+		return; /* page nav is press-only */
 	}
 
 	if (evt->code == INPUT_KEY_0) {
@@ -254,8 +327,8 @@ int main(void)
 		 */
 		uint32_t tick_ms = LOOP_MS;
 #ifdef CONFIG_APP_AUDIO
-		if (page == PAGE_AUDIO) {
-			tick_ms = 250;
+		if (page == PAGE_AUDIO || page == PAGE_AUDIO_REC) {
+			tick_ms = 250; /* live meter / record countdown + state */
 		}
 #endif
 		k_sem_take(&nav_sem, K_MSEC(tick_ms));
