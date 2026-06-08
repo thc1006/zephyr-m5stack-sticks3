@@ -202,13 +202,19 @@ int main(void)
 
 #ifdef CONFIG_APP_AUDIO
 		/*
-		 * Stop capture BEFORE painting a non-AUDIO page (the start is
-		 * deferred until AFTER the AUDIO page is painted, below) so a page's
-		 * first paint is never concurrent with the I2S session start/stop,
-		 * which corrupts the in-flight SPI display write (HW-016e).
-		 * Steady-state body redraws while the stream already runs are fine.
+		 * The live mic meter (folded into the REC page's READY/REVIEW screens)
+		 * runs the capture thread. Run it only while on the REC page and NOT
+		 * actively recording/playing (those own I2S instead). Stop it BEFORE
+		 * painting any other context and (re)start AFTER painting, so a page's
+		 * first paint is never concurrent with the I2S session start/stop
+		 * (HW-016e). The thread services a record/play request ahead of the
+		 * meter, so pressing K1 breaks out of metering cleanly.
 		 */
-		if (page != PAGE_AUDIO) {
+		bool meter = (page == PAGE_AUDIO_REC) &&
+			     (audio_rec_get_state() == AUDIO_REC_IDLE ||
+			      audio_rec_get_state() == AUDIO_REC_REVIEW);
+
+		if (!meter) {
 			audio_capture_set(false);
 		}
 #endif
@@ -217,7 +223,7 @@ int main(void)
 		ui_render(page, &st);
 
 #ifdef CONFIG_APP_AUDIO
-		if (page == PAGE_AUDIO) {
+		if (meter) {
 			audio_capture_set(true);
 		}
 #endif
@@ -327,7 +333,7 @@ int main(void)
 		 */
 		uint32_t tick_ms = LOOP_MS;
 #ifdef CONFIG_APP_AUDIO
-		if (page == PAGE_AUDIO || page == PAGE_AUDIO_REC) {
+		if (page == PAGE_AUDIO_REC) {
 			tick_ms = 250; /* live meter / record countdown + state */
 		}
 #endif

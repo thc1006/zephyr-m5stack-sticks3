@@ -61,8 +61,6 @@ static const char *page_name(enum app_page page)
 	case PAGE_POWER:
 		return "POWER";
 #ifdef CONFIG_APP_AUDIO
-	case PAGE_AUDIO:
-		return "AUDIO";
 	case PAGE_AUDIO_REC:
 		return "REC";
 #endif
@@ -207,36 +205,24 @@ static void render_ble_body(const struct app_status *s)
 #endif /* CONFIG_APP_BLE */
 
 #ifdef CONFIG_APP_AUDIO
-static void render_audio_body(const struct app_status *s)
+/*
+ * Draw the live mic-level meter "[####]" on body line `row` (folded in from the
+ * old standalone AUDIO page). The capture thread updates the level; the UI only
+ * READS it and never touches I2S, so redrawing cannot disturb the SPI display
+ * (HW-016e). Fixed 6-char width overwrites cleanly on every tick, no clear.
+ */
+static void draw_mic_meter(uint16_t row)
 {
-	char line[24];
-	char meter[6];
-	uint16_t lvl;
-	uint8_t bars;
+	char m[8];
+	uint8_t bars = audio_mic_bars(audio_mic_level());
 
-	ARG_UNUSED(s);
-
-	/* Read the level ONCE so the bar and the printed RMS are always from the
-	 * same sample (the capture thread updates mic_rms_peak asynchronously).
-	 */
-	lvl = audio_mic_level();
-	bars = audio_mic_bars(lvl);
+	m[0] = '[';
 	for (uint8_t i = 0; i < 4U; i++) {
-		meter[i] = (i < bars) ? '#' : '.';
+		m[1 + i] = (i < bars) ? '#' : '.';
 	}
-	meter[4] = '\0';
-
-	gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG,
-		      audio_ready() ? "speak now" : "init failed");
-	/*
-	 * Bar and RMS on SEPARATE lines: the 10px font fits only ~13 chars on the
-	 * 135px panel, so "[####] rms=NNNNN" clips the RMS to ~2 digits. The fixed
-	 * %-6u field clears stale digits as the level swings 1..32767.
-	 */
-	snprintf(line, sizeof(line), "[%s]", meter);
-	gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
-	snprintf(line, sizeof(line), "rms=%-6u", lvl);
-	gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
+	m[5] = ']';
+	m[6] = '\0';
+	gfx_draw_text(MARGIN_X, body_line_y(row), HOME_FG, HOME_BG, m);
 }
 
 /*
@@ -259,32 +245,37 @@ static void render_audio_rec_body(const struct app_status *s)
 		uint32_t el = audio_rec_len_ms();
 		uint32_t left = (el < total) ? (total - el) : 0U;
 
-		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "* SPEAK NOW *");
+		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "state: rec   ");
+		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, "* SPEAK NOW *");
 		snprintf(line, sizeof(line), "%u.%us left  ",
 			 left / 1000U, (left % 1000U) / 100U);
-		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
-		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1: stop     ");
+		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
+		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "K1: stop     ");
 		break;
 	}
 	case AUDIO_REC_REVIEW:
+		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "state: review");
+		draw_mic_meter(1); /* live mic still shown while reviewing */
 		snprintf(line, sizeof(line), "rec %u.%us    ",
 			 audio_rec_len_ms() / 1000U, (audio_rec_len_ms() % 1000U) / 100U);
-		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, line);
+		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
 		snprintf(line, sizeof(line), "peak=%-6u", audio_rec_peak());
-		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
-		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1: play     ");
-		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "hold: re-rec ");
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, line);
+		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "K1: play     ");
 		gfx_draw_text(MARGIN_X, body_line_y(5), HOME_FG, HOME_BG, "K2: exit     ");
+		gfx_draw_text(MARGIN_X, body_line_y(6), HOME_FG, HOME_BG, "(hold K1=rec)");
 		break;
 	case AUDIO_REC_PLAYING:
-		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "> playing... ");
+		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "state: play  ");
+		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, "> playing... ");
 		snprintf(line, sizeof(line), "peak=%-6u", audio_rec_peak());
-		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, line);
+		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
 		break;
 	case AUDIO_REC_IDLE:
 	default:
 		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG,
-			      audio_ready() ? "ready        " : "init failed  ");
+			      audio_ready() ? "state: ready " : "init failed  ");
+		draw_mic_meter(1); /* live mic level: confirms the device is hearing you */
 		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1: record   ");
 		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "K2: exit     ");
 		break;
@@ -436,24 +427,12 @@ void ui_render(enum app_page page, const struct app_status *s)
 		render_power_body(s);
 		break;
 #ifdef CONFIG_APP_AUDIO
-	case PAGE_AUDIO:
-		if (page_changed) {
-			gfx_clear(HOME_BG);
-			draw_header(page);
-		}
-		/*
-		 * Live mic meter. The capture thread (enabled for this page from
-		 * main.c via audio_capture_set) streams the ADC and updates the
-		 * level; the UI only READS it here and never touches I2S, so
-		 * redrawing the bar cannot disturb the SPI display (HW-016e). The
-		 * main loop ticks faster on this page so the bar updates smoothly.
-		 */
-		render_audio_body(s);
-		break;
 	case PAGE_AUDIO_REC: {
-		/* Clear on a page change OR a mode change so each modal screen starts
-		 * clean (no residue from a longer previous line); within a mode only
-		 * the fixed-width dynamic lines are redrawn (no flash).
+		/* Clear on a page change OR a state change so each screen starts clean
+		 * (no residue from a longer previous line); within a state only the
+		 * fixed-width dynamic lines (meter, countdown) are redrawn -- no flash.
+		 * The live mic meter (folded in from the old AUDIO page) updates here
+		 * without a clear because READY/REVIEW keep the same state.
 		 */
 		static int last_rec_st = -1;
 		int st = (int)audio_rec_get_state();

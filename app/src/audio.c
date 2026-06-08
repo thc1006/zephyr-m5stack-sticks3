@@ -551,6 +551,16 @@ void audio_capture_set(bool on)
 }
 
 /*
+ * Record/playback command from the UI thread (full engine below). Declared here
+ * because meter_session() yields the moment a command is pending, so the thread
+ * can service a record/play request even while the live meter is streaming.
+ */
+#define REC_CMD_NONE   0U
+#define REC_CMD_RECORD 1U
+#define REC_CMD_PLAY   2U
+static volatile uint8_t rec_cmd; /* REC_CMD_*, set by the UI thread */
+
+/*
  * One live-meter session: stream full-duplex while the AUDIO page is up,
  * publishing the peak RMS of each ~128 ms window, and return on leave/error.
  * (Extracted unchanged from the old thread body so the thread can also dispatch
@@ -572,10 +582,11 @@ static void meter_session(void)
 		return;
 	}
 
-	/* Stream while still on the page. TX must keep feeding silence or the
-	 * shared clock stops and RX stalls.
+	/* Stream while still wanted. TX must keep feeding silence or the shared
+	 * clock stops and RX stalls. Also exit on a pending record/play request so
+	 * the thread can service it (pressing K1 on the READY/REVIEW meter screen).
 	 */
-	while (ready && capture_on) {
+	while (ready && capture_on && rec_cmd == REC_CMD_NONE) {
 		size_t size = sizeof(rx_buf);
 		size_t frames;
 		uint16_t rms;
@@ -616,9 +627,6 @@ static void meter_session(void)
  * UI requests record/play via the volatile rec_cmd and reads rec_state.
  */
 #define AUDIO_REC_SAMPLES ((uint32_t)CONFIG_APP_AUDIO_REC_SECONDS * AUDIO_SAMPLE_RATE)
-#define REC_CMD_NONE   0U
-#define REC_CMD_RECORD 1U
-#define REC_CMD_PLAY   2U
 
 /* The recorded mono clip (16-bit @ AUDIO_SAMPLE_RATE). In .bss -> internal SRAM
  * (the buffer itself is not DMA memory; only the I2S slab blocks are). Sized by
@@ -629,7 +637,6 @@ static int16_t gain_tmp[BLOCK_FRAMES];                   /* one block, post-gain
 static int16_t play_block[BLOCK_FRAMES * AUDIO_CHANNELS]; /* one block, stereo TX */
 
 static volatile enum audio_rec_state rec_state = AUDIO_REC_IDLE;
-static volatile uint8_t rec_cmd;      /* REC_CMD_*, set by the UI thread */
 static volatile bool rec_abort;       /* UI request to stop a recording early */
 static volatile uint32_t rec_samples; /* mono samples currently held in rec_buf */
 static volatile uint16_t rec_peak;    /* peak capture RMS of the last recording */
@@ -828,11 +835,12 @@ static void audio_capture_thread(void *p1, void *p2, void *p3)
 			k_msleep(50);
 			continue;
 		}
-		if (capture_on) {
-			meter_session();
-			continue;
-		}
 
+		/* Service a record/play request AHEAD of the meter: the meter loop
+		 * exits on a pending request, and checking it first here means the
+		 * request runs even if the main loop re-asserts capture_on in the
+		 * brief window before do_record()/do_play() updates the state.
+		 */
 		cmd = rec_cmd;
 		rec_cmd = REC_CMD_NONE;
 		if (cmd == REC_CMD_RECORD) {
@@ -841,6 +849,11 @@ static void audio_capture_thread(void *p1, void *p2, void *p3)
 		}
 		if (cmd == REC_CMD_PLAY) {
 			do_play();
+			continue;
+		}
+
+		if (capture_on) {
+			meter_session();
 			continue;
 		}
 
