@@ -35,7 +35,7 @@ LOG_MODULE_REGISTER(ui, LOG_LEVEL_INF);
 #define HDR_FG     GFX_BLACK
 
 #define MARGIN_X   4U         /* left text margin */
-#define LINE_GAP   4U         /* vertical gap between body text lines */
+#define LINE_GAP   8U         /* vertical gap between body text lines (roomy) */
 
 #if defined(CONFIG_APP_DISPLAY_DEMO) && \
 	DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_display), okay)
@@ -239,6 +239,9 @@ static void render_audio_rec_body(const struct app_status *s)
 
 	ARG_UNUSED(s);
 
+	/* Every state lays its lines out on consecutive rows (even spacing) and
+	 * shows what each button does, so there is always on-screen guidance.
+	 */
 	switch (audio_rec_get_state()) {
 	case AUDIO_REC_RECORDING: {
 		uint32_t total = (uint32_t)CONFIG_APP_AUDIO_REC_SECONDS * 1000U;
@@ -246,38 +249,37 @@ static void render_audio_rec_body(const struct app_status *s)
 		uint32_t left = (el < total) ? (total - el) : 0U;
 
 		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "state: rec   ");
-		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, "* SPEAK NOW *");
+		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, "SPEAK NOW    ");
 		snprintf(line, sizeof(line), "%u.%us left  ",
 			 left / 1000U, (left % 1000U) / 100U);
 		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
-		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "K1: stop     ");
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1 stop      ");
 		break;
 	}
 	case AUDIO_REC_REVIEW:
 		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "state: review");
 		draw_mic_meter(1); /* live mic still shown while reviewing */
-		snprintf(line, sizeof(line), "rec %u.%us    ",
-			 audio_rec_len_ms() / 1000U, (audio_rec_len_ms() % 1000U) / 100U);
+		snprintf(line, sizeof(line), "%u.%us pk%-5u",
+			 audio_rec_len_ms() / 1000U, (audio_rec_len_ms() % 1000U) / 100U,
+			 audio_rec_peak());
 		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
-		snprintf(line, sizeof(line), "peak=%-6u", audio_rec_peak());
-		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, line);
-		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "K1: play     ");
-		gfx_draw_text(MARGIN_X, body_line_y(5), HOME_FG, HOME_BG, "K2: exit     ");
-		gfx_draw_text(MARGIN_X, body_line_y(6), HOME_FG, HOME_BG, "(hold K1=rec)");
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1 play      ");
+		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "hold K1: rec ");
+		gfx_draw_text(MARGIN_X, body_line_y(5), HOME_FG, HOME_BG, "K2 next page ");
 		break;
 	case AUDIO_REC_PLAYING:
 		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG, "state: play  ");
-		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, "> playing... ");
-		snprintf(line, sizeof(line), "peak=%-6u", audio_rec_peak());
-		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, line);
+		gfx_draw_text(MARGIN_X, body_line_y(1), HOME_FG, HOME_BG, "playing...   ");
+		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, "(auto-ends)  ");
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K2 next page ");
 		break;
 	case AUDIO_REC_IDLE:
 	default:
 		gfx_draw_text(MARGIN_X, body_line_y(0), HOME_FG, HOME_BG,
 			      audio_ready() ? "state: ready " : "init failed  ");
 		draw_mic_meter(1); /* live mic level: confirms the device is hearing you */
-		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K1: record   ");
-		gfx_draw_text(MARGIN_X, body_line_y(4), HOME_FG, HOME_BG, "K2: exit     ");
+		gfx_draw_text(MARGIN_X, body_line_y(2), HOME_FG, HOME_BG, "K1 record    ");
+		gfx_draw_text(MARGIN_X, body_line_y(3), HOME_FG, HOME_BG, "K2 next page ");
 		break;
 	}
 }

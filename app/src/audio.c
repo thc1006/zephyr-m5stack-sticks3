@@ -49,8 +49,12 @@ LOG_MODULE_REGISTER(audio, LOG_LEVEL_INF);
 #define TONE_FREQ_HZ   440U
 #define TONE_MS        200U
 
-/* Safe low playback volume in dB (ES8311 set_property maps dB -> reg code). */
-#define AUDIO_VOLUME_DB (-20)
+/* Playback volume in dB (ES8311 set_property maps dB -> reg code). Raised from
+ * the original conservative -20 dB so a recorded clip is clearly audible on the
+ * small speaker (issue #14 QR-1); the digital gain (CONFIG_APP_AUDIO_REC_GAIN_Q8)
+ * stacks on top. The 440 Hz self-test beep also uses this volume.
+ */
+#define AUDIO_VOLUME_DB (-6)
 
 /*
  * I2S TX memory blocks. block_size is a multiple of 4 (one stereo 16-bit frame

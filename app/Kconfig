@@ -59,7 +59,7 @@ config APP_AUDIO_REC_SECONDS
 config APP_AUDIO_REC_GAIN_Q8
 	int "Record->playback digital gain (Q8; 256 = 1.0x)"
 	depends on APP_AUDIO
-	default 1024
+	default 2048
 	range 256 8192
 	help
 	  Fixed-point gain applied to the recorded clip on playback so a quiet mic
