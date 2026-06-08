@@ -65,6 +65,40 @@ void audio_capture_set(bool on);
 uint16_t audio_mic_level(void);
 uint8_t audio_mic_bars(uint16_t level);
 
+/*
+ * Record -> playback demo (issue #14). A fixed-length mono clip is recorded
+ * from the mic into RAM, then played back through the speaker, proving the full
+ * audio-DATA round trip (mic -> ADC -> I2S RX -> RAM -> I2S TX -> DAC -> amp ->
+ * speaker), beyond the level meter (#6) and the synthesised tone (#3). The
+ * record/playback runs on the audio capture thread; the UI thread only issues
+ * the requests and reads the state below, and NEVER touches I2S (HW-016e).
+ */
+enum audio_rec_state {
+	AUDIO_REC_IDLE = 0,  /* nothing recorded yet (initial / empty) */
+	AUDIO_REC_RECORDING, /* capturing the clip ("speak now") */
+	AUDIO_REC_REVIEW,    /* a clip is held -- ready to play / re-record */
+	AUDIO_REC_PLAYING,   /* playing the held clip back */
+};
+
+/*
+ * Ask the audio thread to (re)record a clip of CONFIG_APP_AUDIO_REC_SECONDS.
+ * Picked up when the thread is idle (not already recording/playing); a no-op
+ * until audio_init() has succeeded.
+ */
+void audio_record_request(void);
+
+/* Ask the audio thread to play the held clip back. No-op if nothing is held. */
+void audio_play_request(void);
+
+/* Current record/playback state, for the UI. */
+enum audio_rec_state audio_rec_get_state(void);
+
+/* Peak capture RMS (0..32768) of the last recording, for on-screen feedback. */
+uint16_t audio_rec_peak(void);
+
+/* Length of the held clip in milliseconds (0 if nothing is recorded). */
+uint32_t audio_rec_len_ms(void);
+
 #endif /* CONFIG_APP_AUDIO */
 
 #endif /* M5STICKS3_AUDIO_H */

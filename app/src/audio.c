@@ -539,7 +539,7 @@ stop:
  * leave -- bounded churn, like the HW-013-proven audio_loopback). Any bounded-I/O
  * failure breaks to a DROP-only stop (skips DRAIN) so a wedged clock can't hang.
  */
-#define CAPTURE_STACK_SIZE    3072
+#define CAPTURE_STACK_SIZE    4096
 #define CAPTURE_PRIORITY      7
 #define CAPTURE_WINDOW_BLOCKS 8U /* publish the level every ~128 ms */
 
@@ -550,6 +550,238 @@ void audio_capture_set(bool on)
 	capture_on = on;
 }
 
+/*
+ * One live-meter session: stream full-duplex while the AUDIO page is up,
+ * publishing the peak RMS of each ~128 ms window, and return on leave/error.
+ * (Extracted unchanged from the old thread body so the thread can also dispatch
+ * the record/playback engine below.)
+ */
+static void meter_session(void)
+{
+	uint16_t wpeak = 0U;
+	uint32_t wc = 0U;
+
+	/* Start ONE full-duplex session (amp stays OFF for capture). */
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	audio_codec_start_output(codec_dev);
+	if (loop_tx(zero_block) < 0 || loop_tx(zero_block) < 0 ||
+	    i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START) < 0) {
+		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+		audio_codec_stop_output(codec_dev);
+		k_msleep(50);
+		return;
+	}
+
+	/* Stream while still on the page. TX must keep feeding silence or the
+	 * shared clock stops and RX stalls.
+	 */
+	while (ready && capture_on) {
+		size_t size = sizeof(rx_buf);
+		size_t frames;
+		uint16_t rms;
+
+		if (loop_tx(zero_block) < 0) {
+			break;
+		}
+		if (i2s_buf_read(i2s_dev, rx_buf, &size) < 0) {
+			break;
+		}
+		if (size > sizeof(rx_buf)) {
+			size = sizeof(rx_buf);
+		}
+		frames = size / AUDIO_FRAME_BYTES;
+		audio_deinterleave(rx_buf, frames, AUDIO_MIC_SLOT, mono_buf);
+		rms = audio_rms_i16(mono_buf, frames);
+		if (rms > wpeak) {
+			wpeak = rms;
+		}
+		if (++wc >= CAPTURE_WINDOW_BLOCKS) {
+			mic_rms_peak = wpeak;
+			wpeak = 0U;
+			wc = 0U;
+		}
+	}
+
+	/* Stop: DROP only (skip DRAIN so a wedged clock can't hang), mute the
+	 * DAC, and clear the level for the next visit.
+	 */
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	audio_codec_stop_output(codec_dev);
+	mic_rms_peak = 0U;
+}
+
+/*
+ * Record -> playback engine (issue #14). Runs ONLY on the audio thread (below),
+ * so the UI thread never touches I2S (HW-016e). One clip lives in rec_buf; the
+ * UI requests record/play via the volatile rec_cmd and reads rec_state.
+ */
+#define AUDIO_REC_SAMPLES ((uint32_t)CONFIG_APP_AUDIO_REC_SECONDS * AUDIO_SAMPLE_RATE)
+#define REC_CMD_NONE   0U
+#define REC_CMD_RECORD 1U
+#define REC_CMD_PLAY   2U
+
+/* The recorded mono clip (16-bit @ AUDIO_SAMPLE_RATE). In .bss -> internal SRAM
+ * (the buffer itself is not DMA memory; only the I2S slab blocks are). Sized by
+ * CONFIG_APP_AUDIO_REC_SECONDS (32 KB/s); see docs/14_RECORD_PLAYBACK_DESIGN.md.
+ */
+static int16_t rec_buf[AUDIO_REC_SAMPLES];
+static int16_t gain_tmp[BLOCK_FRAMES];                   /* one block, post-gain mono */
+static int16_t play_block[BLOCK_FRAMES * AUDIO_CHANNELS]; /* one block, stereo TX */
+
+static volatile enum audio_rec_state rec_state = AUDIO_REC_IDLE;
+static volatile uint8_t rec_cmd;      /* REC_CMD_*, set by the UI thread */
+static volatile uint32_t rec_samples; /* mono samples currently held in rec_buf */
+static volatile uint16_t rec_peak;    /* peak capture RMS of the last recording */
+
+/*
+ * Build one stereo TX block from rec_buf[pos..]: apply the playback gain, expand
+ * mono -> stereo, and zero-pad a short final block so a full BLOCK_SIZE is sent.
+ * Returns the number of mono source samples consumed (<= BLOCK_FRAMES).
+ */
+static size_t fill_play_block(uint32_t pos, uint16_t gain_q8)
+{
+	size_t n = rec_samples - pos;
+
+	if (n > BLOCK_FRAMES) {
+		n = BLOCK_FRAMES;
+	}
+	audio_gain_clip_i16(&rec_buf[pos], n, gain_q8, gain_tmp);
+	audio_interleave_mono(gain_tmp, n, play_block);
+	if (n < BLOCK_FRAMES) {
+		memset(&play_block[n * AUDIO_CHANNELS], 0,
+		       (BLOCK_FRAMES - n) * AUDIO_CHANNELS * sizeof(int16_t));
+	}
+	return n;
+}
+
+/* Capture up to AUDIO_REC_SAMPLES mono samples into rec_buf (amp OFF). */
+static void do_record(void)
+{
+	uint16_t peak = 0U;
+
+	rec_samples = 0U;
+	rec_peak = 0U;
+	rec_state = AUDIO_REC_RECORDING;
+	printk("REC start: up to %u ms, speak now\n",
+	       (unsigned int)(AUDIO_REC_SAMPLES * 1000U / AUDIO_SAMPLE_RATE));
+
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	audio_codec_start_output(codec_dev);
+	if (loop_tx(zero_block) < 0 || loop_tx(zero_block) < 0 ||
+	    i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START) < 0) {
+		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+		audio_codec_stop_output(codec_dev);
+		rec_state = AUDIO_REC_IDLE;
+		LOG_ERR("record: I2S start failed");
+		return;
+	}
+
+	/* Read blocks, keep TX fed with silence (shared clock), append mono. */
+	while (rec_samples < AUDIO_REC_SAMPLES) {
+		size_t size = sizeof(rx_buf);
+		size_t frames;
+		uint32_t remain;
+		uint16_t r;
+
+		if (loop_tx(zero_block) < 0) {
+			break;
+		}
+		if (i2s_buf_read(i2s_dev, rx_buf, &size) < 0) {
+			break;
+		}
+		if (size > sizeof(rx_buf)) {
+			size = sizeof(rx_buf);
+		}
+		frames = size / AUDIO_FRAME_BYTES;
+		remain = AUDIO_REC_SAMPLES - rec_samples;
+		if (frames > remain) {
+			frames = remain; /* never overrun rec_buf on the last block */
+		}
+		audio_deinterleave(rx_buf, frames, AUDIO_MIC_SLOT, &rec_buf[rec_samples]);
+		r = audio_rms_i16(&rec_buf[rec_samples], frames);
+		if (r > peak) {
+			peak = r;
+		}
+		rec_samples += frames;
+	}
+
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	audio_codec_stop_output(codec_dev);
+	rec_peak = peak;
+	rec_state = (rec_samples > 0U) ? AUDIO_REC_REVIEW : AUDIO_REC_IDLE;
+	printk("REC done: %u ms peak_rms=%u\n",
+	       (unsigned int)(rec_samples * 1000U / AUDIO_SAMPLE_RATE), peak);
+}
+
+/* Play the held clip back through the speaker (amp anti-pop, gain applied). */
+static void do_play(void)
+{
+	uint16_t gain = (uint16_t)CONFIG_APP_AUDIO_REC_GAIN_Q8;
+	uint32_t pos = 0U;
+	int ret;
+
+	if (rec_samples == 0U) {
+		return;
+	}
+	rec_state = AUDIO_REC_PLAYING;
+	printk("PLAY start: %u ms gain_q8=%u\n",
+	       (unsigned int)(rec_samples * 1000U / AUDIO_SAMPLE_RATE), gain);
+
+	(void)i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
+	audio_codec_start_output(codec_dev);
+
+	/* Pre-queue two blocks while stopped (anti-underrun), then START. */
+	for (int i = 0; i < 2 && pos < rec_samples; i++) {
+		pos += fill_play_block(pos, gain);
+		ret = i2s_buf_write(i2s_dev, play_block, BLOCK_SIZE);
+		if (ret < 0) {
+			LOG_ERR("play prequeue write failed (%d)", ret);
+			goto stop;
+		}
+	}
+
+	ret = i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
+	if (ret < 0) {
+		LOG_ERR("play I2S start failed (%d)", ret);
+		goto stop;
+	}
+
+	/* Amp ON only once valid frames are already streaming (anti-pop). */
+	k_msleep(AMP_SETTLE_MS);
+	(void)gpio_pin_set_dt(&amp_gpio, 1);
+
+	while (pos < rec_samples) {
+		pos += fill_play_block(pos, gain);
+		ret = i2s_buf_write(i2s_dev, play_block, BLOCK_SIZE);
+		if (ret < 0) {
+			LOG_WRN("play write failed (%d)", ret);
+			break;
+		}
+	}
+
+	/* Flush queued blocks, then wait out the in-flight ones before the amp off
+	 * (BLOCK_COUNT blocks can be queued; each is ~16 ms).
+	 */
+	(void)i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DRAIN);
+	k_msleep(AMP_SETTLE_MS +
+		 (BLOCK_COUNT * BLOCK_FRAMES * 1000U / AUDIO_SAMPLE_RATE));
+
+stop:
+	if (gpio_pin_set_dt(&amp_gpio, 0) < 0) {
+		LOG_ERR("amp OFF failed; speaker may remain enabled");
+	}
+	audio_codec_stop_output(codec_dev);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
+	rec_state = AUDIO_REC_REVIEW;
+	printk("PLAY done\n");
+}
+
+/*
+ * The audio thread: serialise everything that touches I2S. The AUDIO page meter
+ * (capture_on) takes priority; otherwise service one record/playback request.
+ * Only ever one of {meter, record, play} runs at a time, so they safely share
+ * rx_buf / mono_buf and the codec.
+ */
 static void audio_capture_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -557,62 +789,29 @@ static void audio_capture_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	for (;;) {
-		uint16_t wpeak = 0U;
-		uint32_t wc = 0U;
+		uint8_t cmd;
 
-		if (!ready || !capture_on) {
-			mic_rms_peak = 0U;
+		if (!ready) {
 			k_msleep(50);
 			continue;
 		}
-
-		/* Start ONE full-duplex session (amp stays OFF for capture). */
-		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
-		audio_codec_start_output(codec_dev);
-		if (loop_tx(zero_block) < 0 || loop_tx(zero_block) < 0 ||
-		    i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START) < 0) {
-			(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
-			audio_codec_stop_output(codec_dev);
-			k_msleep(50);
+		if (capture_on) {
+			meter_session();
 			continue;
 		}
 
-		/* Stream while still on the page. TX must keep feeding silence or
-		 * the shared clock stops and RX stalls.
-		 */
-		while (ready && capture_on) {
-			size_t size = sizeof(rx_buf);
-			size_t frames;
-			uint16_t rms;
-
-			if (loop_tx(zero_block) < 0) {
-				break;
-			}
-			if (i2s_buf_read(i2s_dev, rx_buf, &size) < 0) {
-				break;
-			}
-			if (size > sizeof(rx_buf)) {
-				size = sizeof(rx_buf);
-			}
-			frames = size / AUDIO_FRAME_BYTES;
-			audio_deinterleave(rx_buf, frames, AUDIO_MIC_SLOT, mono_buf);
-			rms = audio_rms_i16(mono_buf, frames);
-			if (rms > wpeak) {
-				wpeak = rms;
-			}
-			if (++wc >= CAPTURE_WINDOW_BLOCKS) {
-				mic_rms_peak = wpeak;
-				wpeak = 0U;
-				wc = 0U;
-			}
+		cmd = rec_cmd;
+		rec_cmd = REC_CMD_NONE;
+		if (cmd == REC_CMD_RECORD) {
+			do_record();
+			continue;
+		}
+		if (cmd == REC_CMD_PLAY) {
+			do_play();
+			continue;
 		}
 
-		/* Stop: DROP only (skip DRAIN so a wedged clock can't hang), mute
-		 * the DAC, and clear the level for the next visit.
-		 */
-		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
-		audio_codec_stop_output(codec_dev);
-		mic_rms_peak = 0U;
+		k_msleep(50);
 	}
 }
 
@@ -627,6 +826,35 @@ uint16_t audio_mic_level(void)
 uint8_t audio_mic_bars(uint16_t level)
 {
 	return audio_level_bars(level, AUDIO_MIC_FULL, 4U);
+}
+
+void audio_record_request(void)
+{
+	if (ready) {
+		rec_cmd = REC_CMD_RECORD;
+	}
+}
+
+void audio_play_request(void)
+{
+	if (ready && rec_samples > 0U) {
+		rec_cmd = REC_CMD_PLAY;
+	}
+}
+
+enum audio_rec_state audio_rec_get_state(void)
+{
+	return rec_state;
+}
+
+uint16_t audio_rec_peak(void)
+{
+	return rec_peak;
+}
+
+uint32_t audio_rec_len_ms(void)
+{
+	return rec_samples * 1000U / AUDIO_SAMPLE_RATE;
 }
 
 #endif /* CONFIG_APP_AUDIO */
