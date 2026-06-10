@@ -224,6 +224,46 @@ ZTEST(audio_dsp, test_gain_clip)
 		zassert_equal(buf[2], 6000, "in-place x2.0 [2]");
 	}
 
+	/* Truncation is toward zero, not floor: -3 * 1.5 = -4.5 -> -4 (a >>8
+	 * shift-based rewrite would floor to -5). Pins the rounding mode.
+	 */
+	{
+		const int16_t neg[1] = {-3};
+		int16_t o[1];
+
+		audio_gain_clip_i16(neg, 1, 384, o);
+		zassert_equal(o[0], -4, "negative fractional truncates toward zero");
+	}
+
+	/* Saturation boundary is exact: v == 32767 / -32768 is NOT clamped, the
+	 * first value past it (32768 / -32769) is. Catches an off-by-one clamp.
+	 */
+	{
+		const int16_t edge[2] = {256, -256};
+		int16_t o[1];
+
+		audio_gain_clip_i16(&edge[0], 1, 32767, o); /* 256*32767/256 = 32767 */
+		zassert_equal(o[0], 32767, "v==32767 is not clamped");
+		audio_gain_clip_i16(&edge[1], 1, 32767, o); /* -256*32767/256 = -32767 */
+		zassert_equal(o[0], -32767, "in-range negative is not clamped");
+		audio_gain_clip_i16(&edge[0], 1, 32768, o); /* 256*32768/256 = 32768 -> clamp */
+		zassert_equal(o[0], 32767, "v==32768 clamps to +32767");
+		audio_gain_clip_i16(&edge[1], 1, 32769, o); /* -256*32769/256 = -32769 -> clamp */
+		zassert_equal(o[0], -32768, "v==-32769 clamps to -32768");
+	}
+
+	/* Max documented gain (uint16 65535) on INT16_MIN: the int32 product
+	 * -32768*65535 = -2147450880 still fits int32 (margin ~33k), so it clamps
+	 * cleanly instead of overflowing/wrapping to a positive value.
+	 */
+	{
+		const int16_t mn[1] = {INT16_MIN};
+		int16_t o[1];
+
+		audio_gain_clip_i16(mn, 1, 65535, o);
+		zassert_equal(o[0], -32768, "INT16_MIN at max gain clamps (no int32 overflow)");
+	}
+
 	/* NULL / n=0 are no-ops (out left unchanged). */
 	out[0] = 5;
 	audio_gain_clip_i16(NULL, 4, 256, out);

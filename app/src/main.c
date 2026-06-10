@@ -226,9 +226,14 @@ int main(void)
 		 * (HW-016e). The thread services a record/play request ahead of the
 		 * meter, so pressing K1 breaks out of metering cleanly.
 		 */
+		/* Snapshot the state once: the audio thread can transition it
+		 * between reads, so two getter calls could disagree and yield a
+		 * torn meter decision.
+		 */
+		enum audio_rec_state rec_st = audio_rec_get_state();
 		bool meter = (page == PAGE_AUDIO_REC) &&
-			     (audio_rec_get_state() == AUDIO_REC_IDLE ||
-			      audio_rec_get_state() == AUDIO_REC_REVIEW);
+			     (rec_st == AUDIO_REC_IDLE ||
+			      rec_st == AUDIO_REC_REVIEW);
 
 		if (!meter) {
 			audio_capture_set(false);
