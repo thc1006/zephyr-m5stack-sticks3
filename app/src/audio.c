@@ -86,8 +86,11 @@ K_MEM_SLAB_DEFINE_STATIC(rx_slab, BLOCK_SIZE, BLOCK_COUNT, 32);
 #define LOOP_IO_TIMEOUT_MS 200
 
 /*
- * Mic capture (issue #6). The ES8311 mono ADC duplicates its data onto both I2S
- * slots, so either slot index works; AUDIO_MIC_SLOT picks one. AUDIO_MIC_FULL is
+ * Mic capture (issue #6). The ES8311 mono ADC drives the captured data on I2S
+ * slot 0; slot 1 is silent (HW-016d). AUDIO_MIC_SLOT selects the active slot and
+ * audio_deinterleave() extracts it -- picking the silent slot reproduces the
+ * HW-016 all-zero failure, so it is pinned, not assumed interchangeable.
+ * AUDIO_MIC_FULL is
  * the empirical full-scale RMS for the PAGE_AUDIO live bar: quiet ~70-100, a
  * normal voice a few hundred to a few thousand, a loud clap >= 12000, so 2000
  * gives visible bars for speech without pinning the bar to 4 on every breath.
@@ -581,7 +584,12 @@ void audio_capture_set(bool on)
 #define REC_CMD_NONE   0U
 #define REC_CMD_RECORD 1U
 #define REC_CMD_PLAY   2U
-static volatile uint8_t rec_cmd; /* REC_CMD_*, set by the UI thread */
+/* Cross-thread command from the UI thread to the audio thread. atomic_t (not a
+ * plain volatile): the audio thread consumes it with a single atomic exchange
+ * (atomic_set returns the previous value), so a command the UI writes can never
+ * be lost in the gap between a separate read and clear.
+ */
+static atomic_t rec_cmd = ATOMIC_INIT(REC_CMD_NONE);
 
 /*
  * One live-meter session: stream full-duplex while the AUDIO page is up,
@@ -609,7 +617,7 @@ static void meter_session(void)
 	 * clock stops and RX stalls. Also exit on a pending record/play request so
 	 * the thread can service it (pressing K1 on the READY/REVIEW meter screen).
 	 */
-	while (ready && capture_on && rec_cmd == REC_CMD_NONE) {
+	while (ready && capture_on && atomic_get(&rec_cmd) == REC_CMD_NONE) {
 		size_t size = sizeof(rx_buf);
 		size_t frames;
 		uint16_t rms;
@@ -647,7 +655,7 @@ static void meter_session(void)
 /*
  * Record -> playback engine (issue #14). Runs ONLY on the audio thread (below),
  * so the UI thread never touches I2S (HW-016e). One clip lives in rec_buf; the
- * UI requests record/play via the volatile rec_cmd and reads rec_state.
+ * UI requests record/play via the atomic rec_cmd and reads rec_state.
  */
 #define AUDIO_REC_SAMPLES ((uint32_t)CONFIG_APP_AUDIO_REC_SECONDS * AUDIO_SAMPLE_RATE)
 
@@ -671,8 +679,13 @@ static volatile uint16_t rec_peak;    /* peak capture RMS of the last recording 
  */
 static size_t fill_play_block(uint32_t pos, uint16_t gain_q8)
 {
-	size_t n = rec_samples - pos;
+	uint32_t total = rec_samples; /* snapshot; never underflow if pos >= total */
+	size_t n;
 
+	if (pos >= total) {
+		return 0U;
+	}
+	n = total - pos;
 	if (n > BLOCK_FRAMES) {
 		n = BLOCK_FRAMES;
 	}
@@ -869,8 +882,11 @@ static void audio_capture_thread(void *p1, void *p2, void *p3)
 		 * request runs even if the main loop re-asserts capture_on in the
 		 * brief window before do_record()/do_play() updates the state.
 		 */
-		cmd = rec_cmd;
-		rec_cmd = REC_CMD_NONE;
+		/* Read+clear in one atomic exchange (returns the previous value),
+		 * so a command set by the UI thread is never wiped by a separate
+		 * clear (the volatile two-step could lose it).
+		 */
+		cmd = (uint8_t)atomic_set(&rec_cmd, REC_CMD_NONE);
 		if (cmd == REC_CMD_RECORD) {
 			do_record();
 			continue;
@@ -905,14 +921,14 @@ uint8_t audio_mic_bars(uint16_t level)
 void audio_record_request(void)
 {
 	if (ready) {
-		rec_cmd = REC_CMD_RECORD;
+		atomic_set(&rec_cmd, REC_CMD_RECORD);
 	}
 }
 
 void audio_play_request(void)
 {
 	if (ready && rec_samples > 0U) {
-		rec_cmd = REC_CMD_PLAY;
+		atomic_set(&rec_cmd, REC_CMD_PLAY);
 	}
 }
 

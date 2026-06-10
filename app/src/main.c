@@ -159,6 +159,14 @@ static void input_cb(struct input_event *evt, void *user_data)
 			}
 		} else if (evt->code == INPUT_KEY_1 && evt->value != 0) {
 			rec_page_k2();
+			/* If K2 exited the page mid-K1-hold, disarm K1: otherwise
+			 * the (ignored) release lands off-page and k1_armed stays
+			 * set, so the release of the press that later navigates
+			 * back in would fire a spurious REC action.
+			 */
+			if (app_page_get() != PAGE_AUDIO_REC) {
+				k1_armed = false;
+			}
 		}
 		return;
 	}
