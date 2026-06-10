@@ -108,8 +108,16 @@ static void rec_page_k1(bool long_press)
 
 static void rec_page_k2(void)
 {
-	if (audio_rec_get_state() == AUDIO_REC_RECORDING) {
-		return; /* don't leave mid-recording */
+	enum audio_rec_state s = audio_rec_get_state();
+
+	if (s == AUDIO_REC_RECORDING || s == AUDIO_REC_PLAYING) {
+		/*
+		 * Don't leave mid-recording, and don't leave mid-playback: the
+		 * audio thread still owns I2S/codec, so painting another page's
+		 * first frame concurrently can wedge I2S (HW-016e). Per the #14
+		 * button map, K2 is inert in both states.
+		 */
+		return;
 	}
 	app_page_next(); /* exit -> next page */
 	k_sem_give(&nav_sem);
