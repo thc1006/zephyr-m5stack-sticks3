@@ -96,3 +96,34 @@ uint8_t audio_level_bars(uint16_t level, uint16_t full, uint8_t nbars)
 
 	return (uint8_t)(((uint32_t)level * nbars) / full);
 }
+
+void audio_interleave_mono(const int16_t *mono, size_t frames, int16_t *out)
+{
+	if (mono == NULL || out == NULL || frames == 0U) {
+		return;
+	}
+
+	for (size_t i = 0; i < frames; i++) {
+		out[(i * 2U)] = mono[i];      /* left  */
+		out[(i * 2U) + 1U] = mono[i]; /* right */
+	}
+}
+
+void audio_gain_clip_i16(const int16_t *in, size_t n, uint16_t gain_q8, int16_t *out)
+{
+	if (in == NULL || out == NULL || n == 0U) {
+		return;
+	}
+
+	for (size_t i = 0; i < n; i++) {
+		/* |in| <= 32768 and gain_q8 <= 65535, so the product fits int32. */
+		int32_t v = ((int32_t)in[i] * (int32_t)gain_q8) / 256;
+
+		if (v > 32767) {
+			v = 32767;
+		} else if (v < -32768) {
+			v = -32768;
+		}
+		out[i] = (int16_t)v;
+	}
+}

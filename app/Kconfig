@@ -45,6 +45,28 @@ config APP_AUDIO
 	  unchanged; enable it via -DEXTRA_CONF_FILE=overlay-audio.conf, which
 	  turns on the codec, I2S, and DMA Kconfigs.
 
+config APP_AUDIO_REC_SECONDS
+	int "Record->playback clip length (seconds)"
+	depends on APP_AUDIO
+	default 5
+	range 1 8
+	help
+	  Length of the mic clip recorded on the REC page, in seconds (issue #14),
+	  at 16 kHz / 16-bit mono. Each second uses 32 KB of internal SRAM (dram0):
+	  the default 5 s = 156 KB, which fits with margin (see
+	  docs/14_RECORD_PLAYBACK_DESIGN.md baseline).
+
+config APP_AUDIO_REC_GAIN_Q8
+	int "Record->playback digital gain (Q8; 256 = 1.0x)"
+	depends on APP_AUDIO
+	default 2048
+	range 256 8192
+	help
+	  Fixed-point gain applied to the recorded clip on playback so a quiet mic
+	  capture is audible on the small speaker (256 = unity, 1024 = 4.0x). The
+	  result saturates at the int16 range, so over-gain clips instead of
+	  wrapping. Tune for clear, intelligible replay (requirement QR-1).
+
 config APP_IR
 	bool "IR transmit + receive (NEC)"
 	default n

@@ -46,4 +46,23 @@ void audio_deinterleave(const int16_t *interleaved, size_t frames, uint8_t slot,
  */
 uint8_t audio_level_bars(uint16_t level, uint16_t full, uint8_t nbars);
 
+/*
+ * Expand `frames` mono int16 samples to interleaved stereo (L = R = mono[i]) in
+ * `out`, the inverse of audio_deinterleave(). The ES8311 / ESP32-S3 I2S TX path
+ * needs 2-channel frames, so a recorded mono clip is duplicated to both slots
+ * for playback (issue #14). `out` must hold at least 2*frames int16 samples. A
+ * NULL in/out or frames == 0 is a no-op. Use separate buffers (out != mono).
+ */
+void audio_interleave_mono(const int16_t *mono, size_t frames, int16_t *out);
+
+/*
+ * Apply a fixed-point gain to n mono int16 samples with saturation, into `out`.
+ * `gain_q8` is Q8 fixed point: 256 = unity (1.0x), 512 = 2.0x, 384 = 1.5x. Each
+ * result is truncated toward zero and clamped to [-32768, 32767], so a boosted
+ * loud passage clips cleanly instead of wrapping. Used to make a quiet mic
+ * recording audible on playback (issue #14, requirement QR-1). A NULL in/out or
+ * n == 0 is a no-op. In-place safe (out may equal in).
+ */
+void audio_gain_clip_i16(const int16_t *in, size_t n, uint16_t gain_q8, int16_t *out);
+
 #endif /* M5STICKS3_AUDIO_DSP_H */

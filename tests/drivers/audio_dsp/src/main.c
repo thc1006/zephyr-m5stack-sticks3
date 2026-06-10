@@ -130,4 +130,147 @@ ZTEST(audio_dsp, test_level_bars)
 	zassert_equal(audio_level_bars(50, 100, 0), 0U, "nbars=0 -> 0");
 }
 
+ZTEST(audio_dsp, test_interleave_mono)
+{
+	const int16_t mono[3] = {1, -2, 3};
+	int16_t out[6];
+
+	for (int i = 0; i < 6; i++) {
+		out[i] = -1;
+	}
+	audio_interleave_mono(mono, 3, out);
+	zassert_equal(out[0], 1, "L[0]");
+	zassert_equal(out[1], 1, "R[0]");
+	zassert_equal(out[2], -2, "L[1]");
+	zassert_equal(out[3], -2, "R[1]");
+	zassert_equal(out[4], 3, "L[2]");
+	zassert_equal(out[5], 3, "R[2]");
+
+	/* Round-trip: mono -> stereo -> either slot == mono (inverse of deinterleave). */
+	{
+		int16_t back0[3];
+		int16_t back1[3];
+
+		audio_deinterleave(out, 3, 0, back0);
+		audio_deinterleave(out, 3, 1, back1);
+		zassert_mem_equal(back0, mono, sizeof(mono), "slot0 round-trips mono");
+		zassert_mem_equal(back1, mono, sizeof(mono), "slot1 round-trips mono");
+	}
+
+	/* frames=1 boundary. */
+	out[0] = out[1] = -1;
+	audio_interleave_mono(mono, 1, out);
+	zassert_equal(out[0], 1, "frames=1 L");
+	zassert_equal(out[1], 1, "frames=1 R");
+
+	/* NULL / frames=0 are no-ops (out left unchanged). */
+	out[0] = 7;
+	audio_interleave_mono(NULL, 3, out);
+	zassert_equal(out[0], 7, "NULL mono is a no-op");
+	out[0] = 9;
+	audio_interleave_mono(mono, 0, out);
+	zassert_equal(out[0], 9, "frames=0 is a no-op");
+}
+
+ZTEST(audio_dsp, test_gain_clip)
+{
+	const int16_t in[4] = {100, -100, 10000, -10000};
+	int16_t out[4];
+
+	/* Unity gain (256) is the identity. */
+	audio_gain_clip_i16(in, 4, 256, out);
+	zassert_mem_equal(out, in, sizeof(in), "gain x1.0 = identity");
+
+	/* 2.0x doubles within range. */
+	audio_gain_clip_i16(in, 2, 512, out);
+	zassert_equal(out[0], 200, "x2.0 of 100");
+	zassert_equal(out[1], -200, "x2.0 of -100");
+
+	/* 1.5x is fractional (Q8): 100*384/256 = 150. */
+	audio_gain_clip_i16(in, 1, 384, out);
+	zassert_equal(out[0], 150, "x1.5 of 100");
+
+	/* Saturation: 10000*4 = 40000 -> +32767; -10000*4 = -40000 -> -32768. */
+	{
+		const int16_t loud[2] = {10000, -10000};
+		int16_t o[2];
+
+		audio_gain_clip_i16(loud, 2, 1024, o);
+		zassert_equal(o[0], 32767, "positive clips to +32767");
+		zassert_equal(o[1], -32768, "negative clips to -32768");
+	}
+
+	/* INT16_MIN at unity stays INT16_MIN (no overflow in the int32 product). */
+	{
+		const int16_t mn[1] = {INT16_MIN};
+		int16_t o[1];
+
+		audio_gain_clip_i16(mn, 1, 256, o);
+		zassert_equal(o[0], INT16_MIN, "INT16_MIN x1.0 unchanged");
+	}
+
+	/* gain 0 -> silence. */
+	audio_gain_clip_i16(in, 4, 0, out);
+	zassert_equal(out[0], 0, "gain 0 -> 0");
+	zassert_equal(out[2], 0, "gain 0 -> 0 (loud sample)");
+
+	/* In-place (out == in) is safe (read before write at the same index). */
+	{
+		int16_t buf[3] = {1000, -2000, 3000};
+
+		audio_gain_clip_i16(buf, 3, 512, buf);
+		zassert_equal(buf[0], 2000, "in-place x2.0 [0]");
+		zassert_equal(buf[1], -4000, "in-place x2.0 [1]");
+		zassert_equal(buf[2], 6000, "in-place x2.0 [2]");
+	}
+
+	/* Truncation is toward zero, not floor: -3 * 1.5 = -4.5 -> -4 (a >>8
+	 * shift-based rewrite would floor to -5). Pins the rounding mode.
+	 */
+	{
+		const int16_t neg[1] = {-3};
+		int16_t o[1];
+
+		audio_gain_clip_i16(neg, 1, 384, o);
+		zassert_equal(o[0], -4, "negative fractional truncates toward zero");
+	}
+
+	/* Saturation boundary is exact: v == 32767 / -32768 is NOT clamped, the
+	 * first value past it (32768 / -32769) is. Catches an off-by-one clamp.
+	 */
+	{
+		const int16_t edge[2] = {256, -256};
+		int16_t o[1];
+
+		audio_gain_clip_i16(&edge[0], 1, 32767, o); /* 256*32767/256 = 32767 */
+		zassert_equal(o[0], 32767, "v==32767 is not clamped");
+		audio_gain_clip_i16(&edge[1], 1, 32767, o); /* -256*32767/256 = -32767 */
+		zassert_equal(o[0], -32767, "in-range negative is not clamped");
+		audio_gain_clip_i16(&edge[0], 1, 32768, o); /* 256*32768/256 = 32768 -> clamp */
+		zassert_equal(o[0], 32767, "v==32768 clamps to +32767");
+		audio_gain_clip_i16(&edge[1], 1, 32769, o); /* -256*32769/256 = -32769 -> clamp */
+		zassert_equal(o[0], -32768, "v==-32769 clamps to -32768");
+	}
+
+	/* Max documented gain (uint16 65535) on INT16_MIN: the int32 product
+	 * -32768*65535 = -2147450880 still fits int32 (margin ~33k), so it clamps
+	 * cleanly instead of overflowing/wrapping to a positive value.
+	 */
+	{
+		const int16_t mn[1] = {INT16_MIN};
+		int16_t o[1];
+
+		audio_gain_clip_i16(mn, 1, 65535, o);
+		zassert_equal(o[0], -32768, "INT16_MIN at max gain clamps (no int32 overflow)");
+	}
+
+	/* NULL / n=0 are no-ops (out left unchanged). */
+	out[0] = 5;
+	audio_gain_clip_i16(NULL, 4, 256, out);
+	zassert_equal(out[0], 5, "NULL in is a no-op");
+	out[0] = 6;
+	audio_gain_clip_i16(in, 0, 256, out);
+	zassert_equal(out[0], 6, "n=0 is a no-op");
+}
+
 ZTEST_SUITE(audio_dsp, NULL, NULL, NULL, NULL, NULL);
