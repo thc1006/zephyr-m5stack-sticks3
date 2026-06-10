@@ -9,3 +9,5 @@ PLAY start: 5000 ms gain_q8=1024
 PLAY done
 PLAY start: 5000 ms gain_q8=1024
 PLAY done
+# QR-1 (intelligible playback): phone clip of record->play on hardware ->
+#   20260611-hw014-record-playback-demo.mp4
