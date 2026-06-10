@@ -54,7 +54,7 @@ LOG_MODULE_REGISTER(audio, LOG_LEVEL_INF);
  * small speaker (issue #14 QR-1); the digital gain (CONFIG_APP_AUDIO_REC_GAIN_Q8)
  * stacks on top. The 440 Hz self-test beep also uses this volume.
  */
-#define AUDIO_VOLUME_DB (-6)
+#define AUDIO_VOLUME_DB (0)
 
 /*
  * I2S TX memory blocks. block_size is a multiple of 4 (one stereo 16-bit frame
@@ -65,7 +65,7 @@ LOG_MODULE_REGISTER(audio, LOG_LEVEL_INF);
  */
 #define BLOCK_FRAMES 256U
 #define BLOCK_SIZE   (BLOCK_FRAMES * AUDIO_FRAME_BYTES) /* 1024 bytes */
-#define BLOCK_COUNT  4U
+#define BLOCK_COUNT  8U /* deeper TX/RX queue: tolerate scheduling jitter, avoid underrun */
 
 /* DMA-capable memory must be cache-line aligned on the esp32-i2s path. */
 K_MEM_SLAB_DEFINE_STATIC(tx_slab, BLOCK_SIZE, BLOCK_COUNT, 32);
@@ -86,12 +86,11 @@ K_MEM_SLAB_DEFINE_STATIC(rx_slab, BLOCK_SIZE, BLOCK_COUNT, 32);
 #define LOOP_IO_TIMEOUT_MS 200
 
 /*
- * Mic capture (issue #6). The ES8311 ADC is mono and lands on one I2S slot, so
- * AUDIO_MIC_SLOT (a slot INDEX 0 or 1, not a channel count) picks it; HW-016d
- * confirmed slot 0 carries the ADC. AUDIO_MIC_FULL is the empirical full-scale
- * RMS for the PAGE_AUDIO live bar: HW-016d measured quiet ~70-100, a normal
- * voice a few hundred to a few thousand, and a loud clap >= 12000, so 2000 gives
- * visible bars for speech without pinning the bar to 4 on every breath.
+ * Mic capture (issue #6). The ES8311 mono ADC duplicates its data onto both I2S
+ * slots, so either slot index works; AUDIO_MIC_SLOT picks one. AUDIO_MIC_FULL is
+ * the empirical full-scale RMS for the PAGE_AUDIO live bar: quiet ~70-100, a
+ * normal voice a few hundred to a few thousand, a loud clap >= 12000, so 2000
+ * gives visible bars for speech without pinning the bar to 4 on every breath.
  */
 #define AUDIO_MIC_SLOT   0U
 #define AUDIO_MIC_FULL   2000U
@@ -177,6 +176,18 @@ int audio_init(void)
 	struct audio_codec_cfg codec_cfg;
 	struct i2s_config i2s_cfg;
 	int ret;
+
+	/*
+	 * The ES8311 is marked zephyr,deferred-init (it shares the L3B rail with
+	 * the LCD, which is only powered by lcd_power's regulator-boot-on at boot).
+	 * Probe it now, in main context, where L3B is up and settled -- doing it at
+	 * the driver's POST_KERNEL priority read chip-id before power -> -EFAULT.
+	 */
+	ret = device_init(codec_dev);
+	if (ret < 0) {
+		LOG_ERR("ES8311 deferred init failed (%d)", ret);
+		return ret;
+	}
 
 	if (!device_is_ready(codec_dev)) {
 		LOG_ERR("ES8311 codec not ready");
@@ -264,6 +275,7 @@ int audio_init(void)
 
 	ready = true;
 	LOG_INF("audio_init OK (16 kHz/16-bit, amp off)");
+
 	return 0;
 }
 
@@ -384,7 +396,14 @@ static int loop_tx(const int16_t *block)
 
 	ret = k_mem_slab_alloc(&tx_slab, &mem, K_MSEC(LOOP_IO_TIMEOUT_MS));
 	if (ret < 0) {
-		return ret;
+		/* Slab exhausted: a prior underrun left the I2S in ERROR still holding
+		 * the TX blocks. PREPARE is the ONLY recovery from ERROR and frees the
+		 * queued blocks back to the slab (DROP does not). Then retry once. */
+		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
+		ret = k_mem_slab_alloc(&tx_slab, &mem, K_MSEC(LOOP_IO_TIMEOUT_MS));
+		if (ret < 0) {
+			return ret;
+		}
 	}
 	memcpy(mem, block, BLOCK_SIZE);
 	ret = i2s_write(i2s_dev, mem, BLOCK_SIZE);
@@ -694,6 +713,7 @@ static void do_record(void)
 		uint32_t before = rec_samples;
 
 		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
 		audio_codec_start_output(codec_dev);
 		if (loop_tx(zero_block) < 0 || loop_tx(zero_block) < 0 ||
 		    i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START) < 0) {
@@ -771,13 +791,18 @@ static void do_play(void)
 	printk("PLAY start: %u ms gain_q8=%u\n",
 	       (unsigned int)(rec_samples * 1000U / AUDIO_SAMPLE_RATE), gain);
 
-	(void)i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
+	/* Recover the I2S from the prior session and reclaim its TX slab blocks:
+	 * PREPARE is the only recovery from the ERROR state an underrun leaves, and
+	 * it is what frees the held mem_slab blocks (DROP from ERROR does not, so the
+	 * pool leaks empty -> -EAGAIN). Then play TX-ONLY, mirroring the proven
+	 * self-test. (Full-duplex playback under-ran at ~256 ms: the RX read stalled
+	 * TX.) */
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
 	audio_codec_start_output(codec_dev);
 
-	/* Pre-queue two blocks while stopped (anti-underrun), then START. */
-	for (int i = 0; i < 2 && pos < rec_samples; i++) {
-		pos += fill_play_block(pos, gain);
-		ret = i2s_buf_write(i2s_dev, play_block, BLOCK_SIZE);
+	for (int i = 0; i < 2; i++) {
+		ret = loop_tx(zero_block);
 		if (ret < 0) {
 			LOG_ERR("play prequeue write failed (%d)", ret);
 			goto stop;
@@ -792,20 +817,19 @@ static void do_play(void)
 
 	/* Amp ON only once valid frames are already streaming (anti-pop). */
 	k_msleep(AMP_SETTLE_MS);
-	(void)gpio_pin_set_dt(&amp_gpio, 1);
+	if (gpio_pin_set_dt(&amp_gpio, 1) < 0) {
+		LOG_WRN("play amp ON failed");
+	}
 
 	while (pos < rec_samples) {
 		pos += fill_play_block(pos, gain);
-		ret = i2s_buf_write(i2s_dev, play_block, BLOCK_SIZE);
+		ret = loop_tx(play_block); /* bounded TX: times out instead of hanging */
 		if (ret < 0) {
-			LOG_WRN("play write failed (%d)", ret);
+			LOG_WRN("play TX write failed (%d)", ret);
 			break;
 		}
 	}
 
-	/* Flush queued blocks, then wait out the in-flight ones before the amp off
-	 * (BLOCK_COUNT blocks can be queued; each is ~16 ms).
-	 */
 	(void)i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DRAIN);
 	k_msleep(AMP_SETTLE_MS +
 		 (BLOCK_COUNT * BLOCK_FRAMES * 1000U / AUDIO_SAMPLE_RATE));
