@@ -1,8 +1,9 @@
 # Issue #14 — Mic record → speaker playback: requirements, baseline & design
 
-Status: **requirements agreed; button/mode design proposed (under review)**; not yet
-implemented. Tracks GitHub issue #14 ("Audio demo: record a short mic clip and
-play it back"). Feature branch: `feature/14-record-playback`.
+Status: **implemented & HW-verified (2026-06-09, dell-0830)**; see
+`evidence/20260609-hw014-record-playback.log`. Tracks GitHub issue #14 ("Audio
+demo: record a short mic clip and play it back"). Feature branch:
+`feature/14-record-playback`.
 
 ## 1. Purpose (why this feature exists)
 
@@ -41,8 +42,9 @@ that gap:
 ### Constraints (from platform + codebase)
 
 - Two usable buttons (KEY1 middle / KEY2 right), both normally page-nav.
-- Mic is mono on I2S slot 0; codec fixed at 16 kHz / 16-bit; playback volume
-  −20 dB; the on-board speaker is small/quiet.
+- Mic is mono on I2S slot 0; codec fixed at 16 kHz / 16-bit; codec output volume
+  0 dB with a digital make-up gain (`CONFIG_APP_AUDIO_REC_GAIN_Q8`, Q8) on the
+  recorded clip; the on-board speaker is small/quiet.
 - Full-duplex shares one clock: TX must keep streaming (silence) or RX stalls.
 - Record/playback must run on the audio thread; the UI thread only reads state.
 
@@ -88,7 +90,9 @@ record buffer draws from.
 - Capture RMS: quiet ~70–100; speech a few hundred to a few thousand; loud clap
   ≥ 12 000 (HW-016d peaked 30 797). PAGE_AUDIO meter full-scale = 2000.
 - Digital-mux loopback: rms = 4089 / peak = 5800.
-- Tone playback: amplitude 5800 (~ −15 dBFS), codec volume −20 dB.
+- Tone playback (legacy #3 baseline): amplitude 5800 (~ −15 dBFS), codec volume
+  −20 dB. Record→playback (#14) instead runs the codec at 0 dB and makes up level
+  digitally via `CONFIG_APP_AUDIO_REC_GAIN_Q8`.
 
 These give concrete targets: e.g. a recorded phrase should show capture RMS in
 the hundreds–thousands, and playback should be audible/recognisable.
