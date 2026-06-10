@@ -843,7 +843,14 @@ static void do_play(void)
 		}
 	}
 
-	(void)i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DRAIN);
+	/* End of clip (and the TX-timeout break above): wait a bounded, fixed time
+	 * for the pre-queued DMA tail (<= BLOCK_COUNT blocks) to play out, then fall
+	 * through to the DROP below. Deliberately NOT i2s_trigger(TX, DRAIN): DRAIN
+	 * has no timeout, so a wedged TX clock (the same one loop_tx() bounds above)
+	 * would hang the audio thread here with the amp still on and rec_state stuck
+	 * at PLAYING (K2 inert -> the page can't be left). DROP is the wedge-safe stop
+	 * do_record()/meter_session() already use.
+	 */
 	k_msleep(AMP_SETTLE_MS +
 		 (BLOCK_COUNT * BLOCK_FRAMES * 1000U / AUDIO_SAMPLE_RATE));
 
