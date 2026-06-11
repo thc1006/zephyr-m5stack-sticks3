@@ -361,7 +361,14 @@ main.c. Needs the `hal_espressif` blob (already fetched for BLE).
   `espressif,esp32-wifi`, `&wifi` enabled by `overlay-wifi.overlay`) with its
   bundled ESP-IDF supplicant — NOT Zephyr's hostap `CONFIG_WIFI_NM_WPA_SUPPLICANT`
   (the two conflict). WPA2-PSK only; WPA3-SAE does not build against this
-  workspace's tf-psa-crypto. SPIRAM left off (it breaks Wi-Fi on R8).
+  workspace's tf-psa-crypto. SPIRAM left off (it breaks Wi-Fi on R8); the
+  on-board 8 MB octal PSRAM is instead enabled by the separate,
+  mutually-exclusive `overlay-psram.conf` (issue #13, `CONFIG_APP_PSRAM`):
+  `CONFIG_ESP_SPIRAM`/`SPIRAM_MODE_OCT` map it as an external shared-multi-heap
+  region, `app/src/psram.c` runs a boot self-test (external alloc + R/W verify +
+  `esp_ptr_external_ram`), and `CONFIG_APP_PSRAM depends on !APP_WIFI` plus a
+  `BUILD_ASSERT(!(CONFIG_ESP_SPIRAM && CONFIG_WIFI))` keep PSRAM and Wi-Fi from
+  ever being built together.
 - Pure-logic split for testability: `app/src/wifi.c` holds config validation,
   security/RSSI/bars labels, scan dedupe (by BSSID, keep strongest) + RSSI sort,
   and a connection state machine, unit-tested on native_sim

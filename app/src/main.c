@@ -24,6 +24,9 @@
 #ifdef CONFIG_APP_WIFI
 #include "wifi_glue.h"
 #endif
+#ifdef CONFIG_APP_PSRAM
+#include "psram.h"
+#endif
 
 /*
  * Wi-Fi and BLE share the ESP32-S3 radio and their coexistence is not a
@@ -34,6 +37,16 @@
 BUILD_ASSERT(!(IS_ENABLED(CONFIG_WIFI) && IS_ENABLED(CONFIG_BT)),
 	     "Wi-Fi and BLE coexistence is not validated on ESP32-S3; build with "
 	     "overlay-wifi.conf OR overlay-ble.conf, not both.");
+
+/*
+ * Octal PSRAM and Wi-Fi cannot coexist on the R8 silicon (enabling SPIRAM
+ * breaks the Wi-Fi driver: empty scan / OOM). CONFIG_APP_PSRAM depends on
+ * !APP_WIFI, but the SPIRAM/Wi-Fi stack Kconfigs come from the overlays, so
+ * guard at the stack level too.
+ */
+BUILD_ASSERT(!(IS_ENABLED(CONFIG_ESP_SPIRAM) && IS_ENABLED(CONFIG_WIFI)),
+	     "Octal PSRAM and Wi-Fi cannot coexist on the R8 silicon; build with "
+	     "overlay-psram.conf OR overlay-wifi.conf, not both.");
 
 #define LOOP_MS 1000
 
@@ -194,6 +207,17 @@ int main(void)
 {
 	printk("M5StickS3 Zephyr validation app\n");
 	printk("Board: %s\n", CONFIG_BOARD);
+
+#ifdef CONFIG_APP_PSRAM
+	/* Run the PSRAM self-test early, before the UI/feature inits below start
+	 * their worker threads. Allocating from the external shared-multi-heap is
+	 * reliable during init, but an older Zephyr showed a multi-threaded hang
+	 * when allocating from the main loop with threads running (upstream
+	 * zephyr#98137); keeping it in the least-threaded window matches the
+	 * upstream spiram_test sample and avoids that exposure.
+	 */
+	(void)psram_selftest();
+#endif
 
 	const struct device *g0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
 
