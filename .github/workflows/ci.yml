@@ -1,9 +1,15 @@
 name: CI
 
 # Build the firmware for every overlay, run the native_sim unit tests, and run a
-# scoped Zephyr compliance pass (issue #17). The board, drivers and dts-bindings
-# live out-of-tree in this repo and are built against a pinned upstream Zephyr
-# via BOARD_ROOT + ZEPHYR_EXTRA_MODULES, mirroring scripts/build_m5sticks3.sh.
+# scoped Zephyr compliance pass (issue #17). Everything is built out-of-tree
+# against a pinned upstream Zephyr (BOARD_ROOT + ZEPHYR_EXTRA_MODULES = this
+# repo) inside the official Zephyr CI container.
+#
+# The container is run via `docker run` on a plain runner, NOT via `container:`:
+# the ~10 GB image exhausts the default runner disk during the `container:`
+# image pull ("no space left on device"), which flaked ~2 random jobs per run
+# (issue #20). Freeing the runner's pre-installed packages first, then pulling
+# the image ourselves, removes that.
 
 on:
   push:
@@ -14,21 +20,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# The Zephyr CI container runs `run:` steps with `sh` by default; force bash so
-# the build step's bash arrays parse.
-defaults:
-  run:
-    shell: bash
-
 env:
-  # Pinned upstream Zephyr. Keep this in sync with the container tag (the ghcr ci
-  # image is hard-coded in each job's `container:`) and the SDK path below: the
-  # image must bundle the Zephyr SDK this revision wants (zephyr/SDK_VERSION).
   ZEPHYR_REV: v4.4.0
-  # GitHub overrides HOME for container jobs, so the SDK's own cmake package
-  # registry is not found. Point cmake straight at the SDK the image bundles, or
-  # every build and twister run fails to locate a toolchain.
-  ZEPHYR_SDK_INSTALL_DIR: /opt/toolchains/zephyr-sdk-1.0.1
+  # ghcr.io/zephyrproject-rtos/ci image whose bundled SDK is 1.0.1.
+  CI_IMAGE: ghcr.io/zephyrproject-rtos/ci:v0.29.1
+  # The image bundles the SDK at this path; point cmake straight at it.
+  SDK_DIR: /opt/toolchains/zephyr-sdk-1.0.1
 
 jobs:
   repo-integrity:
@@ -40,142 +37,114 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    container: ghcr.io/zephyrproject-rtos/ci:v0.29.1
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: default, overlay: "", blob: false }
-          - { name: audio, overlay: "overlay-audio.conf", blob: false }
-          - { name: ir, overlay: "overlay-ir.conf", blob: false }
-          - { name: psram, overlay: "overlay-psram.conf", blob: false }
-          - { name: ble, overlay: "overlay-ble.conf", blob: true }
+          - { name: default, overlay: "", dtc: "", blob: false }
+          - { name: audio, overlay: "overlay-audio.conf", dtc: "", blob: false }
+          - { name: ir, overlay: "overlay-ir.conf", dtc: "", blob: false }
+          - { name: psram, overlay: "overlay-psram.conf", dtc: "", blob: false }
+          - { name: ble, overlay: "overlay-ble.conf", dtc: "", blob: true }
           - { name: wifi, overlay: "overlay-wifi.conf", dtc: "overlay-wifi.overlay", blob: true }
-          - { name: demo, overlay: "overlay-ble.conf;overlay-audio.conf;overlay-ir.conf", blob: true }
+          - { name: demo, overlay: "overlay-ble.conf;overlay-audio.conf;overlay-ir.conf", dtc: "", blob: true }
     steps:
+      - name: Free runner disk
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
       - uses: actions/checkout@v4
         with:
           path: repo
-      - name: Cache Zephyr workspace
-        uses: actions/cache@v4
-        with:
-          path: |
-            ws/.west
-            ws/zephyr
-            ws/modules
-            ws/bootloader
-            ws/tools
-          key: zephyr-ws-${{ env.ZEPHYR_REV }}
-      - name: Set up Zephyr workspace
-        run: |
-          if [ ! -d ws/.west ]; then
-            west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
-          fi
-          cd ws && west update --narrow -o=--depth=1 && west zephyr-export
-      - name: Fetch Espressif HAL blobs
-        if: ${{ matrix.blob }}
-        run: cd ws && west blobs fetch hal_espressif
       - name: Build (${{ matrix.name }})
-        working-directory: ws
-        env:
-          BOARD_ROOT: ${{ github.workspace }}/repo
-          ZEPHYR_EXTRA_MODULES: ${{ github.workspace }}/repo
         run: |
-          args=(-p always -b m5stack_sticks3/esp32s3/procpu "$GITHUB_WORKSPACE/repo/app")
-          extra=()
-          if [ -n "${{ matrix.overlay }}" ]; then
-            extra+=(-DEXTRA_CONF_FILE="${{ matrix.overlay }}")
-          fi
-          if [ -n "${{ matrix.dtc }}" ]; then
-            extra+=(-DEXTRA_DTC_OVERLAY_FILE="${{ matrix.dtc }}")
-          fi
-          if [ ${#extra[@]} -gt 0 ]; then
-            args+=(-- "${extra[@]}")
-          fi
-          west build "${args[@]}"
+          docker run --rm \
+            -e ZEPHYR_REV="$ZEPHYR_REV" \
+            -e ZEPHYR_SDK_INSTALL_DIR="$SDK_DIR" \
+            -e OVERLAY="${{ matrix.overlay }}" \
+            -e DTC="${{ matrix.dtc }}" \
+            -e BLOB="${{ matrix.blob }}" \
+            -v "${{ github.workspace }}/repo:/repo:ro" \
+            "$CI_IMAGE" \
+            bash -c 'set -eo pipefail
+              mkdir -p /work && cd /work
+              west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
+              cd ws && west update --narrow -o=--depth=1 && west zephyr-export
+              export BOARD_ROOT=/repo ZEPHYR_EXTRA_MODULES=/repo
+              if [ "$BLOB" = "true" ]; then west blobs fetch hal_espressif; fi
+              args=(-p always -b m5stack_sticks3/esp32s3/procpu /repo/app)
+              extra=()
+              [ -n "$OVERLAY" ] && extra+=(-DEXTRA_CONF_FILE="$OVERLAY")
+              [ -n "$DTC" ] && extra+=(-DEXTRA_DTC_OVERLAY_FILE="$DTC")
+              [ ${#extra[@]} -gt 0 ] && args+=(-- "${extra[@]}")
+              west build "${args[@]}"
+            '
 
   twister:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container: ghcr.io/zephyrproject-rtos/ci:v0.29.1
     steps:
+      - name: Free runner disk
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
       - uses: actions/checkout@v4
         with:
           path: repo
-      - name: Cache Zephyr workspace
-        uses: actions/cache@v4
-        with:
-          path: |
-            ws/.west
-            ws/zephyr
-            ws/modules
-            ws/bootloader
-            ws/tools
-          key: zephyr-ws-${{ env.ZEPHYR_REV }}
-      - name: Set up Zephyr workspace
-        run: |
-          if [ ! -d ws/.west ]; then
-            west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
-          fi
-          cd ws && west update --narrow -o=--depth=1 && west zephyr-export
       - name: Twister (native_sim)
-        working-directory: ws
-        env:
-          ZEPHYR_EXTRA_MODULES: ${{ github.workspace }}/repo
-        run: west twister -p native_sim --inline-logs -v -T "$GITHUB_WORKSPACE/repo/tests"
-      - name: Upload twister output on failure
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: twister-out
-          path: ws/twister-out/**/*.log
-          if-no-files-found: ignore
+        run: |
+          docker run --rm \
+            -e ZEPHYR_REV="$ZEPHYR_REV" \
+            -e ZEPHYR_SDK_INSTALL_DIR="$SDK_DIR" \
+            -v "${{ github.workspace }}/repo:/repo:ro" \
+            "$CI_IMAGE" \
+            bash -c 'set -eo pipefail
+              mkdir -p /work && cd /work
+              west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
+              cd ws && west update --narrow -o=--depth=1 && west zephyr-export
+              export ZEPHYR_EXTRA_MODULES=/repo
+              west twister -p native_sim --inline-logs -v -T /repo/tests
+            '
 
   compliance:
     # PRs only: the checks run over the PR's own commits (base..head). On a push
-    # to main the range is the squash-merge commit, which carries no body and no
+    # to main the range is the squash-merge commit, which has no body and no
     # Signed-off-by, so Gitlint/Identity would false-fail there.
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    container: ghcr.io/zephyrproject-rtos/ci:v0.29.1
+    timeout-minutes: 25
     steps:
+      - name: Free runner disk
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
       - uses: actions/checkout@v4
         with:
           path: repo
           fetch-depth: 0
-      - name: Cache Zephyr workspace
-        uses: actions/cache@v4
-        with:
-          path: |
-            ws/.west
-            ws/zephyr
-            ws/modules
-            ws/bootloader
-            ws/tools
-          key: zephyr-ws-${{ env.ZEPHYR_REV }}
-      - name: Set up Zephyr workspace
-        run: |
-          if [ ! -d ws/.west ]; then
-            west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
-          fi
-          cd ws && west update --narrow -o=--depth=1 && west zephyr-export
       - name: Compliance (subset that fits an out-of-tree module repo)
-        working-directory: repo
-        env:
-          ZEPHYR_BASE: ${{ github.workspace }}/ws/zephyr
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/repo"
-          # Run only the checks that are meaningful for this repo's layout. These
-          # are deliberately NOT run because they false-fail on an out-of-tree
-          # module/showcase repo, not on a real defect:
-          #   Kconfig / SysbuildKconfig - our own CONFIG_* live in this module,
-          #     which the compliance Kconfig pass does not load, so it reports
-          #     them as undefined references.
-          #   LicenseAndCopyrightCheck / BinaryFiles - flag the evidence/ media
-          #     and serial logs (records kept on purpose), not source.
-          #   ClangFormat - the tree follows checkpatch, not clang-format.
-          python3 "$ZEPHYR_BASE/scripts/ci/check_compliance.py" \
-            -c "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
-            -m Checkpatch -m Gitlint -m Identity -m DevicetreeBindings -m Nits
+          docker run --rm \
+            -e ZEPHYR_REV="$ZEPHYR_REV" \
+            -e ZEPHYR_SDK_INSTALL_DIR="$SDK_DIR" \
+            -e BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+            -e HEAD_SHA="${{ github.event.pull_request.head.sha }}" \
+            -v "${{ github.workspace }}/repo:/repo" \
+            "$CI_IMAGE" \
+            bash -c 'set -eo pipefail
+              mkdir -p /work && cd /work
+              west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
+              cd ws && west update --narrow -o=--depth=1 && west zephyr-export
+              export ZEPHYR_BASE=/work/ws/zephyr
+              git config --global --add safe.directory /repo
+              cd /repo
+              # Only the checks that are meaningful for an out-of-tree module
+              # repo. Excluded (they false-fail on this layout): Kconfig /
+              # SysbuildKconfig (our own CONFIG_* live in this module, reported
+              # undefined), LicenseAndCopyrightCheck / BinaryFiles (evidence
+              # media + logs), ClangFormat (the tree follows checkpatch).
+              python3 "$ZEPHYR_BASE/scripts/ci/check_compliance.py" \
+                -c "$BASE_SHA..$HEAD_SHA" \
+                -m Checkpatch -m Gitlint -m Identity -m DevicetreeBindings -m Nits </dev/null
+            '
