@@ -1,0 +1,22 @@
+# Normalize source/text files to LF in the repository regardless of the
+# checkout or edit host. Windows tooling can leave CRLF in the working copy;
+# pinning the committed blobs to LF keeps bash/python runnable under WSL/Linux
+# and stops checkpatch from flagging DOS line endings. git applies this on
+# checkin, so a CRLF working copy still commits as LF (and compares as LF, so
+# it does not show as modified).
+*.sh        text eol=lf
+*.py        text eol=lf
+*.c         text eol=lf
+*.h         text eol=lf
+*.dts       text eol=lf
+*.dtsi      text eol=lf
+*.overlay   text eol=lf
+*.conf      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.cmake     text eol=lf
+*.md        text eol=lf
+*.rst       text eol=lf
+CMakeLists.txt   text eol=lf
+Kconfig*    text eol=lf
+.checkpatch.conf text eol=lf

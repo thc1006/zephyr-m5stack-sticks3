@@ -401,7 +401,8 @@ static int loop_tx(const int16_t *block)
 	if (ret < 0) {
 		/* Slab exhausted: a prior underrun left the I2S in ERROR still holding
 		 * the TX blocks. PREPARE is the ONLY recovery from ERROR and frees the
-		 * queued blocks back to the slab (DROP does not). Then retry once. */
+		 * queued blocks back to the slab (DROP does not). Then retry once.
+		 */
 		(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
 		ret = k_mem_slab_alloc(&tx_slab, &mem, K_MSEC(LOOP_IO_TIMEOUT_MS));
 		if (ret < 0) {
@@ -809,7 +810,8 @@ static void do_play(void)
 	 * it is what frees the held mem_slab blocks (DROP from ERROR does not, so the
 	 * pool leaks empty -> -EAGAIN). Then play TX-ONLY, mirroring the proven
 	 * self-test. (Full-duplex playback under-ran at ~256 ms: the RX read stalled
-	 * TX.) */
+	 * TX.)
+	 */
 	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
 	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
 	audio_codec_start_output(codec_dev);
