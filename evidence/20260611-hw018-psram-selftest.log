@@ -1,0 +1,73 @@
+[?9001h[?1004h[?25l--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM5 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM5 115200
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037736a
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fc90640,len:0x2798
+load:0x40374000,len:0xc628
+load:0x50000000,len:0x24
+SHA-256 comparison failed:
+Calculated: 8782e270f9df979ec17482c188e3cce6defc5e5cde5132e7e3c2cdac4a2d64d6
+Expected: 00000000d0110000000000000000000000000000000000000000000000000000
+Attempting to boot anyway...
+entry 0x4037a718
+I (soc_init): ESP Simple boot
+I (soc_init): compile time Jun 11 2026 15:41:21
+W (soc_init): Unicore bootloader
+I (soc_init): chip revision: v0.2
+I (flash_init): Boot SPI Speed : 80MHz
+I (flash_init): SPI Mode       : DIO
+I (flash_init): SPI Flash Size : 8MB
+I (boot): DRAM: lma=00000020h vma=3fc90640h size=02798h ( 10136)
+I (boot): IRAM: lma=000027c0h vma=40374000h size=0c628h ( 50728)
+I (boot): RTC_DATA: lma=0000edf0h vma=50000000h size=00024h (    36)
+I (boot): IROM: lma=00010000h vma=42000000h size=092e8h ( 37608)
+I (boot): DROM: lma=00020000h vma=3c010000h size=03048h ( 12360)
+I (boot): libc heap size 236 kB.
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+I (spi_flash): detected chip: gd
+I (spi_flash): flash io: dio
+I (octal_psram): vendor id    : 0x0d (AP)
+I (octal_psram): dev id       : 0x02 (generation 3)
+I (octal_psram): density      : 0x03 (64 Mbit)
+I (octal_psram): good-die     : 0x01 (Pass)
+I (octal_psram): Latency      : 0x01 (Fixed)
+I (octal_psram): VCC          : 0x01 (3V)
+I (octal_psram): SRF          : 0x01 (Fast Refresh)
+I (octal_psram): BurstType    : 0x01 (Hybrid Wrap)
+I (octal_psram): BurstLen     : 0x01 (32 Byte)
+I (octal_psram): Readlatency  : 0x02 (10 cycles@Fixed)
+I (octal_psram): DriveStrength: 0x00 (1/1)
+I (esp_psram): Found 8MB PSRAM device
+I (esp_psram): Speed: 40MHz
+*** Booting Zephyr OS build v4.4.0 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.333,000] <inf> psram: octal SPIRAM mapped; 65536 B external R/W verified OK
+[00:00:00.338,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.338,000] <inf> gfx: Display ready (135x240)
+alive uptime_ms=374 page=0 KEY1=1 KEY2=1 bat=4046 soc=100 vin=5126 imu=1 accel=[0.000000 0.000000 0.000000]
+alive uptime_ms=1424 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5124 imu=1 accel=[0.147247 -9.834483 1.208510]
+alive uptime_ms=2435 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5124 imu=1 accel=[0.150240 -9.919480 1.232452]
+alive uptime_ms=3445 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5124 imu=1 accel=[0.159817 -9.918283 1.219882]
+alive uptime_ms=4455 page=0 KEY1=1 KEY2=1 bat=4040 soc=100 vin=5124 imu=1 accel=[0.162810 -9.915290 1.229460]
+alive uptime_ms=5466 page=0 KEY1=1 KEY2=1 bat=4038 soc=100 vin=5124 imu=1 accel=[0.153832 -9.939831 1.231255]
+alive uptime_ms=6476 page=0 KEY1=1 KEY2=1 bat=4040 soc=100 vin=5128 imu=1 accel=[0.161014 -9.940430 1.234248]
+alive uptime_ms=7487 page=0 KEY1=1 KEY2=1 bat=4046 soc=100 vin=5130 imu=1 accel=[0.122706 -9.915888 1.267768]
+alive uptime_ms=8497 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5126 imu=1 accel=[0.125100 -9.920677 1.220481]
+alive uptime_ms=9507 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5126 imu=1 accel=[0.147846 -9.933247 1.218087]
+alive uptime_ms=10518 page=0 KEY1=1 KEY2=1 bat=4040 soc=100 vin=5124 imu=1 accel=[0.147247 -9.935641 1.230657]
+alive uptime_ms=11528 page=0 KEY1=1 KEY2=1 bat=4038 soc=100 vin=5124 imu=1 accel=[0.168197 -9.918881 1.252804]
+alive uptime_ms=12539 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5126 imu=1 accel=[0.145452 -9.924867 1.237241]
+alive uptime_ms=13550 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5124 imu=1 accel=[0.152635 -9.932050 1.255198]
+alive uptime_ms=14560 page=0 KEY1=1 KEY2=1 bat=4042 soc=100 vin=5124 imu=1 accel=[0.131086 -9.908705 1.230657]
+alive uptime_ms=15571 page=0 KEY1=1 KEY2=1 bat=4044 soc=100 vin=5122 imu=1 accel=[0.152036 -9.929057 1.252804]
+alive uptime_ms=16581 page=0 KEY1=1 KEY2=1 bat=4044 soc=100 vin=5122 imu=1 accel=[0.140065 -9.931451 1.240234]
+alive uptime_ms=17592 page=0 KEY1=1 KEY2=1 bat=4046 soc=100 vin=5124 imu=1 accel=[0.144853 -9.923071 1.256395]
+[captured 4577 chars]

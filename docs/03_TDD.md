@@ -533,9 +533,12 @@ Pass criteria:
 - Serial shows `psram: octal SPIRAM mapped; 65536 B external R/W verified OK`
   with no external-alloc / not-in-external-RAM / byte-mismatch errors.
 
-Result (2026-06-11): build-verified in the CI container (the `build (psram)`
-job is green; the map shows `ext_dram_seg 8 MB`, 14% used by a clean build). HW
-serial confirmation pending a flash.
+Result (2026-06-11): **PASS.** Build-verified (CI `build (psram)` green, map
+shows `ext_dram_seg 8 MB`) and HW-verified on a real StickS3: the boot log shows
+`Found 8MB PSRAM device` / `Speed: 40MHz`, then
+`psram: octal SPIRAM mapped; 65536 B external R/W verified OK`, and the device
+stays alive afterwards (the early self-test did not hang). Evidence:
+`evidence/20260611-hw018-psram-selftest.log`.
 
 ## Evidence filenames
 

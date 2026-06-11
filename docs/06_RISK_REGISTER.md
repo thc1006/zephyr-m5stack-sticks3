@@ -22,7 +22,7 @@
 | ST7789P3 vs `sitronix,st7789v` binding | **Resolved** | ST7789P3 works under `sitronix,st7789v` (same family); runtime-verified. Panel kept on CS0 (zephyr#100069) |
 | M5PM1 gates LCD/peripheral power rail (no driver) | **Resolved** | L3B is a `regulator-fixed` switched via the M5PM1 MFD gpio child (PYG2); LCD lit (HW-003/010). The interim `m5stack,m5pm1-l3b-regulator` driver was superseded by the MFD path and removed |
 | BMI270 INT routed via M5PM1 PMIC, not host GPIO | Open | No host `int-gpios`; polled IMU only until an M5PM1 driver exists |
-| Octal PSRAM not enabled in v0.1 | **Resolved (#13)** | Now enabled via `overlay-psram.conf` (`CONFIG_ESP_SPIRAM`/`SPIRAM_MODE_OCT`, GPIO33–37), gated `CONFIG_APP_PSRAM` with a boot self-test (`app/src/psram.c`: external-heap alloc + R/W verify + `esp_ptr_external_ram` check). Build-verified in the CI container: the linker maps an 8 MB `ext_dram_seg`. Default build stays PSRAM-free; HW serial confirmation pending |
+| Octal PSRAM not enabled in v0.1 | **Resolved (#13)** | Now enabled via `overlay-psram.conf` (`CONFIG_ESP_SPIRAM`/`SPIRAM_MODE_OCT`, GPIO33–37), gated `CONFIG_APP_PSRAM` with a boot self-test (`app/src/psram.c`: external-heap alloc + R/W verify + `esp_ptr_external_ram` check). Build-verified (CI) AND **HW-verified on a real StickS3 (HW-018, `evidence/20260611-hw018-psram-selftest.log`)**: boot detects the 8 MB octal PSRAM (`Found 8MB PSRAM device`, 40 MHz) and the self-test reports `external R/W verified OK`; device stays alive. Default build stays PSRAM-free |
 
 ## Update 2026-06-01 (v0.6 comprehensive demo: M5PM1 MFD / BLE / audio)
 
