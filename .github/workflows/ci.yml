@@ -50,7 +50,7 @@ jobs:
           - { name: audio, overlay: "overlay-audio.conf", blob: false }
           - { name: ir, overlay: "overlay-ir.conf", blob: false }
           - { name: ble, overlay: "overlay-ble.conf", blob: true }
-          - { name: wifi, overlay: "overlay-wifi.conf", blob: true }
+          - { name: wifi, overlay: "overlay-wifi.conf", dtc: "overlay-wifi.overlay", blob: true }
           - { name: demo, overlay: "overlay-ble.conf;overlay-audio.conf;overlay-ir.conf", blob: true }
     steps:
       - uses: actions/checkout@v4
@@ -82,8 +82,15 @@ jobs:
           ZEPHYR_EXTRA_MODULES: ${{ github.workspace }}/repo
         run: |
           args=(-p always -b m5stack_sticks3/esp32s3/procpu "$GITHUB_WORKSPACE/repo/app")
+          extra=()
           if [ -n "${{ matrix.overlay }}" ]; then
-            args+=(-- -DEXTRA_CONF_FILE="${{ matrix.overlay }}")
+            extra+=(-DEXTRA_CONF_FILE="${{ matrix.overlay }}")
+          fi
+          if [ -n "${{ matrix.dtc }}" ]; then
+            extra+=(-DEXTRA_DTC_OVERLAY_FILE="${{ matrix.dtc }}")
+          fi
+          if [ ${#extra[@]} -gt 0 ]; then
+            args+=(-- "${extra[@]}")
           fi
           west build "${args[@]}"
 
