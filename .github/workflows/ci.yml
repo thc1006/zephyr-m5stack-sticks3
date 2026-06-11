@@ -14,12 +14,21 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The Zephyr CI container runs `run:` steps with `sh` by default; force bash so
+# the build step's bash arrays parse.
+defaults:
+  run:
+    shell: bash
+
 env:
-  # Pinned upstream Zephyr. The container below bundles the Zephyr SDK that this
-  # revision wants (zephyr/SDK_VERSION = 1.0.1); bump them together.
+  # Pinned upstream Zephyr. Keep this in sync with the container tag (the ghcr ci
+  # image is hard-coded in each job's `container:`) and the SDK path below: the
+  # image must bundle the Zephyr SDK this revision wants (zephyr/SDK_VERSION).
   ZEPHYR_REV: v4.4.0
-  # ghcr.io/zephyrproject-rtos/ci image whose bundled SDK is 1.0.1.
-  CI_IMAGE: ghcr.io/zephyrproject-rtos/ci:v0.29.1
+  # GitHub overrides HOME for container jobs, so the SDK's own cmake package
+  # registry is not found. Point cmake straight at the SDK the image bundles, or
+  # every build and twister run fails to locate a toolchain.
+  ZEPHYR_SDK_INSTALL_DIR: /opt/toolchains/zephyr-sdk-1.0.1
 
 jobs:
   repo-integrity:
@@ -31,6 +40,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: ghcr.io/zephyrproject-rtos/ci:v0.29.1
     strategy:
       fail-fast: false
@@ -79,6 +89,7 @@ jobs:
 
   twister:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: ghcr.io/zephyrproject-rtos/ci:v0.29.1
     steps:
       - uses: actions/checkout@v4
@@ -119,6 +130,7 @@ jobs:
     # Signed-off-by, so Gitlint/Identity would false-fail there.
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container: ghcr.io/zephyrproject-rtos/ci:v0.29.1
     steps:
       - uses: actions/checkout@v4
