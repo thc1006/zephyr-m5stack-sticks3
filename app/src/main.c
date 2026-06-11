@@ -208,6 +208,17 @@ int main(void)
 	printk("M5StickS3 Zephyr validation app\n");
 	printk("Board: %s\n", CONFIG_BOARD);
 
+#ifdef CONFIG_APP_PSRAM
+	/* Run the PSRAM self-test early, before the UI/feature inits below start
+	 * their worker threads. Allocating from the external shared-multi-heap is
+	 * reliable during init, but an older Zephyr showed a multi-threaded hang
+	 * when allocating from the main loop with threads running (upstream
+	 * zephyr#98137); keeping it in the least-threaded window matches the
+	 * upstream spiram_test sample and avoids that exposure.
+	 */
+	(void)psram_selftest();
+#endif
+
 	const struct device *g0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
 
 	status_init();
@@ -223,9 +234,6 @@ int main(void)
 #endif
 #ifdef CONFIG_APP_WIFI
 	(void)wifi_glue_init();
-#endif
-#ifdef CONFIG_APP_PSRAM
-	(void)psram_selftest();
 #endif
 
 	while (1) {
