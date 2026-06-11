@@ -49,6 +49,7 @@ jobs:
           - { name: default, overlay: "", blob: false }
           - { name: audio, overlay: "overlay-audio.conf", blob: false }
           - { name: ir, overlay: "overlay-ir.conf", blob: false }
+          - { name: psram, overlay: "overlay-psram.conf", blob: false }
           - { name: ble, overlay: "overlay-ble.conf", blob: true }
           - { name: wifi, overlay: "overlay-wifi.conf", dtc: "overlay-wifi.overlay", blob: true }
           - { name: demo, overlay: "overlay-ble.conf;overlay-audio.conf;overlay-ir.conf", blob: true }

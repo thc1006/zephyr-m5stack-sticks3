@@ -515,6 +515,28 @@ serial-inferred (VIN drops) but not separately photographed, since unplugging US
 drops the serial link. Evidence: `evidence/20260605-hw017-battery-soc.log`,
 `evidence/PXL_20260605_070039537.MP.jpg`.
 
+### HW-018 octal PSRAM (issue #13)
+
+Validates that the on-board 8 MB octal SPIRAM is mapped and usable (see the SDD
+Wi-Fi/SPIRAM note). Built with `overlay-psram.conf` (`CONFIG_APP_PSRAM`);
+mutually exclusive with Wi-Fi.
+
+Method: at boot `psram_selftest()` allocates 64 KB from the external
+shared-multi-heap (`SMH_REG_ATTR_EXTERNAL`), confirms the buffer is in external
+RAM (`esp_ptr_external_ram`), writes a position-dependent byte pattern, reads it
+back, and logs the result on serial.
+
+Pass criteria:
+
+- The linker maps an 8 MB `ext_dram_seg` (build-level evidence the octal PSRAM
+  is enabled).
+- Serial shows `psram: octal SPIRAM mapped; 65536 B external R/W verified OK`
+  with no external-alloc / not-in-external-RAM / byte-mismatch errors.
+
+Result (2026-06-11): build-verified in the CI container (the `build (psram)`
+job is green; the map shows `ext_dram_seg 8 MB`, 14% used by a clean build). HW
+serial confirmation pending a flash.
+
 ## Evidence filenames
 
 ```text

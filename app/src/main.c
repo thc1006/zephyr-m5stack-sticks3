@@ -24,6 +24,9 @@
 #ifdef CONFIG_APP_WIFI
 #include "wifi_glue.h"
 #endif
+#ifdef CONFIG_APP_PSRAM
+#include "psram.h"
+#endif
 
 /*
  * Wi-Fi and BLE share the ESP32-S3 radio and their coexistence is not a
@@ -34,6 +37,16 @@
 BUILD_ASSERT(!(IS_ENABLED(CONFIG_WIFI) && IS_ENABLED(CONFIG_BT)),
 	     "Wi-Fi and BLE coexistence is not validated on ESP32-S3; build with "
 	     "overlay-wifi.conf OR overlay-ble.conf, not both.");
+
+/*
+ * Octal PSRAM and Wi-Fi cannot coexist on the R8 silicon (enabling SPIRAM
+ * breaks the Wi-Fi driver: empty scan / OOM). CONFIG_APP_PSRAM depends on
+ * !APP_WIFI, but the SPIRAM/Wi-Fi stack Kconfigs come from the overlays, so
+ * guard at the stack level too.
+ */
+BUILD_ASSERT(!(IS_ENABLED(CONFIG_ESP_SPIRAM) && IS_ENABLED(CONFIG_WIFI)),
+	     "Octal PSRAM and Wi-Fi cannot coexist on the R8 silicon; build with "
+	     "overlay-psram.conf OR overlay-wifi.conf, not both.");
 
 #define LOOP_MS 1000
 
@@ -210,6 +223,9 @@ int main(void)
 #endif
 #ifdef CONFIG_APP_WIFI
 	(void)wifi_glue_init();
+#endif
+#ifdef CONFIG_APP_PSRAM
+	(void)psram_selftest();
 #endif
 
 	while (1) {

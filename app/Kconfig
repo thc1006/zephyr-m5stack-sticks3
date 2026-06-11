@@ -121,4 +121,21 @@ config APP_WIFI_PSK
 	  value (the default) treats the configured SSID as an open network. Keep
 	  this in a LOCAL, untracked overlay; never commit credentials.
 
+config APP_PSRAM
+	bool "Octal PSRAM self-test"
+	default n
+	depends on !APP_WIFI
+	help
+	  When enabled, the app runs a boot-time self-test of the on-board 8 MB
+	  octal SPIRAM (ESP32-S3-PICO-1-N8R8, issue #13): it allocates from the
+	  external PSRAM shared-multi-heap region, verifies byte read/write, and
+	  confirms the buffer lands in external RAM. The result is logged on the
+	  console (app/src/psram.c).
+
+	  Enabling the PSRAM (CONFIG_ESP_SPIRAM / CONFIG_SPIRAM_MODE_OCT) consumes
+	  GPIO33-37 and is mutually exclusive with Wi-Fi: SPIRAM breaks the Wi-Fi
+	  driver on the R8 silicon (empty scan / OOM), hence depends on !APP_WIFI.
+	  Off by default (the standard build does not use PSRAM and boots without
+	  it); enable via -DEXTRA_CONF_FILE=overlay-psram.conf. Uses no binary blobs.
+
 source "Kconfig.zephyr"

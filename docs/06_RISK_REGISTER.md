@@ -22,7 +22,7 @@
 | ST7789P3 vs `sitronix,st7789v` binding | **Resolved** | ST7789P3 works under `sitronix,st7789v` (same family); runtime-verified. Panel kept on CS0 (zephyr#100069) |
 | M5PM1 gates LCD/peripheral power rail (no driver) | **Resolved** | L3B is a `regulator-fixed` switched via the M5PM1 MFD gpio child (PYG2); LCD lit (HW-003/010). The interim `m5stack,m5pm1-l3b-regulator` driver was superseded by the MFD path and removed |
 | BMI270 INT routed via M5PM1 PMIC, not host GPIO | Open | No host `int-gpios`; polled IMU only until an M5PM1 driver exists |
-| Octal PSRAM not enabled in v0.1 | Accepted | App does not need PSRAM and boots without it; enable via `CONFIG_ESP_SPIRAM`/`SPIRAM_MODE_OCT` (GPIO33–37) as roadmap |
+| Octal PSRAM not enabled in v0.1 | **Resolved (#13)** | Now enabled via `overlay-psram.conf` (`CONFIG_ESP_SPIRAM`/`SPIRAM_MODE_OCT`, GPIO33–37), gated `CONFIG_APP_PSRAM` with a boot self-test (`app/src/psram.c`: external-heap alloc + R/W verify + `esp_ptr_external_ram` check). Build-verified in the CI container: the linker maps an 8 MB `ext_dram_seg`. Default build stays PSRAM-free; HW serial confirmation pending |
 
 ## Update 2026-06-01 (v0.6 comprehensive demo: M5PM1 MFD / BLE / audio)
 
@@ -56,7 +56,7 @@
 | Scanning while associated disrupts the link | **Mitigated** | The periodic background scan is suppressed once CONNECTED; only an explicit page-entry scan can run while associated |
 | Scan stuck in SCANNING (request accepted, no SCAN_DONE) | **Mitigated** | A scan in SCANNING past a timeout is treated as lost and re-issued, so the device keeps scanning instead of freezing. The related v3.7-branch driver latch (a failed scan that never clears `scan_cb`, so all later scans return `-EINPROGRESS` — issue #110290) does NOT affect us: v4.4's `esp32_wifi_scan` clears `scan_cb` on every failure path (PR #106329) |
 | Wi-Fi credentials committed by accident | **Mitigated** | SSID/PSK default empty in committed Kconfig (clean checkout = scan-only); real values live only in the gitignored `app/wifi-creds.local.conf` (`*.local.conf`, `.config`, `*.config`, `twister-out*/` all ignored). Only the SSID is logged, never the PSK; no secret is in any tracked file or git history |
-| SPIRAM breaks Wi-Fi (R8 silicon) | **Mitigated** | `CONFIG_ESP_SPIRAM` left off for the Wi-Fi build (system heap); scan + connect verified working without it |
+| SPIRAM breaks Wi-Fi (R8 silicon) | **Mitigated** | `CONFIG_ESP_SPIRAM` left off for the Wi-Fi build (system heap); scan + connect verified working without it. The two are now hard-mutually-exclusive: `CONFIG_APP_PSRAM` depends on `!APP_WIFI`, and a `BUILD_ASSERT(!(CONFIG_ESP_SPIRAM && CONFIG_WIFI))` in `main.c` blocks the raw combination (#13) |
 
 ## Update 2026-06-05 (audio capture / microphone, HW-016)
 
