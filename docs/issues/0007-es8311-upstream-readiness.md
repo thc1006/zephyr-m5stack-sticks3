@@ -139,16 +139,26 @@ input volume and mute.
 ### 3. Submission mechanics
 - Branch off current `zephyrproject-rtos/zephyr` main.
 - Re-author commits with DCO sign-off, no AI footers, Zephyr commit-message
-  style (`drivers: audio: add ES8311 ...`).
-- Run `scripts/ci/check_compliance.py` (Kconfig, DTS, Gitlint, Identity) in
-  addition to checkpatch.
-- Consider a `MAINTAINERS.yml` entry (or let the maintainer add one).
-- Lead with the **capture route** as the value-add over #107660; offer a
-  real-hardware StickS3 data point.
+  style (`drivers: audio: add ES8311 ...`). Gitlint: title <= 72 columns, body
+  lines <= 80. Both limits have bitten this repo's own CI.
+- `scripts/graft_es8311_upstream.sh` plants the driver into a Zephyr tree exactly
+  as the PR will and is what the `upstream-main` CI job runs against a pinned main
+  commit: checkpatch, build, and an assertion that `es8311.c.obj` exists (a green
+  `build_all` proves nothing if the DT node failed to land and the codec was simply
+  absent). Do not hand-copy files.
+- Do NOT add a `MAINTAINERS.yml` entry: `Drivers: Audio` already covers
+  `drivers/audio/`, and none of the last four codec PRs touched it.
+- Lead with the **capture route**: no in-tree codec implements one, and this is the
+  value-add. Offer the real-hardware StickS3 data point (HW-019).
 
 ### 4. Coordinate, don't duplicate
-Per ADR 0004: engage #107660 / its successor with a trimmed comment (mute-reg
-0x31 confirmation + offer a hardware check). Do not take over the PR uninvited.
+ADR 0004 said to engage #107660 rather than compete with it. **That PR is closed,
+unmerged, with no open successor**, so its own fallback applies and the strategy at
+the top of this file is the live one: submit our own focused PR. If a third-party
+ES8311 PR appears while ours is open,
+`scripts/check_es8311_upstream_gate.sh` reports ENGAGE (exit 2), and the answer is
+to join it rather than compete. Re-run the gate before submitting; it exits 0 only
+when the lane is clear AND `check_es8311_readiness.sh` passes.
 
 ## References
 - ADR 0004 — `docs/adr/0004-es8311-upstream-engage-pr107660.md`
