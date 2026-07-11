@@ -95,7 +95,7 @@ west build -p always -b native_sim -d build_test \
 ./build_test/zephyr/zephyr.exe
 ```
 
-Result 2026-06-02: 11/11 pass. Covers chip-ID read (and the wrong-ID
+Result 2026-06-02: 11/11 pass. Grown to 24/24 by the 2026-07-12 driver rewrite. Covers chip-ID read (and the wrong-ID
 warn-and-continue path), the 16 kHz / 16-bit playback configure sequence + write
 ordering, the capture (ADC) configure sequence for PLAYBACK_CAPTURE and the
 capture-only route (ADC powered, DAC left untouched), volume/mute set,
@@ -273,7 +273,7 @@ Pass criteria:
 - I2S playback or loopback works at one sample rate.
 
 Result (2026-06-01): PASS. The in-repo ES8311 codec driver (Zephyr audio codec
-API, native_sim ztest 9/9) configures the codec at 16 kHz / 16-bit
+API, native_sim ztest 24/24) configures the codec at 16 kHz / 16-bit
 (MCLK-from-BCLK) and a 440 Hz beep plays from the speaker on entering the AUDIO
 page - user-confirmed. The AW8737 amp is enabled via the M5PM1 MFD gpio child
 (masked write), and the LCD stayed lit when the amp toggled (L3B rail preserved).

@@ -41,44 +41,89 @@ Two things to watch while the PR is open:
   submitting codec + binding + ztest only is exactly the shape they were steering
   toward.
 
-## Readiness — verified 2026-06-11 (all GREEN)
+## Readiness — re-verified 2026-07-12 against the rewritten driver
 
-- [x] **checkpatch clean** — `es8311.c`, `emul_es8311.c`, `Kconfig.es8311`,
-      `everest,es8311.yaml`, test `main.c` all return 0 errors / 0 warnings under
-      Zephyr's `.checkpatch.conf` (the earlier SPDX/EXTERN/CONFIG_DESCRIPTION
-      hits were Linux-kernel checks Zephyr disables).
-- [x] **Unit tests pass** — `tests/drivers/audio/es8311` → twister native_sim
-      11/11 cases pass.
-- [x] **DCO ready** — existing commits already carry
-      `Signed-off-by: Hsiu-Chi Tsai <hctsai@linux.com>`.
-- [x] **No AI footers** — no `Co-Authored-By` / `Generated with` / Claude/
-      Anthropic tells in the commit history of these files.
-- [x] **Driver code is board-independent** — `DT_DRV_COMPAT everest_es8311`,
-      generic `audio_codec_api` registration, no `#ifdef`/hardcoded M5Stack logic.
-- [x] **Capture/ADC route present** — the differentiator vs #107660 (which
-      disables ADC). Zephyr's codec API already models capture
-      (`route_input`/direction-aware start/stop).
-- [x] **Tree layout matches upstream** — `drivers/audio/`, `dts/bindings/audio/`,
-      `tests/drivers/audio/es8311/` mirror the Zephyr structure.
+- [x] **Driver rewritten against the ES8311 user guide (rev 1.11).** The register
+      *values* were always hardware-correct, but several *comments* were not:
+      0x03/0x04 hold oversampling rates and 0x05 holds the ADC/DAC dividers, the
+      other way round from what the code said; 0x06/0x07/0x08 are inactive in
+      slave mode; 0x13 picks the headphone path rather than a drive strength;
+      0x15 contains no OSR. All corrected. A reviewer holding the datasheet would
+      have caught every one of them.
+- [x] **Input volume and mute implemented.** `AUDIO_PROPERTY_INPUT_VOLUME` maps to
+      the ADC digital volume (0x17) and `AUDIO_PROPERTY_INPUT_MUTE` to the ADC
+      serial port's own mute bit (0x0A bit 6), which is a real mute rather than
+      the -95.5 dB volume floor. The `TODO(#7)` in the source is gone.
+- [x] **Sample rates 8 kHz to 48 kHz.** The master clock is derived from BCLK, so
+      it is 256 * Fs at every rate and the divider chain is a pure ratio: one
+      register set serves them all. Corroborated by the vendor clock table, by
+      Linux `sound/soc/codecs/es8311.c` (identical REG02 = 0x18 / REG05 = 0x00 at
+      every rate), and by `i2s_esp32.c` producing BCLK = 32 * Fs exactly. Word
+      sizes other than 16 bits break the ratio and are now rejected instead of
+      silently mis-clocking the codec.
+- [x] **checkpatch clean** — 0 lines over 100 columns, pure ASCII.
+      The 2026-06-11 entry that claimed this was **invalidated in the same week**:
+      commit `4fa40be` introduced a 137-column line that would have failed upstream
+      CI, and the checklist went on saying "clean". Fixed, and worth remembering:
+      a readiness tick is only true for the commit it was taken against.
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **24/24**
+      (was 11), covering every supported rate, the rejected rates and word sizes,
+      the MCLK validation, the input volume/mute round trip, volume clamping and
+      I2C error propagation.
+- [x] **Builds against upstream main, zero warnings** — through
+      `tests/drivers/build_all/audio`: `CONFIG_AUDIO_CODEC_ES8311=y`, `es8311.c.obj`
+      on disk, and the device instance in the ELF symbol table.
+- [x] **Genericized** — zero hits for M5Stack / StickS3 / HW-0xx / ESP-ADF /
+      esp-bsp / M5GFX / TODO in the driver.
+- [x] **DCO ready** — `Signed-off-by: Hsiu-Chi Tsai <hctsai@linux.com>`.
+- [x] **No AI footers.**
+- [ ] **Hardware validation of the full rate sweep (HW-019) — PENDING.** Only
+      16 kHz is hardware-verified today. `CONFIG_APP_AUDIO_RATE_SWEEP` reprograms
+      I2S and the codec at each supported rate, reads the clock registers back off
+      the chip over I2C, and plays a tone while capturing it on the microphone.
+      **8 kHz is the one rate at risk**: both Espressif reference drivers
+      special-case it (x4 instead of x8) claiming BCLK has to be at least 512 kHz.
+      The datasheet does not say that, Linux contradicts it, and Espressif's own
+      11.025 kHz row (x8 at 352.8 kHz) contradicts it too. If it fails on hardware,
+      drop `8000` from `es8311_rates[]` before submitting.
 
-## TODO at submission time (gated — do when the window opens)
+## What upstream actually requires (checked against origin/main, 2026-07-12)
 
-### 1. Genericize board/project-specific references (the only code cleanup)
-The driver *logic* is generic, but comments/description name our board and
-internal HW-IDs. For the upstream copy, rephrase to keep the technical content
-and drop project-internal tells. Keep Espressif/ESP-ADF/esp-bsp provenance
-(those strengthen the contribution).
+MUST:
 
-- `drivers/audio/es8311.c`: lines ~10, 14–15, 73, 100–101, 136, 154, 160, 172,
-  323, 422 — replace "M5Stack StickS3 / this project's bring-up / HW-016/HW-016d"
-  with generic phrasing ("a 16 kHz / 16-bit MCLK-from-BCLK configuration",
-  "hardware-validated").
-- `dts/bindings/audio/everest,es8311.yaml`: lines 9, 13 — drop the StickS3
-  sentence from `description`.
-- `drivers/audio/Kconfig.es8311`: help text — drop "Used on the M5Stack StickS3".
+- `drivers/audio/es8311.c` and `drivers/audio/Kconfig.es8311`.
+- One `source` line in `drivers/audio/Kconfig` and one
+  `zephyr_library_sources_ifdef` in `drivers/audio/CMakeLists.txt`, both inside the
+  `zephyr-keep-sorted` blocks. The ordering is CI-enforced: after `da7212`, before
+  `max98091`.
+- `dts/bindings/audio/everest,es8311.yaml`.
+- A node in `tests/drivers/build_all/audio/i2c_devices.overlay`. That build-only
+  overlay is the only test any in-tree codec ships, and it is the only thing that
+  makes CI compile the driver at all.
+- `static DEVICE_API(audio_codec, es8311_api) = {...}`. The 4.4.0 form
+  (`struct audio_codec_api`) became a deprecated alias on main in #110631, so the
+  in-repo copy and the upstream copy differ on exactly that one line.
 
-### 2. Split into a focused PR (reviewer norm on #107660)
-Codec driver + binding + ztest only. No board, no sample in the same PR.
+DO NOT:
+
+- Touch `dts/bindings/vendor-prefixes.txt`: `everest` is already there (line 246),
+  and a duplicate line is an instant CI failure.
+- Touch `MAINTAINERS.yml`: the `Drivers: Audio` area already covers
+  `drivers/audio/`, and none of the last four codec PRs touched it. Note that area
+  is `status: odd fixes` with **no maintainer**, only collaborators, so budget for
+  a slow review.
+- Add a release-note entry: those are bulk-added by the release engineer at feature
+  freeze, not by the driver PR.
+- Ship the ztest and the emulator in the first PR. There is no codec test anywhere
+  under `tests/drivers/audio/` and no codec emulator in the tree, so it is new
+  surface in an area with no maintainer. Offer it, land it as a follow-up.
+
+Do not claim in the PR description that the driver implements `route_input()` or a
+direction-aware `start()`/`stop()`. It implements neither, and an earlier draft of
+this document and of ADR 0004 said it did. Capture is enabled by
+`configure(AUDIO_ROUTE_CAPTURE)` and is on from then on, which is exactly what the
+in-tree wm8904 and da7212 do. The capture support is real; it is `configure()` plus
+input volume and mute.
 
 ### 3. Submission mechanics
 - Branch off current `zephyrproject-rtos/zephyr` main.
