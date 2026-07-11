@@ -128,20 +128,31 @@ jobs:
           # text; it did not keep the artifacts a reviewer would need to check a
           # claim afterwards, and PR #19's evidence for an 8 MB ext_dram_seg rests
           # on exactly the kind of build output that was being thrown away.
-          mkdir -p "${{ github.workspace }}/twister-out"
+          #
+          # twister is pointed at a directory INSIDE the mount, never at the mount
+          # point itself. On startup it moves any existing outdir aside
+          # (twister_main.clean_previous_results -> shutil.move), and a bind mount
+          # point cannot be moved or removed from inside the container: it fails with
+          # EBUSY, "Device or resource busy".
+          mkdir -p "${{ github.workspace }}/twister-artifacts"
           docker run --rm \
             -e ZEPHYR_REV="$ZEPHYR_REV" \
             -e ZEPHYR_SDK_INSTALL_DIR="$SDK_DIR" \
             -v "${{ github.workspace }}/repo:/repo:ro" \
-            -v "${{ github.workspace }}/twister-out:/out" \
+            -v "${{ github.workspace }}/twister-artifacts:/out" \
             "$CI_IMAGE" \
             bash -c 'set -eo pipefail
               mkdir -p /work && cd /work
               west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
               cd ws && west update --narrow -o=--depth=1 && west zephyr-export
               export ZEPHYR_EXTRA_MODULES=/repo
-              west twister -p native_sim --inline-logs -v -T /repo/tests -O /out
+              west twister -p native_sim --inline-logs -v -T /repo/tests -O /out/twister-out
             '
+
+      - name: Hand the artifacts back to the runner
+        # The container writes as root, and the upload step does not run as root.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/twister-artifacts" || true
 
       - name: Keep the twister artifacts
         # if: always() - the run that FAILS is the one whose artifacts are worth
@@ -150,7 +161,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: twister-out
-          path: twister-out
+          path: twister-artifacts
           retention-days: 14
           if-no-files-found: warn
 
