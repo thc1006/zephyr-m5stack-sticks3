@@ -24,6 +24,9 @@ extern void emul_es8311_reset_log(const struct emul *target);
 extern int emul_es8311_write_count(const struct emul *target);
 extern int emul_es8311_write_at(const struct emul *target, int idx);
 extern void emul_es8311_set_chip_id(const struct emul *target, uint8_t id1, uint8_t id2);
+extern void emul_es8311_pause_before(const struct emul *target, uint8_t reg);
+extern int emul_es8311_wait_paused(const struct emul *target, k_timeout_t timeout);
+extern void emul_es8311_release(const struct emul *target);
 
 /*
  * ES8311 register map (the subset the driver touches), named after the fields
@@ -92,11 +95,10 @@ static void make_cfg(struct audio_codec_cfg *cfg, uint32_t rate, audio_route_t r
 	cfg->dai_cfg.i2s.frame_clk_freq = rate;
 }
 
-/* 16 kHz / 16-bit playback with the master clock stated explicitly (256 * 16k). */
+/* 16 kHz / 16-bit playback, the configuration the application uses. */
 static void make_cfg_16k_16bit(struct audio_codec_cfg *cfg)
 {
 	make_cfg(cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
-	cfg->mclk_freq = 4096000U;
 }
 
 /*
@@ -155,32 +157,35 @@ ZTEST(es8311, test_configure_16k_16bit_sequence)
 	reg_put(ES8311_REG_CLK_BCLK, 0xFF);
 	reg_put(ES8311_REG_CLK_LRCK_L, 0x00);
 	reg_put(ES8311_REG_SDP_IN, 0xFF);
+	reg_put(ES8311_REG_SDP_OUT, 0x0C);
 	reg_put(ES8311_REG_SYSTEM_0D, 0xFF);
+	reg_put(ES8311_REG_SYSTEM_0E, 0x02);
 	reg_put(ES8311_REG_SYSTEM_12, 0xFF);
 	reg_put(ES8311_REG_SYSTEM_13, 0x00);
+	reg_put(ES8311_REG_ADC_PGA, 0x1A);
 	reg_put(ES8311_REG_DAC_EQ, 0x00);
 	reg_put(ES8311_REG_DAC_MUTE, 0xFF);
 
 	make_cfg_16k_16bit(&cfg);
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
 
-	/* Reset released / CSM on. */
+	/* CSM on. */
 	zassert_equal(reg_get(ES8311_REG_RESET), 0x80U, "0x00 should be 0x80");
-	/* Clock manager: master clock from BCLK, clock tree enabled. */
-	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xBFU, "0x01 should be 0xBF");
+	/* Master clock from BCLK, and the ADC's clocks gated off on a playback route. */
+	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xB5U, "0x01 should be 0xB5");
 	/* DIV_PRE = 1, MULT_PRE = x8. */
 	zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x18U, "0x02 should be 0x18");
 	/* BCLK_CON clear, so the codec stays the I2S clock slave. */
 	zassert_equal(reg_get(ES8311_REG_CLK_BCLK), 0x03U, "0x06 should be 0x03");
 	/* DIV_LRCK low byte. */
 	zassert_equal(reg_get(ES8311_REG_CLK_LRCK_L), 0xFFU, "0x08 should be 0xFF");
-	/* I2S, 16-bit. */
+	/* The DAC serial port carries I2S, 16-bit, unmuted. */
 	zassert_equal(reg_get(ES8311_REG_SDP_IN), 0x0CU, "0x09 should be 0x0C");
-	/* Analog power up. */
-	zassert_equal(reg_get(ES8311_REG_SYSTEM_0D), 0x01U, "0x0D should be 0x01");
+	/* The shared analog block is up, with the ADC's own references down. */
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0D), 0x31U, "0x0D should be 0x31");
 	/* DAC power up. */
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0x00U, "0x12 should be 0x00");
-	/* Output drive. */
+	/* Headphone output path. */
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_13), 0x10U, "0x13 should be 0x10");
 	/* EQ bypass. */
 	zassert_equal(reg_get(ES8311_REG_DAC_EQ), 0x08U, "0x37 should be 0x08");
@@ -188,6 +193,18 @@ ZTEST(es8311, test_configure_16k_16bit_sequence)
 	zassert_equal(reg_get(ES8311_REG_DAC_VOLUME), 0xC0U, "0x32 should be default 0xC0");
 	/* Unmuted at end of configure. */
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE), 0x00U, "0x31 should be unmuted (0x00)");
+
+	/*
+	 * A playback-only route owes the caller a microphone that is off, not merely
+	 * one whose data is being thrown away. The ADC is powered down, its serial
+	 * port is muted, and the microphone is taken off the input mux.
+	 */
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x62U,
+		      "0x0E: the ADC must be powered down on a playback-only route");
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x00U,
+		      "0x14: the microphone must be taken off the input mux");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "0x0A: the ADC serial port must be muted");
 }
 
 /*
@@ -279,23 +296,93 @@ ZTEST(es8311, test_configure_capture_sequence)
 }
 
 /*
- * A capture-only route must be accepted and power the ADC (0x0E) without
- * powering the DAC (0x12 left untouched).
+ * A capture-only route powers the ADC up and the DAC DOWN.
+ *
+ * The previous version of this test asserted that 0x12 was left untouched, which
+ * did not describe correct behaviour: it described the bug. Register 0x00 does
+ * not reset the register file, so a DAC a previous PLAYBACK_CAPTURE route powered
+ * up stays powered, and the speaker path stays live behind a caller that asked
+ * for capture only.
  */
 ZTEST(es8311, test_configure_capture_only)
 {
 	struct audio_codec_cfg cfg;
 
-	reg_put(ES8311_REG_SYSTEM_0E, 0xFF);
-	reg_put(ES8311_REG_SYSTEM_12, 0xFF);
+	/* Come from a route that had the DAC up, which is the case that used to leak. */
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure(PLAYBACK_CAPTURE) failed");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0x00U, "the DAC should be up here");
 
-	make_cfg_16k_16bit(&cfg);
-	cfg.dai_route = AUDIO_ROUTE_CAPTURE;
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_CAPTURE);
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure(CAPTURE) failed");
 
-	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "ADC power 0x0E should be set");
-	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0xFFU,
-		      "capture-only must not touch DAC power 0x12");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "0x0E: the ADC must be powered up");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0x02U,
+		      "0x12: the DAC must be powered DOWN, not left as the previous route "
+		      "left it");
+	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xBAU,
+		      "0x01: the DAC clocks must be gated off");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0D), 0x09U,
+		      "0x0D: the DAC's own reference must be dropped");
+	zassert_equal(reg_get(ES8311_REG_SDP_IN) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "0x09: the DAC serial port must be muted");
+}
+
+/*
+ * The other direction of the same defect: going from PLAYBACK_CAPTURE to
+ * PLAYBACK must take the microphone down, not just stop reading it. A muted
+ * serial port would leave the PGA and the modulator running on a live mic.
+ */
+ZTEST(es8311, test_route_transition_drops_the_microphone)
+{
+	struct audio_codec_cfg cfg;
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure(PLAYBACK_CAPTURE) failed");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "the ADC should be up here");
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU, "the mic should be on the mux here");
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure(PLAYBACK) failed");
+
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x62U,
+		      "0x0E: the ADC must be powered down, not left running");
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x00U,
+		      "0x14: the microphone must be taken off the input mux");
+	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xB5U,
+		      "0x01: the ADC clocks must be gated off");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_0D), 0x31U,
+		      "0x0D: the ADC's own bias and reference must be dropped");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "0x0A: the ADC serial port must be muted");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0x00U, "the DAC must still be up");
+}
+
+/*
+ * And the properties must respect the route too. On a playback-only route,
+ * apply_properties() must not clear the microphone's serial-port mute that
+ * configure() just set: the cached input state is not a licence to re-open a
+ * path the route took down.
+ */
+ZTEST(es8311, test_apply_properties_respects_the_route)
+{
+	struct audio_codec_cfg cfg;
+	audio_property_value_t unmute = {.mute = false};
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure(PLAYBACK) failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "the ADC port should be muted after a playback-only configure");
+
+	/* The default cached input state is "not muted". Applying it must not win. */
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE,
+					    AUDIO_CHANNEL_ALL, unmute),
+		   "set INPUT_MUTE(false) failed");
+	zassert_ok(audio_codec_apply_properties(codec), "apply_properties failed");
+
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "apply_properties() must not re-open the microphone on a route that "
+		      "does not carry capture");
 }
 
 /*
@@ -324,7 +411,8 @@ ZTEST(es8311, test_configure_all_supported_rates)
 		make_cfg(&cfg, rate, AUDIO_ROUTE_PLAYBACK);
 		zassert_ok(audio_codec_configure(codec, &cfg), "configure(%u Hz) failed", rate);
 
-		zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xBFU, "0x01 at %u Hz", rate);
+		/* A playback-only route: the ADC's clocks are gated off. */
+		zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xB5U, "0x01 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x18U, "0x02 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_ADC_OSR), 0x10U, "0x03 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_DAC_OSR), 0x10U, "0x04 at %u Hz", rate);
@@ -369,11 +457,14 @@ ZTEST(es8311, test_configure_rejects_non_16bit_word)
 }
 
 /*
- * mclk_freq == 0 means "derive it from BCLK". A caller may also state the master
- * clock explicitly, but only the 256fs value the dividers are programmed for is
- * usable; anything else must be rejected rather than mis-clocked.
+ * audio_codec_cfg.mclk_freq describes the clock fed to the codec's MCLK *input*
+ * pin. This driver never uses that pin: it derives the master clock from BCLK.
+ * So zero is the only meaningful value, and anything else must be rejected
+ * rather than silently ignored. In particular the internal 256fs figure is NOT
+ * an MCLK input frequency, and accepting it would be describing a clock that is
+ * not on any pin.
  */
-ZTEST(es8311, test_configure_mclk_validation)
+ZTEST(es8311, test_configure_mclk_must_be_zero)
 {
 	struct audio_codec_cfg cfg;
 
@@ -387,13 +478,16 @@ ZTEST(es8311, test_configure_mclk_validation)
 
 		make_cfg(&cfg, rate, AUDIO_ROUTE_PLAYBACK);
 		cfg.mclk_freq = rate * 256U;
-		zassert_ok(audio_codec_configure(codec, &cfg),
-			   "mclk 256fs must be accepted at %u Hz", rate);
+		zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
+			      "the internal 256fs clock is not an MCLK input and must be "
+			      "rejected at %u Hz",
+			      rate);
 
 		make_cfg(&cfg, rate, AUDIO_ROUTE_PLAYBACK);
-		cfg.mclk_freq = rate * 384U;
+		cfg.mclk_freq = 12288000U;
 		zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
-			      "mclk 384fs must be rejected at %u Hz", rate);
+			      "an external MCLK is not supported and must be rejected at %u Hz",
+			      rate);
 	}
 }
 
@@ -721,4 +815,100 @@ ZTEST(es8311, test_apply_properties_propagates_i2c_error)
 	zassert_ok(audio_codec_apply_properties(codec), "apply_properties() should recover");
 }
 
-ZTEST_SUITE(es8311, NULL, NULL, NULL, NULL, NULL);
+/*
+ * The concurrency test. Everything above runs on one thread, so none of it can
+ * see the defect this one is here for.
+ *
+ * apply_properties() must hold the codec lock across its register writes, not
+ * merely across the read of the cached state. If it snapshots and unlocks,
+ * stop_output() can slip into the gap, cache "muted" and mute the DAC in
+ * hardware, and then have that write overwritten by the value apply_properties()
+ * sampled before the gap. The driver's cache would say muted while the speaker
+ * stayed live, which is a speaker-safety bug rather than a tidiness one.
+ *
+ * The emulator parks apply_properties() inside its first register write (the DAC
+ * volume at 0x32, which stop_output() never touches), still holding whatever
+ * lock the driver holds. A second thread then calls stop_output(). With the lock
+ * held across the writes it blocks there and wins afterwards; with the lock
+ * released early it runs immediately and loses.
+ */
+static K_THREAD_STACK_DEFINE(apply_stack, 2048);
+static K_THREAD_STACK_DEFINE(stop_stack, 2048);
+static struct k_thread apply_thread;
+static struct k_thread stop_thread;
+
+static void apply_fn(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	(void)audio_codec_apply_properties(codec);
+}
+
+static void stop_fn(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	audio_codec_stop_output(codec);
+}
+
+ZTEST(es8311, test_apply_properties_holds_the_lock_across_its_writes)
+{
+	audio_property_value_t unmute = {.mute = false};
+	k_tid_t a;
+	k_tid_t b;
+
+	/* Cache "unmuted", and leave the hardware muted so a stale write shows. */
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE,
+					    AUDIO_CHANNEL_ALL, unmute),
+		   "set OUTPUT_MUTE(false) failed");
+	reg_put(ES8311_REG_DAC_MUTE, 0x60);
+
+	emul_es8311_pause_before(emul, ES8311_REG_DAC_VOLUME);
+
+	a = k_thread_create(&apply_thread, apply_stack, K_THREAD_STACK_SIZEOF(apply_stack),
+			    apply_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(2), 0, K_NO_WAIT);
+	zassert_ok(emul_es8311_wait_paused(emul, K_SECONDS(1)),
+		   "apply_properties() never reached the DAC volume write");
+
+	b = k_thread_create(&stop_thread, stop_stack, K_THREAD_STACK_SIZEOF(stop_stack),
+			    stop_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(2), 0, K_NO_WAIT);
+
+	/* Give stop_output() time either to block on the lock or to race past it. */
+	k_msleep(50);
+
+	emul_es8311_release(emul);
+	zassert_ok(k_thread_join(a, K_SECONDS(1)), "the apply_properties() thread hung");
+	zassert_ok(k_thread_join(b, K_SECONDS(1)), "the stop_output() thread hung");
+
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "stop_output() must win: the speaker must not be left live while the "
+		      "driver's cached state says muted");
+
+	/* Leave the DAC unmuted for anything that runs after this. */
+	audio_codec_start_output(codec);
+}
+
+/*
+ * Every test starts from a route that carries both directions.
+ *
+ * The driver now refuses to touch a converter the current route does not carry,
+ * which is the whole point of the route-transition fix, so a test that wants to
+ * exercise the DAC or the ADC has to have asked for that direction. Without this
+ * the property tests would silently become no-ops after any test that left a
+ * single-direction route behind, and they would pass by doing nothing.
+ */
+static void es8311_before(void *fixture)
+{
+	struct audio_codec_cfg cfg;
+
+	ARG_UNUSED(fixture);
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	(void)audio_codec_configure(codec, &cfg);
+}
+
+ZTEST_SUITE(es8311, NULL, NULL, es8311_before, NULL, NULL);

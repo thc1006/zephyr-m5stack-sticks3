@@ -43,6 +43,18 @@ struct es8311_emul_data {
 	/* Ordered log of written register addresses. */
 	uint8_t wlog[ES8311_EMUL_WLOG_LEN];
 	int wcount;
+	/*
+	 * Concurrency hook. When armed, the transfer blocks just before it applies
+	 * a write to `pause_reg`, in the calling thread's own context, and signals
+	 * `reached`. It resumes when a test gives `release`. That lets a test park
+	 * one caller in the middle of a register sequence and drive a second one
+	 * into it, which is the only way to observe whether the driver holds its
+	 * lock across the whole sequence or merely across the read of its cache.
+	 */
+	struct k_sem reached;
+	struct k_sem release;
+	uint8_t pause_reg;
+	bool pause_armed;
 };
 
 /* Test backend hooks (declared extern in the test). */
@@ -78,6 +90,37 @@ int emul_es8311_write_at(const struct emul *target, int idx)
 }
 
 /*
+ * Arm the concurrency hook: the next write to `reg` blocks inside the transfer,
+ * in the caller's own thread, until emul_es8311_release() is called.
+ */
+void emul_es8311_pause_before(const struct emul *target, uint8_t reg)
+{
+	struct es8311_emul_data *data = target->data;
+
+	k_sem_init(&data->reached, 0, 1);
+	k_sem_init(&data->release, 0, 1);
+	data->pause_reg = reg;
+	data->pause_armed = true;
+}
+
+/* Block until a caller has actually parked on the armed register. */
+int emul_es8311_wait_paused(const struct emul *target, k_timeout_t timeout)
+{
+	struct es8311_emul_data *data = target->data;
+
+	return k_sem_take(&data->reached, timeout);
+}
+
+/* Let the parked caller finish its write, and disarm the hook. */
+void emul_es8311_release(const struct emul *target)
+{
+	struct es8311_emul_data *data = target->data;
+
+	data->pause_armed = false;
+	k_sem_give(&data->release);
+}
+
+/*
  * Override the chip-id registers (0xFD/0xFE) so a test can exercise the
  * driver's warn-and-continue path on an unexpected identity. The driver reads
  * these in init() via i2c_reg_read_byte_dt().
@@ -110,6 +153,17 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 		if ((m->flags & I2C_MSG_READ) || m->len != 2) {
 			return -EIO;
 		}
+
+		/*
+		 * Park here, still in the caller's thread and therefore still holding
+		 * whatever locks the caller holds, so a test can drive a second caller
+		 * into the middle of this register sequence.
+		 */
+		if (data->pause_armed && m->buf[0] == data->pause_reg) {
+			k_sem_give(&data->reached);
+			(void)k_sem_take(&data->release, K_FOREVER);
+		}
+
 		data->regs[m->buf[0]] = m->buf[1];
 		if (data->wcount < ES8311_EMUL_WLOG_LEN) {
 			data->wlog[data->wcount] = m->buf[0];

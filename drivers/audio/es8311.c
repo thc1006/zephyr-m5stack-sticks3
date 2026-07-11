@@ -63,15 +63,23 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_CHIP_ID1 0x83U
 #define ES8311_CHIP_ID2 0x11U
 
-/* 0x00: clock state machine powered up, reset released. */
+/*
+ * 0x00: CSM_ON. This does NOT reset the register file: it powers the clock state
+ * machine up and clears the reset bits, so every other register keeps whatever a
+ * previous configure() left in it. Nothing below may rely on reset defaults.
+ */
 #define ES8311_RESET_CSM_ON 0x80U
 
 /*
- * 0x01: MCLK_SEL (bit 7) takes the internal master clock from BCLK instead of
- * the MCLK pin, and the remaining bits enable the clock tree (MCLK, BCLK, and
- * the digital and analog ADC and DAC clocks).
+ * 0x01: MCLK_SEL (bit 7) takes the internal master clock from BCLK instead of the
+ * MCLK pin. MCLK_ON (5) and BCLK_ON (4) enable the clock inputs, and bits [3:0]
+ * gate the digital and analog clocks of each converter: CLKADC_ON (3),
+ * CLKDAC_ON (2), ANACLKADC_ON (1), ANACLKDAC_ON (0). The unused converter's
+ * clocks are gated off, as the ASoC driver does.
  */
-#define ES8311_CLK_MGR_FROM_BCLK 0xBFU
+#define ES8311_CLK_MGR_BOTH     0xBFU /* both converters clocked */
+#define ES8311_CLK_MGR_PLAYBACK 0xB5U /* the ADC clocks gated off */
+#define ES8311_CLK_MGR_CAPTURE  0xBAU /* the DAC clocks gated off */
 
 /*
  * Clock tree.
@@ -117,12 +125,33 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_SDP_I2S_16BIT 0x0CU
 #define ES8311_SDP_MUTE      0x40U
 
-/* Power sequencing. */
-#define ES8311_ANALOG_PWR_ON 0x01U /* 0x0D: bias, VREF and VMID powered */
-#define ES8311_ADC_PWR_ON    0x02U /* 0x0E: ADC PGA and modulator powered */
-#define ES8311_DAC_PWR_ON    0x00U /* 0x12: DAC powered */
-#define ES8311_OUT_HEADPHONE 0x10U /* 0x13: headphone output path */
-#define ES8311_DAC_EQ_BYPASS 0x08U /* 0x37: bypass the DAC equaliser */
+/*
+ * Power sequencing.
+ *
+ * 0x0D is partly shared and partly per-converter: PDN_ANA (7), PDN_IBIASGEN (6),
+ * PDN_VREF (2) and VMIDSEL [1:0] serve both paths and have to stay up while
+ * either one runs, while PDN_ADCBIASGEN (5) and PDN_ADCVERFGEN (4) belong to the
+ * ADC and PDN_DACVREFGEN (3) to the DAC. Only the unused converter's own
+ * references are dropped.
+ *
+ * 0x0E powers the ADC down by setting PDN_PGA (6) and PDN_MOD (5) on top of the
+ * running value. The vendor's full-idle value of 0xFF is deliberately NOT used
+ * here: it also sets LPVREFBUF, putting the internal reference buffer that the
+ * DAC output path shares into low-power mode, which would undermine a playback
+ * stream that is still running.
+ *
+ * 0x12 = 0x02 is both PDN_DAC and the register's reset default: the DAC comes out
+ * of reset powered down.
+ */
+#define ES8311_ANALOG_BOTH     0x01U /* 0x0D */
+#define ES8311_ANALOG_PLAYBACK 0x31U /* 0x0D: the ADC's bias and reference down */
+#define ES8311_ANALOG_CAPTURE  0x09U /* 0x0D: the DAC's reference down */
+#define ES8311_ADC_PWR_ON      0x02U /* 0x0E: PGA and modulator powered */
+#define ES8311_ADC_PWR_DOWN    0x62U /* 0x0E: PDN_PGA | PDN_MOD, shared refs kept */
+#define ES8311_DAC_PWR_ON      0x00U /* 0x12 */
+#define ES8311_DAC_PWR_DOWN    0x02U /* 0x12: PDN_DAC */
+#define ES8311_OUT_HEADPHONE   0x10U /* 0x13: headphone output path */
+#define ES8311_DAC_EQ_BYPASS   0x08U /* 0x37: bypass the DAC equaliser */
 
 /*
  * 0x31: the DAC has two mute points, DSMMUTE at bit 6 and DEMMUTE at bit 5. The
@@ -149,22 +178,25 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_VOL_DEFAULT_CODE 0xC0U /* ~ +0.5 dB */
 
 /*
- * Analog capture front end. The ES8311 has a single fully differential
- * microphone input, so 0x14 selects the MIC1P/MIC1N pair (LINSEL = 1) and sets
- * the PGA to its 30 dB maximum, which may need lowering if the captured signal
- * clips.
+ * Analog capture front end. The ES8311 has a single fully differential microphone
+ * input, so 0x14 selects the MIC1P/MIC1N pair (LINSEL = 1) and sets the PGA to
+ * its 30 dB maximum, which may need lowering if the captured signal clips.
+ *
+ * When capture is not routed, 0x14 is cleared instead: LINSEL = 0 is "no input
+ * selection", which disconnects the microphone from the PGA input mux rather than
+ * merely leaving it unpowered.
  */
 #define ES8311_ADC_PGA_MIC1_30DB 0x1AU /* 0x14 */
+#define ES8311_ADC_MIC_OFF       0x00U /* 0x14: no input selected */
 #define ES8311_ADC_RAMP_RATE     0x40U /* 0x15: volume ramp rate */
 #define ES8311_ADC_HPF1_VAL      0x0AU /* 0x1B */
 #define ES8311_ADC_HPF2_DCBLOCK  0x6AU /* 0x1C: EQ bypass, cancels the DC offset */
 #define ES8311_ADC_GP45_DEFAULT  0x00U /* 0x45 */
 
 /*
- * 0x16 selects the ADC digital scale in bits [2:0]; 4 is the +24 dB reset
- * default, which is what this driver keeps. Bit 5 does not appear in the user
- * guide's register table; the vendor reference drivers set it, and this is the
- * sequence that is validated on hardware, so it is set here too.
+ * 0x16: ADC_SYNC (bit 5) synchronises the filter counter with LRCK for a standard
+ * audio clock, and ADC_SCALE [2:0] is the digital gain scale, whose reset default
+ * of 4 is +24 dB. This is the running value.
  */
 #define ES8311_ADC_SCALE_24DB 0x24U
 
@@ -200,6 +232,14 @@ struct es8311_data {
 	uint8_t adc_volume_code; /* cached 0x17 */
 	bool dac_mute;
 	bool adc_mute;
+	/*
+	 * The route the last configure() programmed. Everything that touches a
+	 * converter has to respect it: unmuting a serial port or a DAC that the
+	 * current route deliberately powered down would put the microphone or the
+	 * speaker back on the bus behind the caller's back.
+	 */
+	bool playback;
+	bool capture;
 };
 
 static int es8311_reg_write(const struct device *dev, uint8_t reg, uint8_t val)
@@ -259,6 +299,9 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 {
 	struct es8311_data *data = dev->data;
 	uint32_t rate;
+	uint8_t clk_mgr;
+	uint8_t analog;
+	uint8_t sdp_in;
 	uint8_t sdp_out;
 	bool playback = false;
 	bool capture = false;
@@ -324,30 +367,57 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * mclk_freq describes the master clock the codec ends up running at. It
-	 * is derived from BCLK, so the only usable value is the 256fs one the
-	 * dividers are programmed for; zero means "derive it".
+	 * audio_codec_cfg.mclk_freq is the frequency of the clock fed to the
+	 * codec's MCLK *input* pin. This driver never uses that pin: it takes the
+	 * master clock from BCLK (register 0x01 bit 7), so there is no MCLK input
+	 * to describe and zero is the only meaningful value. Accepting the
+	 * internal 256fs figure here would be reporting a clock that is not on any
+	 * pin, and accepting an arbitrary value would silently ignore it.
 	 */
-	if (cfg->mclk_freq != 0U && cfg->mclk_freq != (rate * 256U)) {
-		LOG_INF("Unsupported mclk %u for rate %u (expected %u or 0)", cfg->mclk_freq, rate,
-			rate * 256U);
+	if (cfg->mclk_freq != 0U) {
+		LOG_INF("mclk_freq must be 0: the master clock comes from BCLK and the "
+			"MCLK input is unused");
 		return -ENOTSUP;
 	}
 
-	sdp_out = ES8311_SDP_I2S_16BIT | (data->adc_mute ? ES8311_SDP_MUTE : 0U);
-
-	LOG_DBG("Configure: rate=%u mclk=%u", rate, cfg->mclk_freq);
+	LOG_DBG("Configure: rate=%u", rate);
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/* Release reset and power up the clock state machine. */
+	/*
+	 * Everything route-dependent is decided here, under the lock. Sampling the
+	 * cached mute state before taking the mutex would let another thread set an
+	 * input mute that this call then overwrites, leaving the cache muted and the
+	 * microphone live.
+	 *
+	 * A configure() never starts from a clean chip: register 0x00 powers the
+	 * clock state machine up and clears the reset bits, it does not reset the
+	 * register file, so a converter a previous route powered up is still up.
+	 * Every route therefore programs BOTH directions, powering down the one it
+	 * does not use rather than leaving it as it found it.
+	 */
+	if (playback && capture) {
+		clk_mgr = ES8311_CLK_MGR_BOTH;
+		analog = ES8311_ANALOG_BOTH;
+	} else if (playback) {
+		clk_mgr = ES8311_CLK_MGR_PLAYBACK;
+		analog = ES8311_ANALOG_PLAYBACK;
+	} else {
+		clk_mgr = ES8311_CLK_MGR_CAPTURE;
+		analog = ES8311_ANALOG_CAPTURE;
+	}
+
+	sdp_in = ES8311_SDP_I2S_16BIT | (playback ? 0U : ES8311_SDP_MUTE);
+	sdp_out = ES8311_SDP_I2S_16BIT | ((capture && !data->adc_mute) ? 0U : ES8311_SDP_MUTE);
+
+	/* Power the clock state machine up. This does not reset any register. */
 	ret = es8311_reg_write(dev, ES8311_REG_RESET, ES8311_RESET_CSM_ON);
 	if (ret < 0) {
 		goto end;
 	}
 	k_msleep(ES8311_RESET_DELAY_MS);
 
-	ret = es8311_reg_write(dev, ES8311_REG_CLK_MANAGER, ES8311_CLK_MGR_FROM_BCLK);
+	ret = es8311_reg_write(dev, ES8311_REG_CLK_MANAGER, clk_mgr);
 	if (ret < 0) {
 		goto end;
 	}
@@ -381,15 +451,25 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		goto end;
 	}
 
-	if (playback) {
-		ret = es8311_reg_write(dev, ES8311_REG_SDP_IN, ES8311_SDP_I2S_16BIT);
-		if (ret < 0) {
-			goto end;
-		}
+	/*
+	 * Both serial ports are written every time, with the unused direction muted
+	 * at its own port. Leaving the port of a direction that is no longer routed
+	 * as it was found would keep it driving the bus.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_IN, sdp_in);
+	if (ret < 0) {
+		goto end;
+	}
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
+	if (ret < 0) {
+		goto end;
 	}
 
-	/* Bias, reference and mid-rail are shared by the DAC and the ADC. */
-	ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_0D, ES8311_ANALOG_PWR_ON);
+	/*
+	 * The bias, the mid-rail and the shared reference stay up for whichever
+	 * converter runs; only the unused one's own references are dropped.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_0D, analog);
 	if (ret < 0) {
 		goto end;
 	}
@@ -421,6 +501,12 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		if (ret < 0) {
 			goto end;
 		}
+	} else {
+		/* Power the DAC down rather than leaving a previous route's DAC live. */
+		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_12, ES8311_DAC_PWR_DOWN);
+		if (ret < 0) {
+			goto end;
+		}
 	}
 
 	if (capture) {
@@ -429,11 +515,6 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		 * capture enable, and the application simply reads the I2S receive
 		 * stream. This mirrors the in-tree wm8904 and da7212 codecs.
 		 */
-		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
-		if (ret < 0) {
-			goto end;
-		}
-
 		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_0E, ES8311_ADC_PWR_ON);
 		if (ret < 0) {
 			goto end;
@@ -475,7 +556,29 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		}
 
 		ret = es8311_reg_write(dev, ES8311_REG_ADC_GP45, ES8311_ADC_GP45_DEFAULT);
+		if (ret < 0) {
+			goto end;
+		}
+	} else {
+		/*
+		 * Power the ADC down and take the microphone off the input mux. A
+		 * muted serial port would still leave the PGA and the modulator
+		 * running on a live microphone, which is not what a caller asking for
+		 * a playback-only route is entitled to assume.
+		 */
+		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_0E, ES8311_ADC_PWR_DOWN);
+		if (ret < 0) {
+			goto end;
+		}
+
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_PGA, ES8311_ADC_MIC_OFF);
+		if (ret < 0) {
+			goto end;
+		}
 	}
+
+	data->playback = playback;
+	data->capture = capture;
 
 end:
 	k_mutex_unlock(&data->lock);
@@ -487,15 +590,24 @@ end:
 	return ret;
 }
 
+/*
+ * start_output() and stop_output() cache the requested state either way, so it is
+ * applied by the next configure() that routes playback, but they only touch the
+ * hardware while playback is actually routed. Unmuting a DAC that the current
+ * route deliberately powered down would put the speaker back on the output behind
+ * the caller's back.
+ */
 static void es8311_start_output(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
-	int ret;
+	int ret = 0;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 	data->dac_mute = false;
-	ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK,
-				ES8311_DAC_MUTE_OFF);
+	if (data->playback) {
+		ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK,
+					ES8311_DAC_MUTE_OFF);
+	}
 	k_mutex_unlock(&data->lock);
 
 	if (ret < 0) {
@@ -506,11 +618,14 @@ static void es8311_start_output(const struct device *dev)
 static void es8311_stop_output(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
-	int ret;
+	int ret = 0;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 	data->dac_mute = true;
-	ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK, ES8311_DAC_MUTE_ON);
+	if (data->playback) {
+		ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK,
+					ES8311_DAC_MUTE_ON);
+	}
 	k_mutex_unlock(&data->lock);
 
 	if (ret < 0) {
@@ -557,53 +672,84 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 static int es8311_apply_properties(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
-	uint8_t dac_volume_code;
-	uint8_t adc_volume_code;
-	bool dac_mute;
-	bool adc_mute;
-	int ret;
+	/* A route that carries neither direction leaves nothing to apply, and that
+	 * is not an error: the properties stay cached for the next configure().
+	 */
+	int ret = 0;
 
+	/*
+	 * The lock is held across the register writes, not merely across the read
+	 * of the cached state. Taking a snapshot and then releasing the lock would
+	 * let stop_output() run in between: it would cache "muted", mute the DAC in
+	 * hardware, and then have that write overwritten by the already-sampled
+	 * "unmuted" value here, leaving the cache saying muted while the speaker is
+	 * live. The codec API asks for the cached properties to be applied as one
+	 * step, and this is a speaker-safety property, not just tidiness.
+	 */
 	k_mutex_lock(&data->lock, K_FOREVER);
-	dac_volume_code = data->dac_volume_code;
-	adc_volume_code = data->adc_volume_code;
-	dac_mute = data->dac_mute;
-	adc_mute = data->adc_mute;
+
+	/*
+	 * Only the routed directions are touched. Applying the cached input state on
+	 * a playback-only route would clear the serial-port mute that configure()
+	 * set on the microphone, and applying the cached output state on a
+	 * capture-only route would unmute a DAC that is powered down. The properties
+	 * stay cached either way and land at the next configure() that routes them.
+	 */
+	if (data->playback) {
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_VOLUME, data->dac_volume_code);
+		if (ret < 0) {
+			LOG_ERR("Failed to set DAC volume 0x%02x (%d)", data->dac_volume_code,
+				ret);
+			goto end;
+		}
+
+		ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK,
+					data->dac_mute ? ES8311_DAC_MUTE_ON
+						       : ES8311_DAC_MUTE_OFF);
+		if (ret < 0) {
+			LOG_ERR("Failed to set DAC mute %d (%d)", data->dac_mute, ret);
+			goto end;
+		}
+	}
+
+	if (data->capture) {
+		ret = es8311_reg_write(dev, ES8311_REG_ADC_VOLUME, data->adc_volume_code);
+		if (ret < 0) {
+			LOG_ERR("Failed to set ADC volume 0x%02x (%d)", data->adc_volume_code,
+				ret);
+			goto end;
+		}
+
+		/* The ADC mutes at its serial data port, not through its volume. */
+		ret = es8311_reg_update(dev, ES8311_REG_SDP_OUT, ES8311_SDP_MUTE,
+					data->adc_mute ? ES8311_SDP_MUTE : 0U);
+		if (ret < 0) {
+			LOG_ERR("Failed to set ADC mute %d (%d)", data->adc_mute, ret);
+		}
+	}
+
+end:
 	k_mutex_unlock(&data->lock);
 
-	ret = es8311_reg_write(dev, ES8311_REG_DAC_VOLUME, dac_volume_code);
-	if (ret < 0) {
-		LOG_ERR("Failed to set DAC volume 0x%02x (%d)", dac_volume_code, ret);
-		return ret;
-	}
-
-	ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK,
-				dac_mute ? ES8311_DAC_MUTE_ON : ES8311_DAC_MUTE_OFF);
-	if (ret < 0) {
-		LOG_ERR("Failed to set DAC mute %d (%d)", dac_mute, ret);
-		return ret;
-	}
-
-	ret = es8311_reg_write(dev, ES8311_REG_ADC_VOLUME, adc_volume_code);
-	if (ret < 0) {
-		LOG_ERR("Failed to set ADC volume 0x%02x (%d)", adc_volume_code, ret);
-		return ret;
-	}
-
-	/* The ADC is muted at its serial data port rather than by its volume. */
-	ret = es8311_reg_update(dev, ES8311_REG_SDP_OUT, ES8311_SDP_MUTE,
-				adc_mute ? ES8311_SDP_MUTE : 0U);
-	if (ret < 0) {
-		LOG_ERR("Failed to set ADC mute %d (%d)", adc_mute, ret);
-		return ret;
-	}
-
-	return 0;
+	return ret;
 }
 
 /*
  * route_input() and route_output() are deliberately not implemented: the ES8311
  * has one differential microphone input and one output, so there is nothing to
  * multiplex.
+ */
+/*
+ * Zephyr made the audio codec a proper driver class in zephyrproject-rtos/zephyr
+ * PR #110631, which landed after v4.4.0: `struct audio_codec_api` became a
+ * deprecated alias and drivers now register with DEVICE_API(audio_codec, ...).
+ * This tree pins v4.4.0, where that class does not exist, so the copy here keeps
+ * the pre-#110631 form. The upstream copy of this file carries
+ *
+ *     static DEVICE_API(audio_codec, es8311_api) = {
+ *
+ * on the line below, and that is the ONLY line that differs between the two.
+ * scripts/sync_es8311_upstream.py is what keeps them in step.
  */
 static const struct audio_codec_api es8311_api = {
 	.configure = es8311_configure,
@@ -655,6 +801,9 @@ static int es8311_init(const struct device *dev)
 	data->adc_volume_code = ES8311_VOL_0DB_CODE;
 	data->dac_mute = false;
 	data->adc_mute = false;
+	/* Nothing is routed until configure() says so. */
+	data->playback = false;
+	data->capture = false;
 
 	if (cfg->enable_gpio.port != NULL) {
 		if (!gpio_is_ready_dt(&cfg->enable_gpio)) {
