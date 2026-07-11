@@ -1394,8 +1394,83 @@ stop:
 	return ret;
 }
 
+/*
+ * The route-transition register values are the newest and least proven thing in the
+ * driver, and the rate sweep never touches them: it asks for PLAYBACK_CAPTURE at
+ * every rate. These are the registers that power the UNUSED converter DOWN -- what
+ * the driver used to leave exactly as it found it, so that a capture-only route kept
+ * a DAC powered up by a previous playback route, and a playback-only route left the
+ * microphone live. Until this runs, they have been checked against an emulator that
+ * cannot disagree with them and never against silicon.
+ *
+ * So configure each route on the real chip and read back what actually landed.
+ */
+static const uint8_t sweep_route_regs[] = {
+	0x01U, /* clock manager: the unused converter's clocks gated off */
+	0x09U, /* SDP in (DAC): muted when playback is not routed */
+	0x0AU, /* SDP out (ADC): muted when capture is not routed */
+	0x0DU, /* analog: the unused converter's bias and references dropped */
+	0x0EU, /* ADC power */
+	0x12U, /* DAC power */
+	0x14U, /* microphone mux: nothing selected when capture is not routed */
+};
+
+/* Indexed [route][register], in the order above. */
+static const uint8_t sweep_route_vals[3][ARRAY_SIZE(sweep_route_regs)] = {
+	/* 0x01  0x09  0x0A  0x0D  0x0E  0x12  0x14 */
+	{ 0xB5U, 0x0CU, 0x4CU, 0x31U, 0x62U, 0x00U, 0x00U }, /* playback only */
+	{ 0xBAU, 0x4CU, 0x0CU, 0x09U, 0x02U, 0x02U, 0x1AU }, /* capture only  */
+	{ 0xBFU, 0x0CU, 0x0CU, 0x01U, 0x02U, 0x00U, 0x1AU }, /* both          */
+};
+
+static int sweep_one_route(const char *name, audio_route_t route, unsigned int idx)
+{
+	struct audio_codec_cfg codec_cfg;
+	struct i2s_config i2s_cfg;
+	int bad = 0;
+	int ret;
+
+	sweep_reset_i2s();
+
+	i2s_cfg.word_size = AUDIO_WORD_BITS;
+	i2s_cfg.channels = AUDIO_CHANNELS;
+	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
+	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
+	i2s_cfg.frame_clk_freq = AUDIO_SAMPLE_RATE;
+	i2s_cfg.mem_slab = &tx_slab;
+	i2s_cfg.block_size = BLOCK_SIZE;
+	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
+
+	codec_cfg.mclk_freq = 0U;
+	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
+	codec_cfg.dai_route = route;
+	codec_cfg.dai_cfg.i2s = i2s_cfg;
+
+	ret = audio_codec_configure(codec_dev, &codec_cfg);
+	if (ret < 0) {
+		printk("SWEEP route %-9s FAIL audio_codec_configure=%d\n", name, ret);
+		return ret;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(sweep_route_regs); i++) {
+		uint8_t v = 0U;
+
+		ret = i2c_reg_read_byte_dt(&codec_i2c, sweep_route_regs[i], &v);
+		if (ret < 0 || v != sweep_route_vals[idx][i]) {
+			printk("SWEEP route %-9s reg 0x%02x = 0x%02x (want 0x%02x) ret=%d\n", name,
+			       sweep_route_regs[i], v, sweep_route_vals[idx][i], ret);
+			bad++;
+		}
+	}
+
+	printk("SWEEP route %-9s %s\n", name, bad ? "FAIL" : "PASS");
+
+	return bad ? -EIO : 0;
+}
+
 int audio_rate_sweep(void)
 {
+	unsigned int route_bad = 0U;
 	unsigned int bad = 0U;
 	int ret;
 
@@ -1434,6 +1509,23 @@ int audio_rate_sweep(void)
 	       (unsigned int)ARRAY_SIZE(sweep_rates));
 
 	/*
+	 * The route transitions, on the real chip. The sweep above ran every rate
+	 * through PLAYBACK_CAPTURE and so never wrote a single one of the power-down
+	 * values that the route fix is actually made of.
+	 */
+	printk("\n-- route transitions: the unused converter must power DOWN --\n");
+	if (sweep_one_route("playback", AUDIO_ROUTE_PLAYBACK, 0U) < 0) {
+		route_bad++;
+	}
+	if (sweep_one_route("capture", AUDIO_ROUTE_CAPTURE, 1U) < 0) {
+		route_bad++;
+	}
+	if (sweep_one_route("both", AUDIO_ROUTE_PLAYBACK_CAPTURE, 2U) < 0) {
+		route_bad++;
+	}
+	printk("=== routes: %u of 3 FAILED ===\n", route_bad);
+
+	/*
 	 * Put the chain back the way the application expects it. This is part of the
 	 * result, not cleanup after it: a sweep that leaves the device unable to play
 	 * has not passed, however many rates it ticked off.
@@ -1466,15 +1558,14 @@ int audio_rate_sweep(void)
 
 	ready = true;
 
-	if (bad > 0U) {
-		printk("\n*** SWEEP FAILED: %u of %u rate(s) ***\n\n", bad,
-		       (unsigned int)ARRAY_SIZE(sweep_rates));
+	if (bad > 0U || route_bad > 0U) {
+		printk("\n*** SWEEP FAILED: %u of %u rate(s), %u of 3 route(s) ***\n\n", bad,
+		       (unsigned int)ARRAY_SIZE(sweep_rates), route_bad);
 		return -EIO;
 	}
 
-	printk("\n=== SWEEP PASSED: %u of %u rate(s), restored to %u Hz and measured ===\n\n",
-	       (unsigned int)ARRAY_SIZE(sweep_rates), (unsigned int)ARRAY_SIZE(sweep_rates),
-	       (unsigned int)AUDIO_SAMPLE_RATE);
+	printk("\n=== SWEEP PASSED: %u rates + 3 routes, restored to %u Hz and measured ===\n\n",
+	       (unsigned int)ARRAY_SIZE(sweep_rates), (unsigned int)AUDIO_SAMPLE_RATE);
 
 	return 0;
 }
