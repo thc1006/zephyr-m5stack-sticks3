@@ -151,8 +151,20 @@ config APP_PSRAM
 	  console (app/src/psram.c).
 
 	  Enabling the PSRAM (CONFIG_ESP_SPIRAM / CONFIG_SPIRAM_MODE_OCT) consumes
-	  GPIO33-37 and is mutually exclusive with Wi-Fi: SPIRAM breaks the Wi-Fi
-	  driver on the R8 silicon (empty scan / OOM), hence depends on !APP_WIFI.
+	  GPIO33-37, and PSRAM together with Wi-Fi is UNSUPPORTED AND UNVALIDATED in
+	  this project, hence depends on !APP_WIFI.
+
+	  That is deliberately weaker than what this text used to say. It claimed
+	  "SPIRAM breaks the Wi-Fi driver on the R8 silicon", which is a claim about
+	  the hardware, and the evidence does not reach that far. zephyr#74246 reports
+	  Wi-Fi failing (empty scan / OOM) with SPIRAM on, but the root cause discussed
+	  there is an allocation-policy one: Wi-Fi allocations land in SPIRAM when the
+	  internal heap is small, and the reporter got scanning back by raising the
+	  internal heap to around 100 KB, which is roughly what overlay-psram.conf
+	  already sets (CONFIG_HEAP_MEM_POOL_SIZE=98304). We have never tested the
+	  combination, so what is true is that we do not support it, not that the
+	  silicon cannot do it.
+
 	  Off by default (the standard build does not use PSRAM and boots without
 	  it); enable via -DEXTRA_CONF_FILE=overlay-psram.conf. Uses no binary blobs.
 

@@ -216,7 +216,19 @@ int main(void)
 	 * zephyr#98137); keeping it in the least-threaded window matches the
 	 * upstream spiram_test sample and avoids that exposure.
 	 */
-	(void)psram_selftest();
+	/*
+	 * The result used to be discarded. A failing PSRAM then produced a device
+	 * that booted, drew its UI and reported itself alive, with one LOG_ERR
+	 * buried in the stream: exactly the shape of a false pass, for a human and
+	 * for a log parser alike. This is validation firmware, so say it loudly and
+	 * say it in a form that is greppable.
+	 */
+	if (!psram_selftest()) {
+		printk("\n"
+		       "*** PSRAM SELF-TEST FAILED ***\n"
+		       "*** This image is NOT validated. A normal-looking boot is not a "
+		       "pass. ***\n\n");
+	}
 #endif
 
 	const struct device *g0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));

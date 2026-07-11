@@ -237,8 +237,15 @@ int audio_init(void)
 		return ret;
 	}
 
-	/* Configure the ES8311 for the same 16 kHz / 16-bit I2S playback. */
-	codec_cfg.mclk_freq = AUDIO_SAMPLE_RATE * 256U; /* 4.096 MHz */
+	/*
+	 * Configure the ES8311 for the same 16 kHz / 16-bit I2S playback.
+	 *
+	 * mclk_freq is the frequency of the clock fed to the codec's MCLK *input*
+	 * pin. The codec takes its master clock from BCLK instead, so there is no
+	 * MCLK input to describe and the driver requires zero here. The old value
+	 * (256 * Fs) was the codec's *internal* clock, which is not on any pin.
+	 */
+	codec_cfg.mclk_freq = 0U;
 	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
 	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
 	codec_cfg.dai_cfg.i2s = i2s_cfg;
@@ -965,23 +972,38 @@ uint32_t audio_rec_len_ms(void)
 #ifdef CONFIG_APP_AUDIO_RATE_SWEEP
 
 /*
- * ES8311 sample-rate sweep -- hardware validation for the codec driver (issue #7).
+ * ES8311 sample-rate sweep: hardware validation for the codec driver (issue #7).
  *
- * The codec takes its internal master clock from BCLK, and a 16-bit stereo frame
- * carries 32 bit clocks, so that clock is 8 * BCLK = 256 * Fs at EVERY sample
- * rate. Every divider inside the codec is a ratio of it, which is why the driver
- * programs one single register set for all rates. That is an argument, not a
- * measurement -- this sweep is the measurement.
+ * The driver claims 8 kHz to 48 kHz on the argument that the codec's master clock
+ * is derived from BCLK, so it lands on 256 * Fs at every rate and the divider
+ * chain is a pure ratio. That is an argument. This is the measurement.
  *
- * For each rate it reprograms I2S and the codec, reads the clock registers back
- * off the real chip over I2C, then plays a tone through the speaker while
- * capturing it on the microphone. A rate whose clock tree failed to come up
- * shows up as a register mismatch, an I2S error, or a captured level that
- * collapses to the noise floor.
+ * Three independent things are checked at each rate.
  *
- * Note the pitch rises across the sweep: the tone table was generated for 16 kHz,
- * so replaying it at 48 kHz sounds three times higher. That is expected and is
- * not what is being tested; the captured level is.
+ * 1. The clock registers are read back off the chip over I2C. That only proves
+ *    the driver wrote what it meant to write, so it is necessary and nowhere near
+ *    sufficient.
+ *
+ * 2. The frame clock is MEASURED. In steady state the DMA drains one block per
+ *    BLOCK_FRAMES / Fs, so timing a known number of blocks with the kernel's
+ *    cycle counter gives the frame rate the hardware is really running at. The
+ *    kernel clock is not derived from the I2S clock, which is what makes this an
+ *    independent check: a mis-programmed I2S divider shows up here and nowhere
+ *    else. An acoustic loopback cannot do this, because TX and RX share the same
+ *    clock and a common error cancels out in the digital domain.
+ *
+ * 3. The ADC is checked for LIFE, with the amplifier off. A codec whose internal
+ *    clock tree failed to come up cannot run its modulator, and the captured
+ *    block is then all zeros or a stuck constant. A running ADC returns a
+ *    dithering noise floor. This is the codec-side evidence, and it is the check
+ *    that would actually catch a clock tree that did not lock.
+ *
+ * The speaker is judged by ear. The on-board speaker couples very weakly into the
+ * adjacent microphone (HW-016 established this: the 440 Hz beep barely moved the
+ * captured RMS while a clap saturated it), so an acoustic threshold here would
+ * fail for a benign reason. The tone level is reported, not asserted. What the
+ * listener is checking is that every rate makes a sound at all, and the pitch
+ * rises across the sweep because the tone table was generated for 16 kHz.
  */
 static const uint32_t sweep_rates[] = {
 	8000U, 11025U, 12000U, 16000U, 22050U, 24000U, 32000U, 44100U, 48000U,
@@ -993,34 +1015,92 @@ static const struct {
 	uint8_t val;
 } sweep_expect[] = {
 	{0x01U, 0xBFU}, /* clock manager: master clock taken from BCLK */
-	{0x02U, 0x18U}, /* pre-divider 1, pre-multiplier x8 */
-	{0x03U, 0x10U},
-	{0x04U, 0x10U},
-	{0x05U, 0x00U},
-	{0x06U, 0x03U},
+	{0x02U, 0x18U}, /* DIV_PRE = 1, MULT_PRE = x8 */
+	{0x03U, 0x10U}, /* single speed, ADC_OSR = 16 */
+	{0x04U, 0x10U}, /* DAC_OSR = 16 */
+	{0x05U, 0x00U}, /* DIV_CLKADC = 1, DIV_CLKDAC = 1 */
+	{0x06U, 0x03U}, /* BCLK_CON clear: the codec stays the clock slave */
 	{0x07U, 0x00U},
 	{0x08U, 0xFFU},
 	{0x09U, 0x0CU}, /* serial data in: standard I2S, 16-bit */
-	{0x0AU, 0x0CU}, /* serial data out: standard I2S, 16-bit */
+	{0x0AU, 0x0CU}, /* serial data out: standard I2S, 16-bit, unmuted */
 };
 
 static const struct i2c_dt_spec codec_i2c = I2C_DT_SPEC_GET(DT_NODELABEL(es8311));
 
-#define SWEEP_BLOCKS 12U
+/*
+ * Blocks discarded while the DMA reaches steady state, blocks used for the
+ * silence baseline, and blocks timed for the frame-rate measurement. 40 timed
+ * blocks is 213 ms at 48 kHz and 1.28 s at 8 kHz, which is long enough for the
+ * cycle counter at either end.
+ */
+#define SWEEP_WARMUP_BLOCKS   4U
+#define SWEEP_BASELINE_BLOCKS 8U
+#define SWEEP_TIMED_BLOCKS    40U
+
+/* The measured frame clock must land within this much of the requested one. */
+#define SWEEP_RATE_TOLERANCE_PERCENT 2U
 
 static int16_t sweep_rx[BLOCK_FRAMES * AUDIO_CHANNELS];
 static int16_t sweep_mono[BLOCK_FRAMES];
+
+/* One full-duplex block: keep TX fed, take one RX block. */
+static int sweep_io(size_t *frames)
+{
+	size_t sz = sizeof(sweep_rx);
+	int ret;
+
+	ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = i2s_buf_read(i2s_dev, sweep_rx, &sz);
+	if (ret < 0) {
+		return ret;
+	}
+
+	*frames = sz / AUDIO_FRAME_BYTES;
+	audio_deinterleave(sweep_rx, *frames, AUDIO_MIC_SLOT, sweep_mono);
+
+	return 0;
+}
+
+/*
+ * Put the I2S back into a state configure() will accept, whatever state it is in.
+ * DROP alone is not enough: a stream that hit an error is left in ERROR with its
+ * slab blocks still held, and only PREPARE returns them. Without this a single
+ * failing rate poisons every rate after it, and the results stop being
+ * independent.
+ */
+static void sweep_reset_i2s(void)
+{
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+}
 
 static int sweep_one(uint32_t rate)
 {
 	struct audio_codec_cfg codec_cfg;
 	struct i2s_config i2s_cfg;
-	uint16_t rms_max = 0U;
-	uint16_t peak_max = 0U;
-	int bad = 0;
+	uint32_t t0;
+	uint32_t t1;
+	uint64_t us;
+	uint32_t measured = 0U;
+	uint32_t tolerance;
+	uint16_t base_rms = 0U;
+	uint16_t tone_rms = 0U;
+	uint16_t tone_peak = 0U;
+	int16_t base_lo = 0;
+	int16_t base_hi = 0;
+	bool adc_alive = false;
+	bool rate_ok = false;
+	int regs_bad = 0;
+	size_t frames = 0U;
 	int ret;
 
-	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	sweep_reset_i2s();
 
 	i2s_cfg.word_size = AUDIO_WORD_BITS;
 	i2s_cfg.channels = AUDIO_CHANNELS;
@@ -1037,14 +1117,18 @@ static int sweep_one(uint32_t rate)
 		return ret;
 	}
 
-	codec_cfg.mclk_freq = rate * 256U;
+	/*
+	 * mclk_freq is the codec's MCLK *input*, which this board does not drive:
+	 * the codec derives its master clock from BCLK, so the driver requires 0.
+	 */
+	codec_cfg.mclk_freq = 0U;
 	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
 	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
 	codec_cfg.dai_cfg.i2s = i2s_cfg;
 
 	ret = audio_codec_configure(codec_dev, &codec_cfg);
 	if (ret < 0) {
-		printk("SWEEP %-6u FAIL codec_configure=%d\n", rate, ret);
+		printk("SWEEP %-6u FAIL audio_codec_configure=%d\n", rate, ret);
 		return ret;
 	}
 
@@ -1056,7 +1140,7 @@ static int sweep_one(uint32_t rate)
 		return ret;
 	}
 
-	/* Read the clock registers back off the real codec. */
+	/* 1. Read the clock registers back off the real codec. */
 	for (size_t i = 0; i < ARRAY_SIZE(sweep_expect); i++) {
 		uint8_t v = 0U;
 
@@ -1064,15 +1148,16 @@ static int sweep_one(uint32_t rate)
 		if (ret < 0 || v != sweep_expect[i].val) {
 			printk("SWEEP %-6u  reg 0x%02x = 0x%02x (want 0x%02x) ret=%d\n", rate,
 			       sweep_expect[i].reg, v, sweep_expect[i].val, ret);
-			bad++;
+			regs_bad++;
 		}
 	}
 
-	/* Pre-queue two blocks so TX does not underrun the moment it starts. */
+	/* Pre-queue so TX does not underrun the moment the clocks start. */
 	for (int i = 0; i < 2; i++) {
 		ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
 		if (ret < 0) {
 			printk("SWEEP %-6u FAIL prequeue=%d\n", rate, ret);
+			sweep_reset_i2s();
 			return ret;
 		}
 	}
@@ -1080,52 +1165,125 @@ static int sweep_one(uint32_t rate)
 	ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
 	if (ret < 0) {
 		printk("SWEEP %-6u FAIL i2s_trigger(START)=%d\n", rate, ret);
+		sweep_reset_i2s();
 		return ret;
 	}
 
-	(void)gpio_pin_set_dt(&amp_gpio, 1);
-	k_msleep(AMP_SETTLE_MS);
-
-	for (uint32_t b = 0; b < SWEEP_BLOCKS; b++) {
-		size_t sz = sizeof(sweep_rx);
-		size_t frames;
-		uint16_t rms;
-		uint16_t peak;
-
-		(void)i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
-
-		ret = i2s_buf_read(i2s_dev, sweep_rx, &sz);
+	/* Let the DMA reach steady state before anything is measured. */
+	for (uint32_t b = 0U; b < SWEEP_WARMUP_BLOCKS; b++) {
+		ret = sweep_io(&frames);
 		if (ret < 0) {
-			printk("SWEEP %-6u FAIL i2s_buf_read=%d (block %u)\n", rate, ret, b);
-			bad++;
-			break;
-		}
-
-		frames = sz / AUDIO_FRAME_BYTES;
-		audio_deinterleave(sweep_rx, frames, AUDIO_MIC_SLOT, sweep_mono);
-		rms = audio_rms_i16(sweep_mono, frames);
-		peak = audio_peak_i16(sweep_mono, frames);
-
-		if (rms > rms_max) {
-			rms_max = rms;
-		}
-		if (peak > peak_max) {
-			peak_max = peak;
+			printk("SWEEP %-6u FAIL warmup i/o=%d\n", rate, ret);
+			goto stop;
 		}
 	}
 
+	/*
+	 * 3. Silence baseline, amplifier still off. A codec whose clock tree did
+	 * not come up returns all zeros or a stuck constant here; a running one
+	 * returns a dithering noise floor.
+	 */
+	for (uint32_t b = 0U; b < SWEEP_BASELINE_BLOCKS; b++) {
+		int16_t lo = INT16_MAX;
+		int16_t hi = INT16_MIN;
+		uint16_t rms;
+
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL baseline i/o=%d\n", rate, ret);
+			goto stop;
+		}
+
+		for (size_t i = 0U; i < frames; i++) {
+			if (sweep_mono[i] < lo) {
+				lo = sweep_mono[i];
+			}
+			if (sweep_mono[i] > hi) {
+				hi = sweep_mono[i];
+			}
+		}
+
+		rms = audio_rms_i16(sweep_mono, frames);
+		if (rms > base_rms) {
+			base_rms = rms;
+		}
+		if (hi != lo) {
+			adc_alive = true;
+			base_lo = lo;
+			base_hi = hi;
+		}
+	}
+
+	/* The clocks are already running, so raising the amplifier here cannot pop. */
+	ret = gpio_pin_set_dt(&amp_gpio, 1);
+	if (ret < 0) {
+		printk("SWEEP %-6u FAIL amp on=%d\n", rate, ret);
+		goto stop;
+	}
+	k_msleep(AMP_SETTLE_MS);
+
+	/*
+	 * 2. Measure the frame clock while the tone plays. In steady state each
+	 * iteration costs exactly one block of DMA time, so the elapsed cycles over
+	 * a known number of blocks give the rate the hardware is really running at.
+	 */
+	t0 = k_cycle_get_32();
+
+	for (uint32_t b = 0U; b < SWEEP_TIMED_BLOCKS; b++) {
+		uint16_t rms;
+		uint16_t peak;
+
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL tone i/o=%d (block %u)\n", rate, ret, b);
+			goto stop;
+		}
+
+		rms = audio_rms_i16(sweep_mono, frames);
+		peak = audio_peak_i16(sweep_mono, frames);
+		if (rms > tone_rms) {
+			tone_rms = rms;
+		}
+		if (peak > tone_peak) {
+			tone_peak = peak;
+		}
+	}
+
+	t1 = k_cycle_get_32();
+
+	us = k_cyc_to_us_floor64(t1 - t0);
+	if (us > 0U) {
+		measured = (uint32_t)(((uint64_t)SWEEP_TIMED_BLOCKS * BLOCK_FRAMES * 1000000ULL) /
+				      us);
+	}
+
+	tolerance = (rate * SWEEP_RATE_TOLERANCE_PERCENT) / 100U;
+	rate_ok = (measured + tolerance >= rate) && (measured <= rate + tolerance);
+
+stop:
 	(void)gpio_pin_set_dt(&amp_gpio, 0);
-	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	sweep_reset_i2s();
 
-	printk("SWEEP %-6u regs=%-3s rms=%-6u peak=%-6u %s\n", rate, bad ? "BAD" : "OK",
-	       rms_max, peak_max, (bad == 0 && rms_max > 0U) ? "PASS" : "CHECK");
+	if (ret < 0) {
+		return ret;
+	}
 
-	return bad == 0 ? 0 : -EIO;
+	printk("SWEEP %-6u regs=%-3s lrck=%-6u %-3s adc=%-5s floor=%-5u [%d..%d] "
+	       "tone_rms=%-6u peak=%-6u %s\n",
+	       rate, regs_bad ? "BAD" : "OK", measured, rate_ok ? "OK" : "BAD",
+	       adc_alive ? "alive" : "DEAD", base_rms, base_lo, base_hi, tone_rms, tone_peak,
+	       (regs_bad == 0 && rate_ok && adc_alive) ? "PASS" : "FAIL");
+
+	if (regs_bad != 0 || !rate_ok || !adc_alive) {
+		return -EIO;
+	}
+
+	return 0;
 }
 
 void audio_rate_sweep(void)
 {
-	int bad = 0;
+	unsigned int bad = 0U;
 
 	if (!ready) {
 		printk("SWEEP skipped: audio not ready\n");
@@ -1140,8 +1298,16 @@ void audio_rate_sweep(void)
 	k_msleep(100);
 
 	printk("\n=== ES8311 sample-rate sweep ===\n");
-	printk("Each rate reprograms I2S + the codec, reads the clock registers back\n");
-	printk("over I2C, then plays a tone while capturing it on the microphone.\n\n");
+	printk("regs  : the clock registers read back off the chip over I2C\n");
+	printk("lrck  : the frame clock MEASURED against the kernel cycle counter,\n");
+	printk("        which is not derived from the I2S clock\n");
+	printk("adc   : the microphone noise floor with the amplifier off. A codec\n");
+	printk("        whose clock tree did not lock cannot run its modulator and\n");
+	printk("        returns zeros or a stuck constant here\n");
+	printk("tone  : the captured level with the amplifier on. Reported, not\n");
+	printk("        asserted: this speaker couples weakly into this microphone.\n");
+	printk("        Judge the speaker by ear; the pitch rises across the sweep\n");
+	printk("        because the tone table was made for 16 kHz\n\n");
 
 	for (size_t i = 0; i < ARRAY_SIZE(sweep_rates); i++) {
 		if (sweep_one(sweep_rates[i]) < 0) {
@@ -1150,7 +1316,7 @@ void audio_rate_sweep(void)
 		k_msleep(200);
 	}
 
-	printk("\n=== sweep done: %d of %u rate(s) failed ===\n\n", bad,
+	printk("\n=== sweep done: %u of %u rate(s) FAILED ===\n\n", bad,
 	       (unsigned int)ARRAY_SIZE(sweep_rates));
 
 	/* Restore the application's own configuration; this sets `ready` again. */
