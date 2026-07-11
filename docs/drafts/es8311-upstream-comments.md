@@ -1,12 +1,20 @@
 # ES8311 upstream — parked comment drafts (issue #7)
 
-Status: **DRAFTS — not posted.** Hold per ADR 0004 Update (2026-06-05).
-Last live-tracker check: 2026-06-11 — #107660 still DIRTY/CONFLICTING (no movement
-since 2026-06-05); #107655 base board OPEN/BLOCKED (moving, not merged); no named
-successor ES8311 PR. Hold conditions still hold.
+Status: **SUPERSEDED 2026-07-11. Never posted; kept for the record.**
 
-Trigger to post Draft B: (a) base board #107655 merges AND (b) ES8311 work resumes
-on a live PR (#107660 de-conflicts, or a named successor appears).
+These drafts assume a live upstream ES8311 PR to engage with. There is none.
+#107660 was closed on 2026-06-12 without merging, as were #108073 and #107661, and
+upstream `main` still carries no ES8311 support of any kind. **Draft B has no
+target** — the PR it was addressed to no longer exists — and Draft A argues for a
+strategy (engage, do not compete) that ADR 0004 has since reversed.
+
+The decision is now **GO**: submit our own clean, split PR. See ADR 0004's
+"Update 2026-07-11" and `docs/issues/0007-es8311-upstream-readiness.md`. The one
+piece worth carrying forward is the hardware fact Draft B leads with (the 0x31 mute
+needs both DSMMUTE and DEMMUTE: mask 0x9F, set 0x60), which belongs in our own PR
+description instead.
+
+Everything below is the original, unedited text.
 
 ---
 
