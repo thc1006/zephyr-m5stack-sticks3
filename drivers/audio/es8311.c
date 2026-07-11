@@ -385,6 +385,20 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	/*
+	 * From here until the new route is committed, this device has no route. An I2C
+	 * failure part-way through the sequence below leaves the hardware half
+	 * reprogrammed -- some clocks gated, a converter powered down, an analog
+	 * reference moved -- and the old cached route would then be a description of a
+	 * chip that no longer exists, which start_output(), stop_output() and
+	 * apply_properties() all steer by. Clearing it first means a failed configure()
+	 * leaves them touching nothing, which is the only honest answer: after a failed
+	 * configure() the hardware state is undefined and the caller must configure()
+	 * again.
+	 */
+	data->playback = false;
+	data->capture = false;
+
+	/*
 	 * Everything route-dependent is decided here, under the lock. Sampling the
 	 * cached mute state before taking the mutex would let another thread set an
 	 * input mute that this call then overwrites, leaving the cache muted and the
@@ -777,9 +791,16 @@ static int es8311_check_id(const struct device *dev)
 		return ret;
 	}
 
+	/*
+	 * Fatal, not a warning. A chip id check that has no effect is not a check: it
+	 * leaves the device ready, and every later register write goes to whatever part
+	 * is actually at this address. Reading 0x8311 back is the only evidence the
+	 * driver has that it is talking to an ES8311 at all.
+	 */
 	if (id1 != ES8311_CHIP_ID1 || id2 != ES8311_CHIP_ID2) {
-		LOG_WRN("Unexpected chip id 0x%02x%02x (expected 0x%02x%02x)", id1, id2,
+		LOG_ERR("Not an ES8311: chip id 0x%02x%02x (expected 0x%02x%02x)", id1, id2,
 			ES8311_CHIP_ID1, ES8311_CHIP_ID2);
+		return -ENODEV;
 	}
 
 	return 0;

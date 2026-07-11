@@ -40,6 +40,14 @@ struct es8311_emul_data {
 	uint8_t regs[256];
 	/* Fault injection: when > 0, the next N transfers return -EIO. */
 	int fail_remaining;
+	/*
+	 * Fault injection by position: when >= 0, transfer number `fail_at` fails and
+	 * the ones before it succeed. fail_remaining can only break the FIRST transfer
+	 * of a sequence, which is the easy case; a driver that writes eight registers
+	 * has eight places to be interrupted, and the interesting ones are in the
+	 * middle, where the hardware is half reprogrammed.
+	 */
+	int fail_at;
 	/* Ordered log of written register addresses. */
 	uint8_t wlog[ES8311_EMUL_WLOG_LEN];
 	int wcount;
@@ -63,6 +71,17 @@ void emul_es8311_set_fail(const struct emul *target, int n)
 	struct es8311_emul_data *data = target->data;
 
 	data->fail_remaining = n;
+}
+
+/*
+ * Fail transfer number `idx` (0-based), letting the ones before it through. Pass a
+ * negative value to disarm. Self-disarming: it fires once.
+ */
+void emul_es8311_fail_at(const struct emul *target, int idx)
+{
+	struct es8311_emul_data *data = target->data;
+
+	data->fail_at = idx;
 }
 
 void emul_es8311_reset_log(const struct emul *target)
@@ -122,7 +141,7 @@ void emul_es8311_release(const struct emul *target)
 
 /*
  * Override the chip-id registers (0xFD/0xFE) so a test can exercise the
- * driver's warn-and-continue path on an unexpected identity. The driver reads
+ * driver's rejection of an unexpected identity. The driver reads
  * these in init() via i2c_reg_read_byte_dt().
  */
 void emul_es8311_set_chip_id(const struct emul *target, uint8_t id1, uint8_t id2)
@@ -144,6 +163,14 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 	if (data->fail_remaining > 0) {
 		data->fail_remaining--;
 		return -EIO;
+	}
+
+	if (data->fail_at >= 0) {
+		if (data->fail_at == 0) {
+			data->fail_at = -1;
+			return -EIO;
+		}
+		data->fail_at--;
 	}
 
 	if (num_msgs == 1) {
@@ -204,6 +231,7 @@ static int es8311_emul_init(const struct emul *target, const struct device *pare
 
 	memset(data->regs, 0, sizeof(data->regs));
 	data->fail_remaining = 0;
+	data->fail_at = -1; /* NOT 0: 0 means "fail transfer 0" */
 	data->wcount = 0;
 
 	/* Chip identity registers. */

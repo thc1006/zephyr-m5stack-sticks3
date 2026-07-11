@@ -20,6 +20,7 @@ static const struct emul *const emul = EMUL_DT_GET(CODEC_NODE);
 
 /* Emulator test backend (defined in emul_es8311.c). */
 extern void emul_es8311_set_fail(const struct emul *target, int n);
+extern void emul_es8311_fail_at(const struct emul *target, int idx);
 extern void emul_es8311_reset_log(const struct emul *target);
 extern int emul_es8311_write_count(const struct emul *target);
 extern int emul_es8311_write_at(const struct emul *target, int idx);
@@ -104,8 +105,7 @@ static void make_cfg_16k_16bit(struct audio_codec_cfg *cfg)
 /*
  * The driver reads the chip-id registers (0xFD/0xFE) in init(). The emulator
  * seeds them to 0x83/0x11, so a readable identity proves the bus is wired and
- * init() ran. (init warns-and-continues on mismatch; this asserts the values
- * the driver checks against.)
+ * init() ran.
  */
 ZTEST(es8311, test_init_reads_chip_id)
 {
@@ -115,12 +115,13 @@ ZTEST(es8311, test_init_reads_chip_id)
 }
 
 /*
- * The driver only warns (does not fail) when the chip-id registers do not hold
- * the ES8311 identity. Seed a wrong id (0x00/0x00), force the driver's init()
- * to run again so it re-reads those registers, and assert init() still reports
- * success and the device stays ready (warn-and-continue).
+ * A part at this address that is not an ES8311 must not come up ready. The driver
+ * used to log a warning and return success, which meant the identity check had no
+ * effect at all: the device went ready and every later register write went to
+ * whatever part was really there. Seed a wrong id, force init() to re-run, and
+ * assert it now fails with -ENODEV and leaves the device NOT ready.
  */
-ZTEST(es8311, test_init_wrong_chip_id_warns_and_continues)
+ZTEST(es8311, test_init_wrong_chip_id_is_fatal)
 {
 	int ret;
 
@@ -134,11 +135,20 @@ ZTEST(es8311, test_init_wrong_chip_id_warns_and_continues)
 	codec->state->initialized = false;
 	ret = device_init(codec);
 
-	zassert_ok(ret, "init() must succeed despite wrong chip id (got %d)", ret);
-	zassert_true(device_is_ready(codec), "device must stay ready after wrong-id init");
+	zassert_equal(ret, -ENODEV, "init() must reject a foreign part (got %d)", ret);
+	zassert_false(device_is_ready(codec), "a foreign part must not be left ready");
 
-	/* Restore the correct identity for the remaining tests. */
+	/*
+	 * Restore for the remaining tests. do_device_init() records the failure in
+	 * init_res and never clears it on a later success, and device_is_ready() is
+	 * initialized && init_res == 0 -- so re-initializing without clearing init_res
+	 * would leave the device un-ready for every test after this one.
+	 */
 	emul_es8311_set_chip_id(emul, 0x83U, 0x11U);
+	codec->state->initialized = false;
+	codec->state->init_res = 0U;
+	zassert_ok(device_init(codec), "the good-id re-init must succeed");
+	zassert_true(device_is_ready(codec), "device must be ready again for the next test");
 }
 
 /*
@@ -890,6 +900,75 @@ ZTEST(es8311, test_apply_properties_holds_the_lock_across_its_writes)
 
 	/* Leave the DAC unmuted for anything that runs after this. */
 	audio_codec_start_output(codec);
+}
+
+/*
+ * A configure() that dies part-way through must not leave the driver steering by a
+ * route that no longer describes the chip.
+ *
+ * configure() writes a dozen registers. Break the I2C bus at each one in turn and
+ * the hardware is left half reprogrammed: some clocks gated, a converter powered
+ * down, an analog reference moved. If the driver still believed the OLD route at
+ * that point, start_output(), stop_output() and apply_properties() would go on
+ * writing to converters whose power and clocks the failed call had already changed.
+ *
+ * So after a failed configure() the driver must consider itself to have NO route,
+ * and those three must touch nothing at all. That is the only honest state: the
+ * hardware is undefined until somebody configures it again.
+ *
+ * The failure is walked across every transfer, not just the first. Breaking the
+ * first one is the easy case, and it is the one a "fail the next transfer" hook can
+ * reach; the interesting failures are in the middle of the sequence.
+ */
+ZTEST(es8311, test_failed_configure_leaves_no_route)
+{
+	struct audio_codec_cfg cfg;
+	int covered = 0;
+
+	/* Bounded so a driver change that stops failing can never spin here. */
+	for (int n = 0; n < 64; n++) {
+		int ret;
+
+		/*
+		 * Start from a route that carries BOTH directions, so that a driver
+		 * which kept its old route would have a DAC to go on writing to.
+		 */
+		make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+		zassert_ok(audio_codec_configure(codec, &cfg), "setup configure must pass");
+
+		/* Break transfer n of a switch to capture-only. */
+		make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_CAPTURE);
+		emul_es8311_fail_at(emul, n);
+		ret = audio_codec_configure(codec, &cfg);
+		emul_es8311_fail_at(emul, -1);
+
+		if (ret == 0) {
+			/* The injection never fired: n is past the end of the sequence. */
+			break;
+		}
+
+		covered++;
+
+		/*
+		 * The route is gone, so all three of these must be no-ops on the bus.
+		 * A single write here is the driver acting on a description of a chip
+		 * that the failed configure() already invalidated.
+		 */
+		emul_es8311_reset_log(emul);
+		(void)audio_codec_start_output(codec);
+		(void)audio_codec_stop_output(codec);
+		(void)audio_codec_apply_properties(codec);
+
+		zassert_equal(emul_es8311_write_count(emul), 0,
+			      "configure() failed at transfer %d, and the driver then wrote %d "
+			      "register(s) steering by a route that no longer describes the chip",
+			      n, emul_es8311_write_count(emul));
+	}
+
+	zassert_true(covered > 1,
+		     "the fault injection must have reached more than the first transfer "
+		     "(covered %d)",
+		     covered);
 }
 
 /*

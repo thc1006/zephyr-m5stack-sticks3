@@ -69,7 +69,7 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **27/27**
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **28/28**
       (was 11), covering every supported rate, the rejected rates and word sizes,
       the MCLK validation, the input volume/mute round trip, volume clamping and
       I2C error propagation.

@@ -6,9 +6,10 @@
  * Octal PSRAM bring-up self-test for the M5StickS3 (issue #13).
  *
  * The board is an ESP32-S3-PICO-1-N8R8: 8 MB flash + 8 MB *octal* SPIRAM. The
- * default build leaves the PSRAM off (the validation app does not need it and it
- * breaks Wi-Fi on this silicon); overlay-psram.conf turns it on via
- * CONFIG_ESP_SPIRAM / CONFIG_SPIRAM_MODE_OCT and compiles this module.
+ * default build leaves the PSRAM off (the validation app does not need it, and
+ * PSRAM + Wi-Fi together are unsupported and unvalidated here -- see
+ * overlay-psram.conf); overlay-psram.conf turns it on via CONFIG_ESP_SPIRAM /
+ * CONFIG_SPIRAM_MODE_OCT and compiles this module.
  *
  * The PSRAM is registered as a shared-multi-heap region with the EXTERNAL
  * attribute. The self-test allocates from that region, exercises it with a

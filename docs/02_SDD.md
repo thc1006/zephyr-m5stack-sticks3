@@ -284,7 +284,7 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   (the LCD rail). The amp is driven high ONLY for the duration of a beep
   (anti-pop, speaker muted at rest). The mic and speaker share the L3B rail
   (PYG2), so capture needs L3B powered (already up for the LCD).
-- Test: `tests/drivers/audio/es8311` (native_sim ztest, 27/27) covers chip-ID
+- Test: `tests/drivers/audio/es8311` (native_sim ztest, 28/28) covers chip-ID
   read, the playback and capture configure sequences + write ordering,
   volume/mute, unsupported-route/format rejection, and I2C-error propagation.
 
