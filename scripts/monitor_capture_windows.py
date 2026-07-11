@@ -2,10 +2,19 @@
 
 esp-idf-monitor needs a real TTY; this wraps it in a Windows pseudo-console
 (ConPTY via pywinpty) so it can be run non-interactively to produce the logs in
-evidence/. Connects with --no-reset (does not disturb the running app); flash
-with `esptool --after watchdog-reset` first so the chip is in run mode.
+evidence/. Flash with `esptool --after watchdog-reset` first so the chip is in
+run mode.
 
-Usage:  python scripts/monitor_capture_windows.py COM9 15 out.log [zephyr.elf]
+By default it connects with --no-reset, which does not disturb the running app.
+That is right for watching something a person is driving from the buttons, and
+WRONG for anything that happens once at boot: by the time the monitor has
+attached, it is over and the log is empty of it. Pass --reset and the monitor
+resets the chip on connect, so the capture starts at the banner.
+
+    --reset is required for the ES8311 rate sweep (HW-019) and the PSRAM
+    self-test (HW-020). Both run early in main and never run again.
+
+Usage:  python scripts/monitor_capture_windows.py COM9 30 out.log [zephyr.elf] [--reset]
 Requires: pip install esp-idf-monitor pywinpty
 """
 import sys
@@ -13,14 +22,22 @@ import time
 
 from winpty import PtyProcess
 
-PORT = sys.argv[1] if len(sys.argv) > 1 else "COM9"
-SECS = float(sys.argv[2]) if len(sys.argv) > 2 else 15.0
-LOG = sys.argv[3] if len(sys.argv) > 3 else "monitor.log"
-ELF = sys.argv[4] if len(sys.argv) > 4 else ""
+args = [a for a in sys.argv[1:] if a != "--reset"]
+RESET = "--reset" in sys.argv[1:]
 
-cmd = "python -m esp_idf_monitor --no-reset --port %s" % PORT
+PORT = args[0] if len(args) > 0 else "COM9"
+SECS = float(args[1]) if len(args) > 1 else 15.0
+LOG = args[2] if len(args) > 2 else "monitor.log"
+ELF = args[3] if len(args) > 3 else ""
+
+cmd = "python -m esp_idf_monitor"
+if not RESET:
+    cmd += " --no-reset"
+cmd += " --port %s" % PORT
 if ELF:
     cmd += " %s" % ELF
+print("monitoring %s for %.0fs (%s)" % (PORT, SECS, "reset on connect" if RESET
+                                        else "no reset: a boot-time log will be MISSED"))
 
 logf = open(LOG, "w", encoding="utf-8", errors="replace")
 proc = PtyProcess.spawn(cmd, dimensions=(40, 120))
