@@ -11,10 +11,10 @@
  * actually performs the write. The emulator also records the ordered sequence of
  * register writes so tests can verify the configure() ordering.
  *
- * NOTE: this is a dumb byte-store, not an independent oracle of register
- * meaning. It verifies the driver writes what we *think* it should; only
- * on-hardware validation (audio out of the StickS3 speaker, an I2C trace vs
- * M5GFX/M5Unified) confirms those register meanings are correct.
+ * NOTE: this is a register byte-store, not a behavioural model of the codec. It
+ * verifies that the driver emits the register writes it is expected to; it does
+ * not verify that those values are the right ones for real silicon. That comes
+ * from the ES8311 user guide and from hardware validation.
  */
 
 #define DT_DRV_COMPAT everest_es8311

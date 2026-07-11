@@ -7,7 +7,11 @@ config EMUL_ES8311
 	bool "Everest ES8311 audio codec emulator"
 	default y
 	depends on EMUL
-	depends on DT_HAS_EVEREST_ES8311_ENABLED
+	# Depend on the driver, not just on the devicetree node: the emulator logs
+	# through CONFIG_AUDIO_CODEC_LOG_LEVEL, which only exists once the audio
+	# codec subsystem is on. Keying off DT_HAS_EVEREST_ES8311_ENABLED alone let
+	# EMUL_ES8311 be selected without AUDIO_CODEC, which fails to build.
+	depends on AUDIO_CODEC_ES8311
 	help
 	  I2C emulator for the Everest ES8311 audio codec, for native_sim driver
 	  unit tests.
