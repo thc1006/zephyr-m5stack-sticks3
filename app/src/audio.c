@@ -1131,6 +1131,7 @@ static int sweep_one(uint32_t rate)
 	uint64_t us;
 	uint32_t measured = 0U;
 	uint32_t tolerance;
+	uint32_t settle;
 	uint16_t base_rms = 0U;
 	uint16_t tone_rms = 0U;
 	uint16_t tone_peak = 0U;
@@ -1262,7 +1263,41 @@ static int sweep_one(uint32_t rate)
 		printk("SWEEP %-6u FAIL amp on=%d\n", rate, ret);
 		goto stop;
 	}
-	k_msleep(AMP_SETTLE_MS);
+
+	/*
+	 * Settle the amplifier by RUNNING the stream, not by sleeping inside it.
+	 *
+	 * A k_msleep() here leaves a full-duplex stream with nobody feeding TX and
+	 * nobody draining RX, and the first HW-019 run presented both halves of that
+	 * bill. Neither had anything to do with the codec.
+	 *
+	 *  - RX queues blocks nobody reads. The ones already waiting when the clock is
+	 *    read come back with no wait, so the timed loop finishes in fewer than
+	 *    SWEEP_TIMED_BLOCKS block-times and the measured rate comes out HIGH, in
+	 *    exact proportion to the sample rate: +1.7% at 8 kHz rising to +5.2% at
+	 *    24 kHz, against a 2% tolerance. Every rate but 8 kHz was failed by it.
+	 *  - TX runs dry. The two pre-queued blocks hold 2 * BLOCK_FRAMES / rate
+	 *    seconds of audio, which drops below the 20 ms settle at 32 kHz, so the
+	 *    stream underruns into I2S ERROR and the next transfer returns -EIO.
+	 *    32 kHz, 44.1 kHz and 48 kHz died there; nothing below them did.
+	 *
+	 * Both are predicted to the decimal by AMP_SETTLE_MS, BLOCK_FRAMES and the
+	 * pre-queue depth, with nothing fitted. The control is in the same log: the
+	 * restore measurement has no sleep in it and read 16000 Hz exactly, on the same
+	 * board, through the same code, at a rate the per-rate loop had just called BAD.
+	 *
+	 * Draining for the same number of block-times settles the amplifier just as
+	 * well, keeps both directions fed, and leaves the queue empty for the clock
+	 * measurement that follows.
+	 */
+	settle = (((uint32_t)AMP_SETTLE_MS * rate) / (1000U * BLOCK_FRAMES)) + 1U;
+	for (uint32_t b = 0U; b < settle; b++) {
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL settle i/o=%d (block %u)\n", rate, ret, b);
+			goto stop;
+		}
+	}
 
 	/*
 	 * 2. Measure the frame clock while the tone plays. In steady state each
@@ -1306,15 +1341,22 @@ stop:
 	(void)gpio_pin_set_dt(&amp_gpio, 0);
 	sweep_reset_i2s();
 
-	if (ret < 0) {
-		return ret;
-	}
-
+	/*
+	 * Print the line even when a phase died. The first HW-019 run threw away the
+	 * register readback and the ADC-liveness result for every rate that errored --
+	 * which was exactly the data needed to tell a codec fault from a test fault, and
+	 * it had already been collected by the time the error happened.
+	 */
 	printk("SWEEP %-6u regs=%-3s lrck=%-6u %-3s adc=%-5s floor=%-5u [%d..%d] "
 	       "tone_rms=%-6u peak=%-6u %s\n",
 	       rate, regs_bad ? "BAD" : "OK", measured, rate_ok ? "OK" : "BAD",
 	       adc_alive ? "alive" : "DEAD", base_rms, base_lo, base_hi, tone_rms, tone_peak,
-	       (regs_bad == 0 && rate_ok && adc_alive) ? "PASS" : "FAIL");
+	       (ret < 0) ? "FAIL(io)"
+			 : ((regs_bad == 0 && rate_ok && adc_alive) ? "PASS" : "FAIL"));
+
+	if (ret < 0) {
+		return ret;
+	}
 
 	if (regs_bad != 0 || !rate_ok || !adc_alive) {
 		return -EIO;
