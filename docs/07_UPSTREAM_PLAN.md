@@ -56,22 +56,28 @@ Small PRs beat one giant PR.
      counter), so the upstream value is an approximate gauge, consistent with the
      silicon limit above.
 
-5. **ES8311 audio codec (issue #7) — engage upstream, do NOT open a competing PR**
+5. **ES8311 audio codec (issue #7) — GO: submit our own clean, split PR**
    - The in-repo `drivers/audio/es8311.c` is a standalone, **board-independent**
      driver against the Zephyr audio codec API: playback HW-verified on the StickS3
      (HW-006, 440 Hz beep), an ADC/capture route added and HW-verified (HW-016d),
      native_sim ztest **11/11** (includes `test_configure_capture_sequence` /
      `test_configure_capture_only`).
-   - **Superseded framing**: the original "propose it as its own PR" plan is
-     replaced by **ADR 0004** (`docs/adr/0004-es8311-upstream-engage-pr107660.md`).
-     Upstream already has a live ES8311 effort (PR #107660), so opening a competing
-     driver would duplicate/fragment it. Decision: **engage #107660**, and
-     contribute our differentiator — the HW-verified **capture/ADC route**, which
-     #107660 omits — as a clean follow-up once the playback codec lands.
-   - **Current action (per ADR 0004 Update): HOLD.** Engage only after (a) the base
-     board PR #107655 lands and (b) the ES8311 work resumes on a live PR. Until
-     then this driver stays repo-local. See ADR 0004 for the trigger conditions and
-     the parked, trimmed engagement comment.
+   - **The hold is over (2026-07-11).** ADR 0004 said "do not compete, engage the
+     live upstream effort (#107660)". That effort is gone: the base board #107655
+     merged on 2026-06-11, and the next day #107660 (06:55Z) and #108078 (06:58Z)
+     were closed without merging; #108073 and #107661 were already closed. Every
+     peripheral PR is closed and none merged. Upstream `main` now ships an
+     ESP32-S3-BOX-3 whose own doc lists
+     "Speaker with ES8311 audio codec", while a tree-wide code search for `es8311`
+     returns exactly one hit: that sentence. No driver, no binding, and nobody
+     driving one. ADR 0004's own fallback ("a fresh clean-split PR") applies.
+   - **Current action: GO.** Submit the codec driver + the `everest,es8311` binding
+     + the ztest as one focused PR (no board, no sample), per
+     `docs/issues/0007-es8311-upstream-readiness.md`: genericize the M5Stack/HW-ID
+     references in comments, DCO sign-off, checkpatch + `check_compliance.py`. Lead
+     with the **capture/ADC route** — HW-verified on real silicon, and #107660 never
+     had it. Re-check the upstream state any time with
+     `bash scripts/check_es8311_upstream_gate.sh`.
 
 6. **IR (NEC) — in-repo on stock PWM drivers; an RMT driver is a separate big PR**
    - Zephyr 4.4 has no ESP32 RMT driver and no consumer-IR subsystem (verified

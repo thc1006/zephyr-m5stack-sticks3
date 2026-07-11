@@ -1,21 +1,45 @@
 # Issue #7 — ES8311 upstream readiness checklist
 
 Tracks the prep for contributing `drivers/audio/es8311.c` (+ binding + ztest)
-to Zephyr upstream. **Strategy is set by ADR 0004: do NOT open a competing PR;
-engage the existing effort and HOLD until the gate opens.** This file is the
-"ready to fire" checklist so the actual submission is fast once the gate lifts.
+to Zephyr upstream. **Strategy as of 2026-07-11: GO — submit our own clean, split
+PR.** ADR 0004 originally said "do not compete, engage the live upstream effort".
+That effort was abandoned, so ADR 0004's own "fresh clean-split PR" fallback
+applies (see its 2026-07-11 update). This file is the "ready to fire" checklist.
 
-## Gate status (live, re-checked 2026-06-11)
+## Gate status (live, re-checked 2026-07-11)
 
-| Upstream PR | What | State | Gates us? |
+Re-check any time with `bash scripts/check_es8311_upstream_gate.sh`.
+
+| Upstream PR | What | State | Effect on us |
 |---|---|---|---|
-| zephyr#110205 | `boards: m5stack: add M5Stack StickS3` (our maintainer thc1006) | **OPEN, APPROVED**, not merged | once merged → clean board-driven path for our codec |
-| zephyr#107655 | `boards: espressif: ESP32-S3-BOX-3` (base board) | OPEN, CHANGES_REQUESTED, active (upd 6/10) | ADR gate: ES8311 work resumes after this lands |
-| zephyr#107660 | `drivers: audio: ES8311 + BOX-3 speaker sample` (nnSiD) | OPEN, CHANGES_REQUESTED, **stalled since 6/5**, playback-only (ADC disabled) | the existing effort to coordinate with |
+| zephyr#107655 | `boards: espressif: ESP32-S3-BOX-3` (base board) | **MERGED 2026-06-11 21:14Z** | an in-tree consumer now exists: its own doc lists "Speaker with ES8311 audio codec" |
+| zephyr#107660 | `drivers: audio: ES8311 + BOX-3 speaker sample` (nnSiD) | **CLOSED 2026-06-12 06:55Z**, never merged | the effort ADR 0004 planned to engage no longer exists |
+| zephyr#108073 | `Drivers: audio: add ES8311 codec driver support` (nnSiD) | CLOSED 2026-04-28, never merged | his earlier ES8311 attempt, also abandoned |
+| zephyr#110205 | `boards: m5stack: add M5Stack StickS3` (ours) | OPEN, REVIEW_REQUIRED | not a gate; our board lands on its own track |
 
-**Hold conditions still in force**: neither #107655 nor #110205 has merged, and
-no live successor ES8311 PR exists. Do not post upstream yet (ADR 0004 update
-2026-06-05).
+**Upstream `main` has no ES8311 support at all.** A code search for `es8311` across
+the whole tree returns exactly one hit, and it is prose in
+`boards/espressif/esp32s3_box3/doc/index.rst`. No driver, no `everest,es8311`
+binding, no Kconfig, no DT node.
+
+**Nobody else is driving one.** Codec work upstream is active — #106212 adds a
+WM8960, #98902 a TI TAA3020, #112540/#111219 extend wm8904, #110982 tlv320dac310x —
+so new codec drivers are welcome, but none of it is ES8311.
+
+**Verdict: GO.** The base board landed, nobody upstream is driving ES8311, and an
+in-tree board documents a codec the tree cannot drive. Submit our own focused PR
+(codec + binding + ztest; no board, no sample).
+
+Two things to watch while the PR is open:
+
+- **#98500** proposes a `get_caps` API across the DMIC / I2S / Codec subsystems. If
+  it lands first, our driver will need to implement it. Not a blocker, but rebase
+  onto it rather than fight it.
+- Set expectations on pace: #98500, #98902 and #106212 are all low PR numbers and
+  still open, so codec-area review can take months. Reviewers on #107660 asked
+  repeatedly for the work to be **split** and for samples to be **dropped** —
+  submitting codec + binding + ztest only is exactly the shape they were steering
+  toward.
 
 ## Readiness — verified 2026-06-11 (all GREEN)
 
