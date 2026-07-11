@@ -86,9 +86,17 @@ jobs:
             -e OVERLAY="${{ matrix.overlay }}" \
             -e DTC="${{ matrix.dtc }}" \
             -e BLOB="${{ matrix.blob }}" \
+            -e NAME="${{ matrix.name }}" \
             -v "${{ github.workspace }}/repo:/repo:ro" \
+            -v "${{ github.workspace }}/build-artifacts:/out" \
             "$CI_IMAGE" \
             bash -c 'set -eo pipefail
+              # The linker map and the resolved .config are what a reviewer needs to
+              # check a claim after the fact: the 8 MB ext_dram_seg the PSRAM work
+              # rests on is read off exactly these, and they were being deleted with
+              # the container. The trap copies them out whether the build passes or
+              # fails, without swallowing the build result.
+              trap "mkdir -p /out/$NAME; cp -f build/zephyr/.config build/zephyr/zephyr.map /out/$NAME/ 2>/dev/null || true" EXIT
               mkdir -p /work && cd /work
               west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
               cd ws && west update --narrow -o=--depth=1 && west zephyr-export
@@ -101,6 +109,20 @@ jobs:
               [ ${#extra[@]} -gt 0 ] && args+=(-- "${extra[@]}")
               west build "${args[@]}"
             '
+
+      - name: Hand the build evidence back to the runner
+        # The container writes as root, and the upload step does not run as root.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/build-artifacts" || true
+
+      - name: Keep the build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-${{ matrix.name }}
+          path: build-artifacts
+          retention-days: 14
+          if-no-files-found: warn
 
   twister:
     runs-on: ubuntu-24.04

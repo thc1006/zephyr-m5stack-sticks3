@@ -56,19 +56,24 @@ echo "===================================================================="
 #
 # One gh call per PR, not four. Every field comes from the same snapshot, so the
 # state cannot change underneath the script between questions about it.
-pr_json() { gh pr view "$1" --repo "$Z" --json state,mergedAt,reviewDecision,title 2>/dev/null; }
+# gh embeds its own jq, so -q extracts the fields with no dependency on jq being
+# installed. The offline test used to skip itself when jq was missing, which meant a
+# green verify.sh that had executed no assertions at all: the same "it passed by not
+# running" shape this gate exists to catch.
+pr_line() {
+	gh pr view "$1" --repo "$Z" --json state,mergedAt,title \
+		-q '[.state, (.mergedAt // "no"), .title[0:52]] | @tsv' 2>/dev/null
+}
 
 echo "-- the PRs this decision has a history with --"
 for pr in "$BASE_PR" "$CLOSED_PR" "$OUR_BOARD_PR"; do
-	j=$(pr_json "$pr")
-	if [ -z "$j" ]; then
+	line=$(pr_line "$pr")
+	if [ -z "$line" ]; then
 		printf '  #%-7s (gh could not answer)\n' "$pr"
 		continue
 	fi
-	printf '  #%-7s %-7s merged=%-21s %s\n' "$pr" \
-		"$(echo "$j" | jq -r '.state')" \
-		"$(echo "$j" | jq -r '.mergedAt // "no"')" \
-		"$(echo "$j" | jq -r '.title[0:52]')"
+	IFS=$'\t' read -r state merged title <<< "$line"
+	printf '  #%-7s %-7s merged=%-21s %s\n' "$pr" "$state" "$merged" "$title"
 done
 
 echo

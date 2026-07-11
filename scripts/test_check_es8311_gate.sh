@@ -41,7 +41,9 @@ cat > "$td/bin/gh" <<'MOCK'
 # Fake gh; $SCEN selects the scenario.
 prview() {
   [ "$SCEN" = "ghdown" ] && return 1
-  echo '{"state":"MERGED","mergedAt":"2026-06-11T21:14:01Z","reviewDecision":"APPROVED","title":"fake"}'
+  # The gate has gh do the extraction with -q, so the mock returns what that would
+  # print: one tab-separated line.
+  printf 'MERGED\t2026-06-11T21:14:01Z\tfake title\n'
 }
 search() {
   [ "$SCEN" = "ghdown" ] && return 1
@@ -73,12 +75,6 @@ case "$1 $2" in
 esac
 MOCK
 chmod +x "$td/bin/gh"
-
-# jq is used by the gate to read the single-shot PR snapshot.
-command -v jq >/dev/null 2>&1 || {
-	echo "SKIP: jq is not installed, and the gate parses its PR snapshot with it"
-	exit 0
-}
 
 printf '#!/usr/bin/env bash\nexit 0\n' > "$td/ready_ok.sh"
 printf '#!/usr/bin/env bash\necho "  FAIL  mock: the code is not ready"\nexit 1\n' > "$td/ready_bad.sh"
