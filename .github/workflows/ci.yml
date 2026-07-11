@@ -185,7 +185,90 @@ jobs:
           name: twister-out
           path: twister-artifacts
           retention-days: 14
-          if-no-files-found: warn
+          # error, not warn: twister always writes an outdir, so "no files" means the
+          # evidence chain broke and the job must say so instead of going green.
+          # (The build job keeps `warn`: a build that legitimately failed has no map.)
+          if-no-files-found: error
+
+  upstream-main:
+    # The driver's UPSTREAM form is not built by anything above.
+    #
+    # Every other job pins v4.4.0. The file that would actually be reviewed carries a
+    # DEVICE_API(audio_codec, ...) declaration that does not exist on v4.4.0, so the
+    # "compiles against upstream main, zero warnings" claim in the PR came from one
+    # run, on one laptop, that nothing could reproduce -- and an upstream API change
+    # would have made it false with nothing anywhere going red. This job is that
+    # claim, executable: it grafts the driver into a real Zephyr tree exactly as the
+    # PR will (Kconfig + CMakeLists in their CI-enforced sorted position, the binding,
+    # and a node in the build_all overlay, which is the only thing that makes CI
+    # compile a codec at all), then builds and checkpatches it.
+    #
+    # Pinned to a main COMMIT, not to the main branch: chasing a moving branch buys a
+    # green run today and a red one tomorrow for reasons that have nothing to do with
+    # this repo. Bump it deliberately.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ZEPHYR_MAIN_REV: 0a9cc79d760f387df304892f6e0bba92b62adeaf # main @ 2026-07-11
+    steps:
+      - name: Free runner disk
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          path: repo
+          persist-credentials: false
+      - name: Graft the driver into upstream main and build it
+        run: |
+          mkdir -p "${{ github.workspace }}/upstream-artifacts"
+          docker run --rm \
+            -e ZEPHYR_MAIN_REV="$ZEPHYR_MAIN_REV" \
+            -e ZEPHYR_SDK_INSTALL_DIR="$SDK_DIR" \
+            -v "${{ github.workspace }}/repo:/repo:ro" \
+            -v "${{ github.workspace }}/upstream-artifacts:/out" \
+            "$CI_IMAGE" \
+            bash -c 'set -eo pipefail
+              mkdir -p /work && cd /work
+              # Clone and check out the SHA by hand rather than through west init
+              # --mr, which wants a branch or a tag.
+              git clone --filter=blob:none https://github.com/zephyrproject-rtos/zephyr.git zephyr
+              git -C zephyr checkout --detach "$ZEPHYR_MAIN_REV"
+              west init -l zephyr
+              west update --narrow -o=--depth=1
+              west zephyr-export
+
+              bash /repo/scripts/graft_es8311_upstream.sh /work/zephyr
+
+              cd /work/zephyr
+              # checkpatch on exactly the file that would be submitted.
+              ./scripts/checkpatch.pl --no-tree -f drivers/audio/es8311.c
+
+              west twister -p native_sim -T tests/drivers/build_all/audio \
+                --inline-logs -v -O /out/twister-out
+
+              # A green twister does NOT mean the driver was compiled: if the DT node
+              # or the Kconfig line failed to land, the codec is simply absent and the
+              # build_all test passes without it. Prove the object exists.
+              if ! find /out/twister-out -name "es8311.c.obj" | grep -q .; then
+                echo "FAIL: build_all passed but es8311.c was never compiled"
+                exit 1
+              fi
+              echo "es8311.c.obj built against upstream main $ZEPHYR_MAIN_REV"
+            '
+
+      - name: Hand the artifacts back to the runner
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/upstream-artifacts" || true
+
+      - name: Keep the upstream build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: upstream-main-build
+          path: upstream-artifacts
+          retention-days: 14
+          if-no-files-found: error
 
   compliance:
     # PRs only: the checks run over the PR's own commits (base..head). On a push
