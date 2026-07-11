@@ -6,7 +6,8 @@ Accepted (2026-06-05). Superseded the "open our own ES8311 PR" framing of task #
 issue #7.
 
 **Amended 2026-07-11 — the decision is now GO.** The upstream effort this ADR chose
-to engage was abandoned (every ES8311 PR closed, none merged), which triggers this
+to engage has no open PR left (every ES8311 PR is closed and unmerged, and no open
+successor was found), which triggers this
 ADR's own documented fallback: open a fresh clean-split PR. Read the
 "Update 2026-07-11" section at the bottom before acting on anything below it.
 
@@ -161,7 +162,7 @@ reviewers see it coming.
 ### Consequence for the gate script
 
 `scripts/check_es8311_upstream_gate.sh` required a live *successor* PR to appear
-before it would open. That deadlocks: once an effort is abandoned no successor ever
+before it would open. That deadlocks: once an effort stops, no successor ever
 appears, so the gate could never open, and "nobody is doing it" would be read as a
 reason to keep waiting rather than a reason to act. It now reports GO / ENGAGE /
 HOLD. Inverting that condition introduced a mirror of the original false-merge bug —

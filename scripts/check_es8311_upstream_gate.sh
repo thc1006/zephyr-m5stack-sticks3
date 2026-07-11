@@ -2,138 +2,203 @@
 # Copyright (c) 2026 Hsiu-Chi Tsai
 # SPDX-License-Identifier: Apache-2.0
 #
-# Issue #7 monitor: what should we do about upstreaming the ES8311 codec driver?
-# Two facts decide it:
-#   (1) has the base board PR #107655 MERGED?  -> an in-tree consumer exists
-#   (2) is anyone else upstream driving an ES8311 PR right now?
+# Issue #7: should we submit the ES8311 codec driver upstream right now?
 #
-#   (1) no             -> HOLD   : no in-tree consumer yet, wait.
-#   (1) yes + (2) yes  -> ENGAGE : a live effort exists. Do not open a competing
-#                                  driver (ADR 0004); engage it and offer our
-#                                  HW-verified capture route as a follow-up.
-#   (1) yes + (2) no   -> GO     : nobody is driving it. Submit our own clean
-#                                  split PR (codec + binding + ztest).
+# The answer has TWO independent parts, and the earlier versions of this script
+# conflated them:
 #
-# The first version of this gate required a live *successor* PR to appear before
-# we acted. That deadlocks: if the upstream effort is abandoned (which is exactly
-# what happened on 2026-06-12, see ADR 0004's 2026-07-11 update) no successor will
-# ever appear, and the gate never opens. "Nobody is doing it" is a reason to GO,
-# not a reason to wait forever.
+#   COORDINATION - is the upstream lane clear? Is somebody else already driving an
+#                  ES8311 driver, or have WE already opened one?
+#   READINESS    - is the code actually fit to submit? That is not a question about
+#                  GitHub at all, and it is answered by check_es8311_readiness.sh.
 #
-# Fails safe in both directions. A gh outage / auth gap / rate limit degrades to
-# HOLD: a `pr view` that returns nothing is never read as "merged", and a search
-# that could not run is never read as "nobody is driving it".
+# "No competing PR was found" was previously reported as GO, which said nothing
+# about whether the driver was ready. It was not: the readiness checklist claimed
+# the driver was checkpatch-clean while it carried a 137-column line.
+#
+# Two further bugs this version fixes, both of the same family:
+#
+#   * It excluded every PR authored by us, so once WE opened the real ES8311
+#     driver PR the search would find it, discard it, and say GO again: "submit
+#     your own PR" - a second one. Our board PR #110205 is the only PR of ours
+#     that is genuinely not an ES8311 driver, and it is excluded by number.
+#   * `gh search prs` defaults to 30 results and searches title, body and comments
+#     rather than the diff. A saturated result set is not evidence of absence, so
+#     it is now reported as UNKNOWN rather than quietly read as "clear".
+#
+# Exit status is part of the contract:
+#   0  GO           the lane is clear and the code is ready
+#   1  HOLD         the search could not answer; never act on missing data
+#   2  ENGAGE       somebody else has an open ES8311 PR: join it, do not compete
+#   3  ALREADY_OPEN we have one open already: maintain it, do not open another
+#   4  PREP         the lane is clear but the code is not ready yet
 #
 # Usage: bash scripts/check_es8311_upstream_gate.sh
-set -euo pipefail
+set -uo pipefail
+
+cd "$(dirname "$0")/.." || exit 1
 
 Z=zephyrproject-rtos/zephyr
-BASE_PR=107655                       # in-tree consumer: the ESP32-S3-BOX-3 board
-CLOSED_PR=107660                     # the original ES8311 PR; closed 2026-06-12
-OUR_PRS=(110205)                     # our own PR(s) - never a competing effort
-OUR_AUTHORS=(thc1006 junnncct1106)   # our authors - their es8311 PRs are not competition
+BASE_PR=107655                      # ESP32-S3-BOX-3: context, not a precondition
+CLOSED_PR=107660                    # the original ES8311 PR, closed 2026-06-12
+OUR_BOARD_PR=110205                 # ours, but a board PR, not an ES8311 driver
+OUR_AUTHORS=(thc1006 junnncct1106)
+SEARCH_LIMIT=100
 
-# field PR JSON_FIELD -> value, or "" on ANY gh error.
-# Returns empty (not "?") on failure so a gh outage / auth gap / rate-limit can
-# never be mistaken for a real value such as a false "merged" timestamp.
-field() { gh pr view "$1" --repo "$Z" --json "$2" -q ".$2" 2>/dev/null || true; }
+# The search covers title, body and comments, not the diff, so cast a wider net
+# than one spelling of the part number.
+SEARCH_TERMS=("es8311" "everest,es8311" "Everest Semiconductor codec")
 
-# is_merged PR -> success only if the PR is *actually* merged.
-# Authoritative signal is state==MERGED; mergedAt must also be a real ISO-8601
-# timestamp. "", "null" and "?" all fail.
-is_merged() {
-	local state merged
-	state=$(field "$1" state)
-	merged=$(field "$1" mergedAt)
-	[ "$state" = "MERGED" ] && [[ "$merged" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]
-}
+echo "ES8311 upstream gate - $(date -u '+%Y-%m-%d %H:%MZ')"
+echo "===================================================================="
 
-# in_list NEEDLE ITEM... -> success if NEEDLE equals one of ITEM.
-in_list() {
-	local needle="$1"; shift
-	local x
-	for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
-	return 1
-}
+# ---------------------------------------------------------------- coordination
+#
+# One gh call per PR, not four. Every field comes from the same snapshot, so the
+# state cannot change underneath the script between questions about it.
+pr_json() { gh pr view "$1" --repo "$Z" --json state,mergedAt,reviewDecision,title 2>/dev/null; }
 
-echo "ES8311 upstream gate — $(date -u '+%Y-%m-%d %H:%MZ')"
-echo "----------------------------------------------------"
-
-for pr in "$BASE_PR" "$CLOSED_PR" "${OUR_PRS[@]}"; do
-	state=$(field "$pr" state)
-	merged=$(field "$pr" mergedAt)
-	review=$(field "$pr" reviewDecision)
-	title=$(field "$pr" title)
-	printf '#%-7s %-6s merged=%-21s review=%-18s %s\n' \
-		"$pr" "${state:-?}" "${merged:-no}" "${review:-none}" "${title:0:48}"
+echo "-- the PRs this decision has a history with --"
+for pr in "$BASE_PR" "$CLOSED_PR" "$OUR_BOARD_PR"; do
+	j=$(pr_json "$pr")
+	if [ -z "$j" ]; then
+		printf '  #%-7s (gh could not answer)\n' "$pr"
+		continue
+	fi
+	printf '  #%-7s %-7s merged=%-21s %s\n' "$pr" \
+		"$(echo "$j" | jq -r '.state')" \
+		"$(echo "$j" | jq -r '.mergedAt // "no"')" \
+		"$(echo "$j" | jq -r '.title[0:52]')"
 done
 
-# (1) in-tree consumer: the base board must be MERGED.
-base_merged=0
-if is_merged "$BASE_PR"; then base_merged=1; fi
+echo
+echo "-- open ES8311 pull requests upstream --"
 
-# (2) is anyone else driving ES8311 upstream? Any OPEN es8311 PR that is neither
-# the closed original nor one of ours. The search must SUCCEED to count: `gh
-# search` exits 0 with empty output when there genuinely are no matches, and
-# non-zero when it could not run (rate limit, auth, outage). Only a successful
-# search may be read as "nobody is driving it" - otherwise we would GO on missing
-# data, which is the mirror image of the old false-merge bug.
-echo "--- live ES8311 PRs upstream ---"
-competing=0
-search_ok=0
-if prs=$(gh search prs --repo "$Z" es8311 --state open \
-	--json number,author,updatedAt,title \
-	-q '.[] | "\(.number)\t\(.author.login)\t\(.updatedAt[0:10])\t\(.title[0:50])"' 2>/dev/null); then
-	search_ok=1
-	while IFS=$'\t' read -r num author updated title; do
-		[ -z "$num" ] && continue
-		mark=' '
-		if ! in_list "$num" "$CLOSED_PR" "${OUR_PRS[@]}" \
-			&& ! in_list "$author" "${OUR_AUTHORS[@]}"; then
-			mark='*'; competing=1
-		fi
-		printf ' %s #%-7s %-14s %s — %s\n' "$mark" "$num" "$author" "$updated" "${title:0:50}"
-	done <<< "$prs"
-	if [ "$competing" = 1 ]; then
-		echo " (* = live competing ES8311 effort)"
-	elif [ -z "$prs" ]; then
-		echo " (none)"
+found=""
+search_ok=1
+saturated=0
+
+for term in "${SEARCH_TERMS[@]}"; do
+	out=$(gh search prs --repo "$Z" "$term" --state open --limit "$SEARCH_LIMIT" \
+		--json number,author,updatedAt,title \
+		-q '.[] | "\(.number)\t\(.author.login // "?")\t\(.updatedAt[0:10])\t\(.title[0:48])"' \
+		2>/dev/null)
+	if [ $? -ne 0 ]; then
+		search_ok=0
+		echo "  !! the search for '$term' did not run"
+		continue
 	fi
-else
-	echo " !! gh search failed - cannot tell whether anyone is driving ES8311"
+	n=$(printf '%s' "$out" | grep -c . || true)
+	if [ "$n" -ge "$SEARCH_LIMIT" ]; then
+		saturated=1
+		echo "  !! the search for '$term' returned $n results, the limit. It is"
+		echo "     truncated, so absence cannot be concluded from it."
+	fi
+	found=$(printf '%s\n%s' "$found" "$out")
+done
+
+ours_open=0
+third_party=0
+
+if [ "$search_ok" = 1 ] && [ "$saturated" = 0 ]; then
+	while IFS=$'\t' read -r num author updated title; do
+		[ -z "${num:-}" ] && continue
+
+		# Our board PR names the part but does not implement it.
+		if [ "$num" = "$OUR_BOARD_PR" ]; then
+			printf '     #%-7s %-14s %s  (our board PR, not a driver)\n' \
+				"$num" "$author" "$updated"
+			continue
+		fi
+
+		mine=0
+		for a in "${OUR_AUTHORS[@]}"; do
+			[ "$a" = "$author" ] && mine=1
+		done
+
+		if [ "$mine" = 1 ]; then
+			ours_open=1
+			printf '  >> #%-7s %-14s %s  %s  (OURS, already open)\n' \
+				"$num" "$author" "$updated" "$title"
+		else
+			third_party=1
+			printf '  ** #%-7s %-14s %s  %s  (someone else)\n' \
+				"$num" "$author" "$updated" "$title"
+		fi
+	done <<< "$(printf '%s' "$found" | sort -u)"
+
+	if [ "$ours_open" = 0 ] && [ "$third_party" = 0 ]; then
+		echo "     none"
+	fi
 fi
 
-if [ "$search_ok" = 0 ]; then
-	driving=unknown
-elif [ "$competing" = 1 ]; then
-	driving=yes
+if [ "$search_ok" = 0 ] || [ "$saturated" = 1 ]; then
+	coordination=UNKNOWN
+elif [ "$ours_open" = 1 ]; then
+	coordination=ALREADY_OPEN
+elif [ "$third_party" = 1 ]; then
+	coordination=THIRD_PARTY
 else
-	driving=no
+	coordination=CLEAR
 fi
 
-if [ "$base_merged" = 1 ]; then
-	consumer=yes
+# ------------------------------------------------------------------- readiness
+#
+# Overridable so the offline test can drive this branch without depending on the
+# state of the real tree.
+READINESS=${ES8311_READINESS_CHECK:-scripts/check_es8311_readiness.sh}
+
+echo
+echo "-- technical readiness --"
+if bash "$READINESS" > /dev/null 2>&1; then
+	readiness=READY
+	echo "  the mechanical claims in docs/issues/0007 all hold"
+	echo "  (run $READINESS to see them)"
 else
-	consumer=no
+	readiness=NOT_READY
+	echo "  $READINESS FAILS. The lane being clear does not make the code ready,"
+	echo "  and those two were conflated before:"
+	bash "$READINESS" 2>&1 | grep FAIL | sed 's/^/    /'
 fi
 
-echo "----------------------------------------------------"
-printf 'in-tree consumer (#%s merged) : %s\n' "$BASE_PR" "$consumer"
-printf 'someone else driving ES8311      : %s\n' "$driving"
+# --------------------------------------------------------------------- verdict
+echo
+echo "===================================================================="
+printf 'coordination : %s\n' "$coordination"
+printf 'readiness    : %s\n' "$readiness"
+echo
 
-if [ "$base_merged" = 0 ]; then
-	echo "VERDICT: HOLD — the base board #$BASE_PR has not merged yet."
-	echo "  No in-tree consumer to hang a codec driver on. Wait."
-elif [ "$search_ok" = 0 ]; then
-	echo "VERDICT: HOLD — the upstream search did not run."
-	echo "  So \"nobody is driving ES8311\" is unproven. Never GO on missing data."
-	echo "  Re-run when gh works."
-elif [ "$competing" = 1 ]; then
-	echo "VERDICT: ENGAGE — a live ES8311 PR exists upstream (marked * above)."
-	echo "  Do NOT open a competing driver. Engage that PR per ADR 0004 and offer"
-	echo "  the HW-verified capture/ADC route as a follow-up."
-else
-	echo "VERDICT: GO — the base board landed, nobody upstream is driving ES8311."
-	echo "  Submit our own clean split PR (codec + everest,es8311 binding + ztest)"
-	echo "  per docs/issues/0007-es8311-upstream-readiness.md."
+case "$coordination" in
+UNKNOWN)
+	echo "VERDICT: HOLD - the searches could not answer, or were truncated."
+	echo "  Absence of evidence is not evidence of absence. Re-run when gh works."
+	exit 1
+	;;
+ALREADY_OPEN)
+	echo "VERDICT: ALREADY_OPEN - we have an ES8311 pull request open upstream."
+	echo "  Maintain it. Do NOT open a second one."
+	exit 3
+	;;
+THIRD_PARTY)
+	echo "VERDICT: ENGAGE - somebody else has an open ES8311 pull request (**)."
+	echo "  Do not compete with it. Engage it per ADR 0004 and offer the"
+	echo "  hardware-verified capture route as a follow-up."
+	exit 2
+	;;
+esac
+
+if [ "$readiness" != READY ]; then
+	echo "VERDICT: PREP - no matching open pull request was found by the configured"
+	echo "  searches, so the lane appears clear, but the code is not ready. Fix what"
+	echo "  scripts/check_es8311_readiness.sh reports, then run this again."
+	exit 4
 fi
+
+echo "VERDICT: GO - no matching open pull request was found, and every mechanical"
+echo "  readiness claim holds."
+echo "  Submit the codec driver, Kconfig.es8311, the everest,es8311 binding and a"
+echo "  node in tests/drivers/build_all/audio/i2c_devices.overlay. NOT the ztest"
+echo "  and NOT the emulator: no in-tree codec ships either, so both are new"
+echo "  surface in an area that has no maintainer. Offer them as a follow-up."
+echo "  See docs/issues/0007-es8311-upstream-readiness.md."
+exit 0

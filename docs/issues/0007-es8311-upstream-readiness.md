@@ -3,8 +3,11 @@
 Tracks the prep for contributing `drivers/audio/es8311.c` (+ binding + ztest)
 to Zephyr upstream. **Strategy as of 2026-07-11: GO — submit our own clean, split
 PR.** ADR 0004 originally said "do not compete, engage the live upstream effort".
-That effort was abandoned, so ADR 0004's own "fresh clean-split PR" fallback
-applies (see its 2026-07-11 update). This file is the "ready to fire" checklist.
+Those PRs are closed, unmerged, and no open successor was found, so ADR 0004's
+own "fresh clean-split PR" fallback applies (see its 2026-07-11 update). What is
+established is the state of the tracker, not the author's intent: Zephyr's own PR
+lifecycle policy treats closing an inactive PR as administrative, and a contributor
+may reopen one at any time. This file is the "ready to fire" checklist.
 
 ## Gate status (live, re-checked 2026-07-11)
 
@@ -12,9 +15,9 @@ Re-check any time with `bash scripts/check_es8311_upstream_gate.sh`.
 
 | Upstream PR | What | State | Effect on us |
 |---|---|---|---|
-| zephyr#107655 | `boards: espressif: ESP32-S3-BOX-3` (base board) | **MERGED 2026-06-11 21:14Z** | an in-tree consumer now exists: its own doc lists "Speaker with ES8311 audio codec" |
+| zephyr#107655 | `boards: espressif: ESP32-S3-BOX-3` (base board) | **MERGED 2026-06-11 21:14Z** | context, not a precondition. The tree now has a supported board whose *physical hardware* carries an ES8311 (its docs list "Speaker with ES8311 audio codec"), but its devicetree instantiates no codec: it enables only usb_serial, gpio, bt, wifi, wdt, trng and dma, with no I2C or I2S node. Calling it an "in-tree consumer" would be wrong and a reviewer would say so. Zephyr does not require an instantiating board node to accept a driver |
 | zephyr#107660 | `drivers: audio: ES8311 + BOX-3 speaker sample` (nnSiD) | **CLOSED 2026-06-12 06:55Z**, never merged | the effort ADR 0004 planned to engage no longer exists |
-| zephyr#108073 | `Drivers: audio: add ES8311 codec driver support` (nnSiD) | CLOSED 2026-04-28, never merged | his earlier ES8311 attempt, also abandoned |
+| zephyr#108073 | `Drivers: audio: add ES8311 codec driver support` (nnSiD) | CLOSED 2026-04-28, never merged | an earlier ES8311 attempt, also closed unmerged |
 | zephyr#110205 | `boards: m5stack: add M5Stack StickS3` (ours) | OPEN, REVIEW_REQUIRED | not a gate; our board lands on its own track |
 
 **Upstream `main` has no ES8311 support at all.** A code search for `es8311` across
@@ -66,7 +69,7 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **24/24**
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **27/27**
       (was 11), covering every supported rate, the rejected rates and word sizes,
       the MCLK validation, the input volume/mute round trip, volume clamping and
       I2C error propagation.
@@ -76,7 +79,15 @@ Two things to watch while the PR is open:
 - [x] **Genericized** — zero hits for M5Stack / StickS3 / HW-0xx / ESP-ADF /
       esp-bsp / M5GFX / TODO in the driver.
 - [x] **DCO ready** — `Signed-off-by: Hsiu-Chi Tsai <hctsai@linux.com>`.
-- [x] **No AI footers.**
+- [x] **No AI footers.** No `Co-Authored-By`, no "Generated with", no bot anywhere
+      in the authorship or the DCO chain. This is a considered position, not an
+      oversight: Zephyr's contribution guidelines have had an "AI Coding Assistants"
+      section since PR #104903 (2026-03-06), and it *recommends* an `Assisted-by:`
+      trailer. The modal verb is **should**, not must; nothing in
+      `check_compliance.py` looks for it; and the section's one hard rule points the
+      same way we do, that an AI agent **must not** add a `Signed-off-by`. Omitting
+      the trailer is not a policy violation and cannot be a reviewer's blocker. The
+      human author reviews every line and signs off.
 - [ ] **Hardware validation of the full rate sweep (HW-019) — PENDING.** Only
       16 kHz is hardware-verified today. `CONFIG_APP_AUDIO_RATE_SWEEP` reprograms
       I2S and the codec at each supported rate, reads the clock registers back off
