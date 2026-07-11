@@ -241,8 +241,17 @@ int main(void)
 	/*
 	 * Driver validation, before any page can claim the codec. Blocks for a few
 	 * seconds and restores the app's own audio configuration when it returns.
+	 *
+	 * The banner is the machine-readable result. Without it the only record of a
+	 * failed rate is one line in the middle of the sweep's own output, and the UI
+	 * comes up and reports the device alive either way, so a log parser -- or a
+	 * person skimming -- would see a healthy boot and miss it.
 	 */
-	audio_rate_sweep();
+	if (audio_rate_sweep() < 0) {
+		printk("*** ES8311 RATE SWEEP FAILED ***\n");
+	} else {
+		printk("*** ES8311 RATE SWEEP PASSED ***\n");
+	}
 #endif
 #endif
 #ifdef CONFIG_APP_BLE

@@ -108,11 +108,16 @@ uint32_t audio_rec_len_ms(void);
 /*
  * Hardware validation for the ES8311 driver: reprogram I2S + the codec at every
  * sample rate the driver claims to support, read the clock registers back off
- * the chip, and play a tone through the speaker while capturing it on the mic.
- * Prints one line per rate and restores the application's own configuration
- * before returning. Blocks for a few seconds; call it once, from main.
+ * the chip, measure the frame clock against the kernel cycle counter, and check
+ * the ADC is alive. Prints one line per rate, then restores the application's own
+ * 16 kHz configuration and measures THAT before handing the device back.
+ *
+ * Returns 0 only if every rate passed AND the restore is measured good. A
+ * validation routine whose result lives only in stdout cannot be acted on, and a
+ * sweep that leaves the device unable to play has not passed. Blocks for a few
+ * seconds; call it once, from main.
  */
-void audio_rate_sweep(void);
+int audio_rate_sweep(void);
 #endif
 
 #endif /* CONFIG_APP_AUDIO */

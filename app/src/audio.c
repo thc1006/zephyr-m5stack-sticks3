@@ -175,16 +175,27 @@ static void tone_block_fill(void)
 	tone_ready = true;
 }
 
-int audio_init(void)
+/*
+ * Probe the codec, once.
+ *
+ * Idempotent, and it has to be: the rate sweep reprograms the whole chain and then
+ * restores it, and device_init() on an already-initialized device does NOT return 0.
+ * It returns -EALREADY (kernel/device.c, z_impl_device_init). device_is_ready() is
+ * the right guard rather than treating -EALREADY as success, because it also
+ * excludes a device that ran its init and failed.
+ */
+static int audio_codec_probe(void)
 {
-	struct audio_codec_cfg codec_cfg;
-	struct i2s_config i2s_cfg;
 	int ret;
+
+	if (device_is_ready(codec_dev)) {
+		return 0;
+	}
 
 	/*
 	 * The ES8311 is marked zephyr,deferred-init (it shares the L3B rail with
 	 * the LCD, which is only powered by lcd_power's regulator-boot-on at boot).
-	 * Probe it now, in main context, where L3B is up and settled -- doing it at
+	 * Probe it here, in main context, where L3B is up and settled -- doing it at
 	 * the driver's POST_KERNEL priority read chip-id before power -> -EFAULT.
 	 */
 	ret = device_init(codec_dev);
@@ -196,6 +207,97 @@ int audio_init(void)
 	if (!device_is_ready(codec_dev)) {
 		LOG_ERR("ES8311 codec not ready");
 		return -ENODEV;
+	}
+
+	return 0;
+}
+
+/*
+ * Program I2S and the codec for `rate`: everything that has to be redone when the
+ * sample rate changes, and nothing that must happen only once. The rate sweep
+ * reprograms the chain per rate and restores it through this, so it must not probe
+ * the device or touch anything one-shot.
+ *
+ * Leaves both directions configured and stopped, which is the state every path in
+ * this file expects: i2s_configure() is called here and nowhere else, and beep,
+ * meter, record and play all just DROP/START from whatever this left behind.
+ */
+static int audio_configure_chain(uint32_t rate)
+{
+	audio_property_value_t vol = { .vol = AUDIO_VOLUME_DB };
+	struct audio_codec_cfg codec_cfg;
+	struct i2s_config i2s_cfg;
+	int ret;
+
+	/*
+	 * I2S0 TX as master (no I2S_OPT_*_CLK_TARGET => SoC drives BCLK + WS),
+	 * standard I2S, 16-bit stereo. The esp32-i2s driver derives BCLK = 32 * Fs,
+	 * and the codec makes its own master clock from BCLK, so the codec sees
+	 * 256 * Fs at every rate: one coefficient row serves them all.
+	 */
+	i2s_cfg.word_size = AUDIO_WORD_BITS;
+	i2s_cfg.channels = AUDIO_CHANNELS;
+	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
+	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
+	i2s_cfg.frame_clk_freq = rate;
+	i2s_cfg.mem_slab = &tx_slab;
+	i2s_cfg.block_size = BLOCK_SIZE;
+	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
+
+	ret = i2s_configure(i2s_dev, I2S_DIR_TX, &i2s_cfg);
+	if (ret < 0) {
+		LOG_ERR("i2s_configure(TX, %u Hz) failed (%d)", rate, ret);
+		return ret;
+	}
+
+	/*
+	 * mclk_freq is the frequency of the clock fed to the codec's MCLK *input*
+	 * pin. The codec takes its master clock from BCLK instead, so there is no
+	 * MCLK input to describe and the driver requires zero here. The old value
+	 * (256 * Fs) was the codec's *internal* clock, which is not on any pin.
+	 */
+	codec_cfg.mclk_freq = 0U;
+	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
+	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
+	codec_cfg.dai_cfg.i2s = i2s_cfg;
+
+	ret = audio_codec_configure(codec_dev, &codec_cfg);
+	if (ret < 0) {
+		LOG_ERR("audio_codec_configure(%u Hz) failed (%d)", rate, ret);
+		return ret;
+	}
+
+	/*
+	 * I2S0 RX, same format, for microphone capture. The esp32-i2s driver shares
+	 * BCLK/WS once both directions are configured, so capture can run full-duplex
+	 * (I2S_DIR_BOTH). Only the mem_slab and the timeout differ from TX.
+	 */
+	i2s_cfg.mem_slab = &rx_slab;
+	i2s_cfg.timeout = LOOP_IO_TIMEOUT_MS; /* bound a stalled mic read */
+	ret = i2s_configure(i2s_dev, I2S_DIR_RX, &i2s_cfg);
+	if (ret < 0) {
+		LOG_ERR("i2s_configure(RX, %u Hz) failed (%d)", rate, ret);
+		return ret;
+	}
+
+	/* Safe low volume; leave the codec configured but the amp OFF. */
+	ret = audio_codec_set_property(codec_dev, AUDIO_PROPERTY_OUTPUT_VOLUME,
+				       AUDIO_CHANNEL_ALL, vol);
+	if (ret < 0) {
+		LOG_WRN("set volume failed (%d); continuing", ret);
+	}
+	(void)audio_codec_apply_properties(codec_dev);
+
+	return 0;
+}
+
+int audio_init(void)
+{
+	int ret;
+
+	ret = audio_codec_probe();
+	if (ret < 0) {
+		return ret;
 	}
 
 	if (!device_is_ready(i2s_dev)) {
@@ -215,70 +317,10 @@ int audio_init(void)
 		return ret;
 	}
 
-	/*
-	 * Configure I2S0 TX as master (no I2S_OPT_*_CLK_TARGET => SoC drives
-	 * BCLK + WS), standard I2S, 16 kHz / 16-bit / stereo. The esp32-i2s
-	 * driver derives MCLK = 256 * Fs = 4.096 MHz, which matches the codec
-	 * coefficient row (MCLK-from-BCLK, LRCK = MCLK/256).
-	 */
-	i2s_cfg.word_size = AUDIO_WORD_BITS;
-	i2s_cfg.channels = AUDIO_CHANNELS;
-	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
-	/* SoC is the I2S controller (master): drives BCLK + WS. */
-	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
-	i2s_cfg.frame_clk_freq = AUDIO_SAMPLE_RATE;
-	i2s_cfg.mem_slab = &tx_slab;
-	i2s_cfg.block_size = BLOCK_SIZE;
-	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
-
-	ret = i2s_configure(i2s_dev, I2S_DIR_TX, &i2s_cfg);
+	ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
 	if (ret < 0) {
-		LOG_ERR("i2s_configure(TX) failed (%d)", ret);
 		return ret;
 	}
-
-	/*
-	 * Configure the ES8311 for the same 16 kHz / 16-bit I2S playback.
-	 *
-	 * mclk_freq is the frequency of the clock fed to the codec's MCLK *input*
-	 * pin. The codec takes its master clock from BCLK instead, so there is no
-	 * MCLK input to describe and the driver requires zero here. The old value
-	 * (256 * Fs) was the codec's *internal* clock, which is not on any pin.
-	 */
-	codec_cfg.mclk_freq = 0U;
-	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
-	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
-	codec_cfg.dai_cfg.i2s = i2s_cfg;
-
-	ret = audio_codec_configure(codec_dev, &codec_cfg);
-	if (ret < 0) {
-		LOG_ERR("audio_codec_configure failed (%d)", ret);
-		return ret;
-	}
-
-	/*
-	 * Configure I2S0 RX with the same format for microphone capture. The
-	 * esp32-i2s driver shares BCLK/WS once both TX and RX are configured, so
-	 * audio_loopback() can run full-duplex (I2S_DIR_BOTH). Only the mem_slab
-	 * differs from the TX config above.
-	 */
-	i2s_cfg.mem_slab = &rx_slab;
-	i2s_cfg.timeout = LOOP_IO_TIMEOUT_MS; /* bound a stalled mic read */
-	ret = i2s_configure(i2s_dev, I2S_DIR_RX, &i2s_cfg);
-	if (ret < 0) {
-		LOG_ERR("i2s_configure(RX) failed (%d)", ret);
-		return ret;
-	}
-
-	/* Safe low volume; leave the codec configured but the amp OFF. */
-	audio_property_value_t vol = { .vol = AUDIO_VOLUME_DB };
-
-	ret = audio_codec_set_property(codec_dev, AUDIO_PROPERTY_OUTPUT_VOLUME,
-				       AUDIO_CHANNEL_ALL, vol);
-	if (ret < 0) {
-		LOG_WRN("set volume failed (%d); continuing", ret);
-	}
-	(void)audio_codec_apply_properties(codec_dev);
 
 	if (!tone_ready) {
 		tone_block_fill();
@@ -1281,13 +1323,85 @@ stop:
 	return 0;
 }
 
-void audio_rate_sweep(void)
+/*
+ * Measure the frame clock the hardware is really running at, with the amplifier
+ * off, and check it against `want`. Same method as the per-rate measurement: time
+ * a known number of DMA blocks against the kernel cycle counter, which is not
+ * derived from the I2S clock. Leaves the stream stopped and configured, which is
+ * what audio_init() leaves behind and what every other path here starts from.
+ */
+static int sweep_measure_rate(uint32_t want)
+{
+	uint32_t t0;
+	uint32_t t1;
+	uint64_t us;
+	uint32_t measured = 0U;
+	uint32_t tolerance;
+	size_t frames = 0U;
+	int ret;
+
+	sweep_reset_i2s();
+
+	for (int i = 0; i < 2; i++) {
+		ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+		if (ret < 0) {
+			goto stop;
+		}
+	}
+
+	ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
+	if (ret < 0) {
+		goto stop;
+	}
+
+	for (uint32_t b = 0U; b < SWEEP_WARMUP_BLOCKS; b++) {
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			goto stop;
+		}
+	}
+
+	t0 = k_cycle_get_32();
+
+	for (uint32_t b = 0U; b < SWEEP_TIMED_BLOCKS; b++) {
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			goto stop;
+		}
+	}
+
+	t1 = k_cycle_get_32();
+
+	us = k_cyc_to_us_floor64(t1 - t0);
+	if (us > 0U) {
+		measured = (uint32_t)(((uint64_t)SWEEP_TIMED_BLOCKS * BLOCK_FRAMES * 1000000ULL) /
+				      us);
+	}
+
+	tolerance = (want * SWEEP_RATE_TOLERANCE_PERCENT) / 100U;
+	if (measured + tolerance < want || measured > want + tolerance) {
+		printk("SWEEP restore: lrck measured %u Hz, want %u +/-%u%%  BAD\n", measured,
+		       want, SWEEP_RATE_TOLERANCE_PERCENT);
+		ret = -EIO;
+		goto stop;
+	}
+
+	printk("SWEEP restore: lrck measured %u Hz, want %u  OK\n", measured, want);
+	ret = 0;
+
+stop:
+	sweep_reset_i2s();
+	return ret;
+}
+
+int audio_rate_sweep(void)
 {
 	unsigned int bad = 0U;
+	int ret;
 
 	if (!ready) {
 		printk("SWEEP skipped: audio not ready\n");
-		return;
+		return -ENODEV;
 	}
 
 	/*
@@ -1316,11 +1430,53 @@ void audio_rate_sweep(void)
 		k_msleep(200);
 	}
 
-	printk("\n=== sweep done: %u of %u rate(s) FAILED ===\n\n", bad,
+	printk("\n=== sweep: %u of %u rate(s) FAILED ===\n", bad,
 	       (unsigned int)ARRAY_SIZE(sweep_rates));
 
-	/* Restore the application's own configuration; this sets `ready` again. */
-	(void)audio_init();
+	/*
+	 * Put the chain back the way the application expects it. This is part of the
+	 * result, not cleanup after it: a sweep that leaves the device unable to play
+	 * has not passed, however many rates it ticked off.
+	 *
+	 * It restores through audio_configure_chain() and NOT through audio_init(),
+	 * because audio_init() probes the codec, and device_init() on an already
+	 * initialized device returns -EALREADY rather than 0. The first version of this
+	 * called audio_init() here, took that -EALREADY as a fatal init failure,
+	 * returned before `ready = true`, and left the microphone meter, record, play
+	 * and beep all dead -- behind a sweep that had just printed PASS for every rate.
+	 */
+	ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
+	if (ret < 0) {
+		printk("\n*** SWEEP FAILED: restore to %u Hz failed (%d); audio is DOWN ***\n\n",
+		       (unsigned int)AUDIO_SAMPLE_RATE, ret);
+		return ret;
+	}
+
+	/*
+	 * And measure it, rather than trusting the return codes that just came back
+	 * from the same driver the sweep is supposed to be validating.
+	 */
+	ret = sweep_measure_rate(AUDIO_SAMPLE_RATE);
+	if (ret < 0) {
+		printk("\n*** SWEEP FAILED: restored to %u Hz but the frame clock does not "
+		       "agree (%d); audio is DOWN ***\n\n",
+		       (unsigned int)AUDIO_SAMPLE_RATE, ret);
+		return ret;
+	}
+
+	ready = true;
+
+	if (bad > 0U) {
+		printk("\n*** SWEEP FAILED: %u of %u rate(s) ***\n\n", bad,
+		       (unsigned int)ARRAY_SIZE(sweep_rates));
+		return -EIO;
+	}
+
+	printk("\n=== SWEEP PASSED: %u of %u rate(s), restored to %u Hz and measured ===\n\n",
+	       (unsigned int)ARRAY_SIZE(sweep_rates), (unsigned int)ARRAY_SIZE(sweep_rates),
+	       (unsigned int)AUDIO_SAMPLE_RATE);
+
+	return 0;
 }
 
 #endif /* CONFIG_APP_AUDIO_RATE_SWEEP */
