@@ -11,6 +11,23 @@ description: |
   The codec can take its internal master clock either from a dedicated MCLK
   pin or from the I2S bit clock.
 
+  This driver supports the second of those only: it programs the codec to
+  derive its master clock from BCLK. With a 16-bit stereo I2S frame that puts
+  the master clock at 256 * Fs at every sample rate, so one set of clock
+  registers serves 8 kHz through 48 kHz. Consequently:
+
+  - audio_codec_configure() requires audio_codec_cfg.mclk_freq to be 0. That
+    field describes the clock fed to the codec's MCLK *input* pin, and this
+    driver never uses that pin, so any non-zero value would be describing a
+    clock that is on no pin at all. It is rejected with -ENOTSUP rather than
+    accepted and ignored.
+  - Word sizes other than 16 bits are rejected for the same reason: a 24-bit
+    frame carries 48 bit clocks and a 32-bit frame 64, which would put the
+    master clock at 384 * Fs and 512 * Fs and silently mis-clock the codec.
+
+  A board that wires a real MCLK into the codec would need register 0x01 bit 7
+  cleared and its own divider values, which this driver does not implement.
+
 compatible: "everest,es8311"
 
 include: [i2c-device.yaml]

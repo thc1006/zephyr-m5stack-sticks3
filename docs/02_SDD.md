@@ -284,9 +284,17 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   (the LCD rail). The amp is driven high ONLY for the duration of a beep
   (anti-pop, speaker muted at rest). The mic and speaker share the L3B rail
   (PYG2), so capture needs L3B powered (already up for the LCD).
+- Clock: the codec derives its master clock from BCLK, not from an MCLK pin (the
+  board does not wire one). With a 16-bit stereo frame that is 256 * Fs at every
+  rate, so one register set serves 8 kHz - 48 kHz. The driver therefore rejects a
+  non-zero `mclk_freq` (it would describe a clock on no pin) and word sizes other
+  than 16 bits (24- or 32-bit frames would put the master clock at 384 * Fs or
+  512 * Fs and silently mis-clock the codec). Both constraints are in the binding.
 - Test: `tests/drivers/audio/es8311` (native_sim ztest, 28/28) covers chip-ID
-  read, the playback and capture configure sequences + write ordering,
-  volume/mute, unsupported-route/format rejection, and I2C-error propagation.
+  read (a foreign id is fatal), the playback and capture configure sequences +
+  write ordering, the route transitions (the unused converter is powered DOWN),
+  a failed `configure()` leaving no route, volume/mute,
+  unsupported-route/format rejection, and I2C-error propagation.
 
 ### 4.10 BLE telemetry (gated `CONFIG_APP_BLE`)
 

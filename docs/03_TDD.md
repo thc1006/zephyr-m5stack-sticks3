@@ -95,13 +95,24 @@ west build -p always -b native_sim -d build_test \
 ./build_test/zephyr/zephyr.exe
 ```
 
-Result 2026-06-02: 11/11 pass. Grown to 28/28 by the 2026-07-12 driver rewrite. Covers chip-ID read (and the wrong-ID
-rejected-with-ENODEV path), the 16 kHz / 16-bit playback configure sequence + write
-ordering, the capture (ADC) configure sequence for PLAYBACK_CAPTURE and the
-capture-only route (ADC powered, DAC left untouched), volume/mute set,
-unsupported-route/format/property rejection, and I2C-error propagation. The ADC
-register values are reference-derived and pin the driver contract; they are
-silicon-validated at HW-016 (below).
+Result 2026-06-02: 11/11 pass. Grown to 28/28 by the 2026-07-12 driver rewrite. Covers chip-ID read (a foreign chip id
+is rejected with `-ENODEV` and the device is left not-ready), the 16 kHz / 16-bit
+playback configure sequence + write ordering, the capture (ADC) configure sequence,
+**the route transitions** (a route programs BOTH directions and powers the one it
+does not carry DOWN - the earlier test asserted that a capture-only route left the
+DAC *untouched*, which was not a test of correct behaviour but a pin holding the bug
+in place: register 0x00 does not reset the register file, so a DAC a previous route
+powered up stayed up), **a failed `configure()` leaving no route** (the I2C failure
+is walked across every transfer, not just the first, and the driver must then write
+nothing), every supported sample rate emitting an identical clock-register set, the
+rejected rates / word sizes / non-zero `mclk_freq`, volume/mute set,
+unsupported-route/format/property rejection, `apply_properties()` holding its lock
+across its writes, and I2C-error propagation. The route-power and chip-id cases are
+**mutation-tested**: back either fix out of the driver and exactly the matching case
+goes red. The ADC register values are reference-derived and pin the driver contract;
+they are silicon-validated at HW-016, and the route-transition values at HW-019
+(pending - until then they have only been checked against an emulator that cannot
+disagree with them).
 
 Honesty limits: each emulator is a dumb byte-store, NOT an independent oracle —
 it cannot catch a register *meaning* error shared by driver+emulator (mitigated
