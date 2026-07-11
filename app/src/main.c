@@ -225,6 +225,13 @@ int main(void)
 	ui_init();
 #ifdef CONFIG_APP_AUDIO
 	(void)audio_init();
+#ifdef CONFIG_APP_AUDIO_RATE_SWEEP
+	/*
+	 * Driver validation, before any page can claim the codec. Blocks for a few
+	 * seconds and restores the app's own audio configuration when it returns.
+	 */
+	audio_rate_sweep();
+#endif
 #endif
 #ifdef CONFIG_APP_BLE
 	(void)ble_init();

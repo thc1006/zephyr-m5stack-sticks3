@@ -104,6 +104,17 @@ uint16_t audio_rec_peak(void);
 /* Length of the held clip in milliseconds (0 if nothing is recorded). */
 uint32_t audio_rec_len_ms(void);
 
+#ifdef CONFIG_APP_AUDIO_RATE_SWEEP
+/*
+ * Hardware validation for the ES8311 driver: reprogram I2S + the codec at every
+ * sample rate the driver claims to support, read the clock registers back off
+ * the chip, and play a tone through the speaker while capturing it on the mic.
+ * Prints one line per rate and restores the application's own configuration
+ * before returning. Blocks for a few seconds; call it once, from main.
+ */
+void audio_rate_sweep(void);
+#endif
+
 #endif /* CONFIG_APP_AUDIO */
 
 #endif /* M5STICKS3_AUDIO_H */

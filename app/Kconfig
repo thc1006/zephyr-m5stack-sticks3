@@ -45,6 +45,24 @@ config APP_AUDIO
 	  unchanged; enable it via -DEXTRA_CONF_FILE=overlay-audio.conf, which
 	  turns on the codec, I2S, and DMA Kconfigs.
 
+config APP_AUDIO_RATE_SWEEP
+	bool "ES8311 sample-rate sweep at boot (driver validation)"
+	depends on APP_AUDIO
+	default n
+	help
+	  Run a one-shot sample-rate sweep right after audio_init(): for each rate
+	  the ES8311 driver claims to support (8 kHz to 48 kHz), reprogram I2S and
+	  the codec, read the clock registers back off the chip over I2C, and play
+	  a tone through the speaker while capturing it on the microphone. One line
+	  per rate is printed with the register verdict and the captured level.
+
+	  This exists to hardware-validate the driver's claim that one register set
+	  serves every sample rate (the codec's master clock is derived from BCLK,
+	  so it is 256 * Fs at every rate and the divider chain is a pure ratio).
+
+	  It is a bring-up and validation aid, not part of the demo: leave it off
+	  for normal builds.
+
 config APP_AUDIO_REC_SECONDS
 	int "Record->playback clip length (seconds)"
 	depends on APP_AUDIO
