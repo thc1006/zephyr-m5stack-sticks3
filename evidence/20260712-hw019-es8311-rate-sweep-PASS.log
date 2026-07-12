@@ -1,312 +1,517 @@
-# HW-019 (final) - ES8311 rate sweep + route transitions, with the SAFETY fixes.
-# 2026-07-12, StickS3 on COM35 (ESP32-S3-PICO-1-N8R8, MAC 98:88:e0:0e:dc:64).
+# HW-019 (FINAL) - ES8311 rate sweep + route transitions, re-run against the CORRECT
+# I2S patch. 2026-07-12, COM35 (a 3rd physical StickS3, MAC 98:88:e0:0e:dc:64).
 #
-# This is the run that validates the fixes an adversarial review found AFTER the
-# first PASS, and it is the one that counts. Three things changed in the driver:
+# The earlier HW-019 PASS was obtained against the NAIVE i2s fix, which HW-021 later
+# showed corrupts the mem-slab free list. It did not fire during that run, but evidence
+# taken on a driver that is scribbling on freed memory is not evidence I will stand on.
+# This is the same sweep against the quiesce fix (evidence/20260712-hw021-*-PASS.log).
 #
-#   1. stop_output() is no longer gated on the route. It was a FAIL-OPEN: a
-#      configure() that dies on its first register write changes nothing on the
-#      chip -- an old route's DAC still powered, still unmuted, still driving the
-#      amplifier -- but the route cache had already been cleared, so the caller
-#      reaching for the off switch found it doing nothing at all. Muting is a
-#      safety operation and is idempotent; it is never gated now. UNMUTING still
-#      is. And the ztest that asserted "writes nothing after a failed configure"
-#      was not testing correct behaviour, it was pinning the fail-open.
-#
-#   2. configure() quiesces BEFORE it moves the clock tree: both serial ports
-#      muted, the DAC muted and powered down, and only then the clock manager and
-#      the dividers. Gating the clock of a DAC that is still powered and unmuted
-#      does not silence it, it freezes the modulator on the last sample -- a DC
-#      step into the amplifier.
-#
-#   3. The ADC is NOT power-cycled in that quiesce, only muted at its serial port.
-#      It drives no speaker and cannot pop, and power-cycling it on every
-#      configure cost a DC offset: measured, the capture noise floor rose from
-#      about 70 counts to about 500. Muting the port is the whole of what it needs.
-#
-# WHAT IS DELIBERATELY NOT HERE: the register-0x00 software reset.
-#
-# The binding claimed the driver "relies on the software reset in register 0x00".
-# It did not -- CSM_ON is a different bit in the same register and resets nothing --
-# so the claim was false and the review was right to call it a blocker. The fix
-# looked obvious: implement the reset the reference drivers use. On this hardware
-# it DEAFENS THE ADC:
-#
-#     with the reset      8000  adc=DEAD floor=0    tone_rms=0
-#                        16000  adc=DEAD floor=1    tone_rms=10
-#                        22050  adc=alive floor=6   tone_rms=73
-#                        48000  adc=alive floor=573 tone_rms=15372
-#
-#     without it (below)  8000  adc=alive floor=75  tone_rms=1935
-#                        48000  adc=alive floor=63  tone_rms=14724
-#
-# The captured level tracks the tone's frequency in Hz, not its rate: the tone table
-# is fixed, so at 8 kHz it plays at 220 Hz and at 48 kHz at 1320 Hz. That is a
-# high-pass with a corner near 1 kHz appearing from nowhere. Initialising 0x0B and
-# 0x0C after the reset, as Linux and ESP-ADF both do, does not change it. The
-# registers the driver writes all read back exactly as intended, at every rate.
-#
-# The root cause is not established, so the reset is NOT shipped and the BINDING is
-# corrected to say what the driver actually does and why. Shipping a reset that
-# silently halves the capture bandwidth, to make a sentence in a binding come true,
-# would be the exact failure this project exists to avoid.
-#
-# RESULT below: 9/9 rates PASS, 3/3 routes PASS, restore measured at 16000 Hz, and
-# the noise floor is back where it was (52-129, against 58-94 before any of this).
-#
+# Same numbers, on a driver that is not corrupting memory:
+#   9/9 rates, frame clock measured within 5 Hz of target at every one
+#   (8000/7999 ... 48000/47996), clock registers identical at every rate, ADC alive
+#   at every rate; 3/3 route transitions; restore measured at 16000 Hz.
+#   8 kHz WORKS -- Espressif's undocumented 512 kHz BCLK floor is not a real constraint.
 [?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
 ]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
 --- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
 --- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
 --- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
 ESP-ROM:esp32s3-20210327
+
 Build:Mar 27 2021
+
 rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+
 Saved PC:0x403773aa
+
 SPIWP:0xee
+
 mode:DIO, clock div:1
+
 load:0x3fc90190,len:0x2cec
+
 load:0x40374000,len:0xc17c
+
 load:0x50000000,len:0x24
+
 SHA-256 comparison failed:
-Calculated: 98197c3a30c219e97c3a0a226f3a07ac7517b3bf9e040ada9c32e0a683f32670
+
+Calculated: 6657c8613e831d4cfc98e94a8fd101d3b3de7e0db586b90cae68d6d2515c5b24
+
 Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
 Attempting to boot anyway...
+
 entry 0x4037a924
+
 I (soc_init): ESP Simple boot
-I (soc_init): compile time Jul 12 2026 08:58:11
+
+I (soc_init): compile time Jul 12 2026 20:16:01
+
 W (soc_init): Unicore bootloader
+
 I (soc_init): chip revision: v0.2
+
 I (flash_init): Boot SPI Speed : 80MHz
+
 I (flash_init): SPI Mode       : DIO
+
 I (flash_init): SPI Flash Size : 8MB
+
 I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
 I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
 I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
-I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d4a0h ( 54432)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d4c8h ( 54472)
+
 I (boot): DROM[2C: lma=00020000h vma=3c010000h size=046dch ( 18140)
+
 I (boot): libc heap size 145 kB.
+
 I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
 I (spi_flash): detected chip: gd
+
 I (spi_flash): flash io: dio
+
 *** Booting Zephyr OS build v4.4.0 ***
+
 M5StickS3 Zephyr validation app
+
 Board: m5stack_sticks3
+
 [00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
 [00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
 [00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
 
+
 === ES8311 sample-rate sweep ===
+
 regs  : the clock registers read back off the chip over I2C
+
 lrck  : the frame clock MEASURED against the kernel cycle counter,
+
         which is not derived from the I2S clock
+
 adc   : the microphone noise floor with the amplifier off. A codec
+
         whose clock tree did not lock cannot run its modulator and
+
         returns zeros or a stuck constant here
+
 tone  : the captured level with the amplifier on. Reported, not
+
         asserted: this speaker couples weakly into this microphone.
+
         Judge the speaker by ear; the pitch rises across the sweep
+
         because the tone table was made for 16 kHz
 
+
   sweep.8000: slab pre-reset  tx=8 rx=8
+
   sweep.8000: reset
+
   sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.8000: cfg-tx
+
   sweep.8000: cfg-codec
+
   sweep.8000: cfg-rx
+
   sweep.8000: regs
+
   sweep.8000: prequeue
+
   sweep.8000: start
+
   sweep.8000: warmup
+
   sweep.8000: baseline
+
   sweep.8000: amp
+
   sweep.8000: settle
+
   sweep.8000: timed
+
   sweep.8000: stop
-SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=75    [-167..190] tone_rms=1935   peak=17039  PASS
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=83    [-137..201] tone_rms=781    peak=6367   PASS
+
   sweep.11025: slab pre-reset  tx=8 rx=8
+
   sweep.11025: reset
+
   sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.11025: cfg-tx
+
   sweep.11025: cfg-codec
+
   sweep.11025: cfg-rx
+
   sweep.11025: regs
+
   sweep.11025: prequeue
+
   sweep.11025: start
+
   sweep.11025: warmup
+
   sweep.11025: baseline
+
   sweep.11025: amp
+
   sweep.11025: settle
+
   sweep.11025: timed
+
   sweep.11025: stop
-SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=65    [-112..126] tone_rms=2816   peak=32767  PASS
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=85    [-142..162] tone_rms=1848   peak=23123  PASS
+
   sweep.12000: slab pre-reset  tx=8 rx=8
+
   sweep.12000: reset
+
   sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.12000: cfg-tx
+
   sweep.12000: cfg-codec
+
   sweep.12000: cfg-rx
+
   sweep.12000: regs
+
   sweep.12000: prequeue
+
   sweep.12000: start
+
   sweep.12000: warmup
+
   sweep.12000: baseline
+
   sweep.12000: amp
+
   sweep.12000: settle
+
   sweep.12000: timed
+
   sweep.12000: stop
-SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=77    [-160..99] tone_rms=1163   peak=12938  PASS
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=89    [-167..198] tone_rms=2620   peak=28379  PASS
+
   sweep.16000: slab pre-reset  tx=8 rx=8
+
   sweep.16000: reset
+
   sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.16000: cfg-tx
+
   sweep.16000: cfg-codec
+
   sweep.16000: cfg-rx
+
   sweep.16000: regs
+
   sweep.16000: prequeue
+
   sweep.16000: start
+
   sweep.16000: warmup
+
   sweep.16000: baseline
+
   sweep.16000: amp
+
   sweep.16000: settle
+
   sweep.16000: timed
+
   sweep.16000: stop
-SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=129   [-197..117] tone_rms=3685   peak=31064  PASS
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=89    [-146..237] tone_rms=1404   peak=9674   PASS
+
   sweep.22050: slab pre-reset  tx=8 rx=8
+
   sweep.22050: reset
+
   sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.22050: cfg-tx
+
   sweep.22050: cfg-codec
+
   sweep.22050: cfg-rx
+
   sweep.22050: regs
+
   sweep.22050: prequeue
+
   sweep.22050: start
+
   sweep.22050: warmup
+
   sweep.22050: baseline
+
   sweep.22050: amp
+
   sweep.22050: settle
+
   sweep.22050: timed
+
   sweep.22050: stop
-SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=84    [-101..180] tone_rms=4210   peak=32767  PASS
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=92    [-204..99] tone_rms=3510   peak=32767  PASS
+
   sweep.24000: slab pre-reset  tx=8 rx=8
+
   sweep.24000: reset
+
   sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.24000: cfg-tx
+
   sweep.24000: cfg-codec
+
   sweep.24000: cfg-rx
+
   sweep.24000: regs
+
   sweep.24000: prequeue
+
   sweep.24000: start
+
   sweep.24000: warmup
+
   sweep.24000: baseline
+
   sweep.24000: amp
+
   sweep.24000: settle
+
   sweep.24000: timed
+
   sweep.24000: stop
-SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=69    [-62..90] tone_rms=3420   peak=27892  PASS
+
+SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=100   [-166..123] tone_rms=2294   peak=15464  PASS
+
   sweep.32000: slab pre-reset  tx=8 rx=8
+
   sweep.32000: reset
+
   sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.32000: cfg-tx
+
   sweep.32000: cfg-codec
+
   sweep.32000: cfg-rx
+
   sweep.32000: regs
+
   sweep.32000: prequeue
+
   sweep.32000: start
+
   sweep.32000: warmup
+
   sweep.32000: baseline
+
   sweep.32000: amp
+
   sweep.32000: settle
+
   sweep.32000: timed
+
   sweep.32000: stop
-SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=70    [-141..148] tone_rms=5926   peak=32767  PASS
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=97    [-176..128] tone_rms=4158   peak=13566  PASS
+
   sweep.44100: slab pre-reset  tx=8 rx=8
+
   sweep.44100: reset
+
   sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.44100: cfg-tx
+
   sweep.44100: cfg-codec
+
   sweep.44100: cfg-rx
+
   sweep.44100: regs
+
   sweep.44100: prequeue
+
   sweep.44100: start
+
   sweep.44100: warmup
+
   sweep.44100: baseline
+
   sweep.44100: amp
+
   sweep.44100: settle
+
   sweep.44100: timed
+
   sweep.44100: stop
-SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=52    [-109..107] tone_rms=9884   peak=32767  PASS
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=112   [-120..115] tone_rms=9933   peak=19248  PASS
+
   sweep.48000: slab pre-reset  tx=8 rx=8
+
   sweep.48000: reset
+
   sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
   sweep.48000: cfg-tx
+
   sweep.48000: cfg-codec
+
   sweep.48000: cfg-rx
+
   sweep.48000: regs
+
   sweep.48000: prequeue
+
   sweep.48000: start
+
   sweep.48000: warmup
+
   sweep.48000: baseline
+
   sweep.48000: amp
+
   sweep.48000: settle
+
   sweep.48000: timed
+
   sweep.48000: stop
-SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=63    [-177..67] tone_rms=14724  peak=32767  PASS
+
+SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=122   [-240..207] tone_rms=14123  peak=32767  PASS
+
 
 === sweep: 0 of 9 rate(s) FAILED ===
 
+
 -- route transitions: the unused converter must power DOWN --
+
 SWEEP route playback  PASS
+
 SWEEP route capture   PASS
+
 SWEEP route both      PASS
+
 === routes: 0 of 3 FAILED ===
+
 SWEEP restore: lrck measured 16000 Hz, want 16000  OK
 
+
 === SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
     What that means: the clock registers land on the chip, the frame clock
+
     is right, the ADC is running, and the route registers are what the
+
     driver intended. What it does NOT mean: nothing here measures audio
+
     quality or the codec's internal OSR. The speaker is judged by ear.
 
-*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
-alive uptime_ms=10632 page=0 KEY1=1 KEY2=1 bat=3966 soc=93 vin=5148 imu=1 accel=[0.149043 0.055068 9.777020]
-alive uptime_ms=11683 page=0 KEY1=1 KEY2=1 bat=3984 soc=95 vin=5148 imu=1 accel=[0.159817 0.041301 9.753078]
-alive uptime_ms=12693 page=0 KEY1=1 KEY2=1 bat=3982 soc=94 vin=5150 imu=1 accel=[0.157423 0.048484 9.756669]
-alive uptime_ms=13704 page=0 KEY1=1 KEY2=1 bat=3980 soc=94 vin=5142 imu=1 accel=[0.181366 0.036512 9.772232]
-alive uptime_ms=14714 page=0 KEY1=1 KEY2=1 bat=3972 soc=93 vin=5154 imu=1 accel=[0.163409 0.034118 9.769239]
-alive uptime_ms=15725 page=0 KEY1=1 KEY2=1 bat=3980 soc=94 vin=5140 imu=1 accel=[0.152036 0.052674 9.785400]
-alive uptime_ms=16736 page=0 KEY1=1 KEY2=1 bat=3976 soc=94 vin=5144 imu=1 accel=[0.140663 0.047286 9.771035]
-alive uptime_ms=17746 page=0 KEY1=1 KEY2=1 bat=3978 soc=94 vin=5144 imu=1 accel=[0.144853 0.048484 9.781809]
-alive uptime_ms=18757 page=0 KEY1=1 KEY2=1 bat=3980 soc=94 vin=5144 imu=1 accel=[0.141860 0.067638 9.770436]
-alive uptime_ms=19767 page=0 KEY1=1 KEY2=1 bat=3972 soc=93 vin=5142 imu=1 accel=[0.143057 0.042498 9.759063]
-alive uptime_ms=20778 page=0 KEY1=1 KEY2=1 bat=3966 soc=93 vin=5148 imu=1 accel=[0.152635 0.022147 9.771035]
-alive uptime_ms=21789 page=0 KEY1=1 KEY2=1 bat=3974 soc=93 vin=5150 imu=1 accel=[0.155627 0.026935 9.763253]
-alive uptime_ms=22799 page=0 KEY1=1 KEY2=1 bat=3978 soc=94 vin=5148 imu=1 accel=[0.171190 0.041301 9.790189]
-alive uptime_ms=23810 page=0 KEY1=1 KEY2=1 bat=3972 soc=93 vin=5152 imu=1 accel=[0.158022 0.047885 9.771035]
-alive uptime_ms=24820 page=0 KEY1=1 KEY2=1 bat=3984 soc=95 vin=5144 imu=1 accel=[0.164007 0.041899 9.760859]
-alive uptime_ms=25831 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5146 imu=1 accel=[0.138867 0.050878 9.761458]
-alive uptime_ms=26842 page=0 KEY1=1 KEY2=1 bat=3980 soc=94 vin=5142 imu=1 accel=[0.159817 0.039505 9.762056]
-alive uptime_ms=27852 page=0 KEY1=1 KEY2=1 bat=3978 soc=94 vin=5140 imu=1 accel=[0.176577 0.040104 9.767443]
-alive uptime_ms=28863 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5146 imu=1 accel=[0.169993 0.055068 9.768640]
-alive uptime_ms=29873 page=0 KEY1=1 KEY2=1 bat=3974 soc=93 vin=5150 imu=1 accel=[0.156226 0.034716 9.758465]
-alive uptime_ms=30884 page=0 KEY1=1 KEY2=1 bat=3982 soc=94 vin=5144 imu=1 accel=[0.153832 0.029928 9.762655]
-alive uptime_ms=31895 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5148 imu=1 accel=[0.157423 0.050279 9.774626]
-alive uptime_ms=32905 page=0 KEY1=1 KEY2=1 bat=3984 soc=95 vin=5148 imu=1 accel=[0.143057 0.067638 9.745895]
-alive uptime_ms=33916 page=0 KEY1=1 KEY2=1 bat=3968 soc=93 vin=5154 imu=1 accel=[0.152036 0.040104 9.769838]
-alive uptime_ms=34926 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5146 imu=1 accel=[0.152635 0.032921 9.774626]
-alive uptime_ms=35937 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5146 imu=1 accel=[0.156824 0.077215 9.757268]
-alive uptime_ms=36948 page=0 KEY1=1 KEY2=1 bat=3984 soc=95 vin=5144 imu=1 accel=[0.150839 0.053272 9.764450]
-alive uptime_ms=37958 page=0 KEY1=1 KEY2=1 bat=3982 soc=94 vin=5146 imu=1 accel=[0.169394 0.052075 9.770436]
-alive uptime_ms=38969 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5146 imu=1 accel=[0.158022 0.017358 9.768640]
-alive uptime_ms=39979 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5146 imu=1 accel=[0.156824 0.074222 9.770436]
-alive uptime_ms=40990 page=0 KEY1=1 KEY2=1 bat=3970 soc=93 vin=5146 imu=1 accel=[0.153233 0.040104 9.765049]
-alive uptime_ms=42001 page=0 KEY1=1 KEY2=1 bat=3970 soc=93 vin=5144 imu=1 accel=[0.171190 0.029928 9.751282]
-alive uptime_ms=43011 page=0 KEY1=1 KEY2=1 bat=3984 soc=95 vin=5144 imu=1 accel=[0.153233 0.041899 9.769838]
-alive uptime_ms=44022 page=0 KEY1=1 KEY2=1 bat=3990 soc=95 vin=5152 imu=1 accel=[0.174183 0.043695 9.773429]
-alive uptime_ms=45032 page=0 KEY1=1 KEY2=1 bat=3986 soc=95 vin=5148 imu=1 accel=[0.140065 0.046089 9.748888]
-alive uptime_ms=46043 page=0 KEY1=1 KEY2=1 bat=3968 soc=93 vin=5146 imu=1 accel=[0.134079 0.037709 9.774028]
-alive uptime_ms=47054 page=0 KEY1=1 KEY2=1 bat=3984 soc=95 vin=5152 imu=1 accel=[0.172387 0.065842 9.773429]
-alive uptime_ms=48064 page=0 KEY1=1 KEY2=1 bat=3980 soc=94 vin=5144 imu=1 accel=[0.146050 0.056864 9.774028]
-alive uptime_ms=49075 page=0 KEY1=1 KEY2=1 bat=3984 soc=95 vin=5140 imu=1 accel=[0.159817 0.067039 9.754873]
 
-[monitor captured 12037 chars; last 0.5s silent]
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+alive uptime_ms=10632 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.855979 0.036512 9.007860]
+
+alive uptime_ms=11682 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[3.850592 0.061054 9.031802]
+
+alive uptime_ms=12692 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.833233 0.071828 9.095251]
+
+alive uptime_ms=13703 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.866753 0.074222 8.987508]
+
+alive uptime_ms=14714 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.866155 0.065842 8.955784]
+
+alive uptime_ms=15724 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.858373 0.050878 9.006064]
+
+alive uptime_ms=16735 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5162 imu=1 accel=[3.845205 0.058659 9.022824]
+
+alive uptime_ms=17745 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[3.845205 0.043096 9.027014]
+
+alive uptime_ms=18756 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.872140 0.120312 8.955784]
+
+alive uptime_ms=19767 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.905062 0.068236 8.985713]
+
+alive uptime_ms=20777 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5154 imu=1 accel=[3.872739 0.045491 8.989304]
+
+alive uptime_ms=21788 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[3.826649 0.044892 9.063526]
+
+alive uptime_ms=22798 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[3.872739 0.055666 9.019831]
+
+alive uptime_ms=23809 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[3.892492 0.064645 8.976135]
+
+alive uptime_ms=24820 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.872739 0.047286 8.997684]
+
+alive uptime_ms=25830 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.869746 0.053272 9.040182]
+
+alive uptime_ms=26841 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[3.846402 0.048484 9.027014]
+
+alive uptime_ms=27851 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[3.866753 0.058659 8.991100]
+
+alive uptime_ms=28862 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.873936 0.051476 9.005465]
+
+alive uptime_ms=29873 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.872739 0.058061 9.033598]
+
+alive uptime_ms=30883 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.842212 0.030527 9.062928]
+
+alive uptime_ms=31894 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.855380 0.070032 9.020430]
+
+alive uptime_ms=32904 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.845803 0.056864 9.012050]
+
+alive uptime_ms=33915 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[3.901470 0.077215 8.948003]
+
+alive uptime_ms=34926 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.866155 0.068835 9.014444]
+
+alive uptime_ms=35936 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.869746 0.060455 9.000078]
+
+alive uptime_ms=36947 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.867950 0.065243 8.948601]
+
+alive uptime_ms=37957 page=0 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5156 imu=1 accel=[3.893090 0.058659 8.974938]
+
+alive uptime_ms=38968 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[3.906259 0.072426 8.943813]
+
+alive uptime_ms=39979 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.848198 0.057462 9.049161]
+
+alive uptime_ms=40989 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5164 imu=1 accel=[3.869746 0.070631 8.977931]
+
+alive uptime_ms=42000 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.873337 0.068236 9.007261]
+
+alive uptime_ms=43010 page=0 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5162 imu=1 accel=[3.854183 0.057462 9.041379]
+
+alive uptime_ms=44021 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[3.886506 0.049681 8.989903]
+
+alive uptime_ms=45032 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.891893 0.033519 8.982720]
+
+alive uptime_ms=46042 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[3.926610 0.061054 8.907300]
+
+alive uptime_ms=47053 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.860169 0.083799 8.981523]
+
+alive uptime_ms=48063 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[3.922420 0.008379 8.915081]
+
+alive uptime_ms=49074 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.884710 0.035315 9.016838]
+
+
+[monitor captured 12067 chars; last 0.5s silent]
