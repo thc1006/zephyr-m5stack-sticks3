@@ -280,13 +280,29 @@ static int audio_configure_chain(uint32_t rate)
 		return ret;
 	}
 
-	/* Safe low volume; leave the codec configured but the amp OFF. */
+	/*
+	 * Safe low volume; leave the codec configured but the amp OFF.
+	 *
+	 * Both results are propagated. This used to log a warning and continue, and then
+	 * discard apply_properties() outright -- so an I2C failure here left the volume
+	 * and the mute unapplied while the caller was told the chain was configured, and
+	 * the rate sweep's restore would have reported success with the DAC at whatever
+	 * gain the last rate left it. That is the same swallowed-return-value shape this
+	 * branch exists to remove; it does not get an exception because it is only the
+	 * volume.
+	 */
 	ret = audio_codec_set_property(codec_dev, AUDIO_PROPERTY_OUTPUT_VOLUME,
 				       AUDIO_CHANNEL_ALL, vol);
 	if (ret < 0) {
-		LOG_WRN("set volume failed (%d); continuing", ret);
+		LOG_ERR("set volume failed (%d)", ret);
+		return ret;
 	}
-	(void)audio_codec_apply_properties(codec_dev);
+
+	ret = audio_codec_apply_properties(codec_dev);
+	if (ret < 0) {
+		LOG_ERR("apply_properties failed (%d)", ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -1147,6 +1163,19 @@ static int sweep_io(size_t *frames)
 		return ret;
 	}
 
+	/*
+	 * The frame-clock measurement divides a known number of blocks by the elapsed
+	 * time, and "a block" means BLOCK_FRAMES frames. Nothing checked that the driver
+	 * actually returned a full one. A short read would make every block worth less
+	 * audio time than assumed and the measured rate would come out low, with no sign
+	 * of why -- which is exactly how the last measurement bug presented.
+	 */
+	if (sz != BLOCK_SIZE) {
+		printk("SWEEP i/o: short block, %u bytes of %u\n", (unsigned int)sz,
+		       (unsigned int)BLOCK_SIZE);
+		return -EIO;
+	}
+
 	*frames = sz / AUDIO_FRAME_BYTES;
 	audio_deinterleave(sweep_rx, *frames, AUDIO_MIC_SLOT, sweep_mono);
 
@@ -1196,6 +1225,7 @@ static int sweep_one(uint32_t rate)
 	int16_t base_hi = 0;
 	bool adc_alive = false;
 	bool rate_ok = false;
+	uint32_t alive_blocks = 0U;
 	int regs_bad = 0;
 	size_t frames = 0U;
 	int ret;
@@ -1331,11 +1361,18 @@ static int sweep_one(uint32_t rate)
 			base_rms = rms;
 		}
 		if (hi != lo) {
-			adc_alive = true;
+			/*
+			 * A single varying block used to be enough to call the ADC
+			 * alive, which one stale DMA buffer or two alternating garbage
+			 * samples would satisfy. Count them, and require most.
+			 */
+			alive_blocks++;
 			base_lo = lo;
 			base_hi = hi;
 		}
 	}
+
+	adc_alive = (alive_blocks * 4U) >= (SWEEP_BASELINE_BLOCKS * 3U);
 
 	SWEEP_STEP(rate, "amp");
 	/* The clocks are already running, so raising the amplifier here cannot pop. */
@@ -1690,7 +1727,11 @@ int audio_rate_sweep(void)
 		return -EIO;
 	}
 
-	printk("\n=== SWEEP PASSED: %u rates + 3 routes, restored to %u Hz and measured ===\n\n",
+	printk("\n=== SWEEP PASSED: %u rates + 3 routes, restored to %u Hz and measured ===\n"
+	       "    What that means: the clock registers land on the chip, the frame clock\n"
+	       "    is right, the ADC is running, and the route registers are what the\n"
+	       "    driver intended. What it does NOT mean: nothing here measures audio\n"
+	       "    quality or the codec's internal OSR. The speaker is judged by ear.\n\n",
 	       (unsigned int)ARRAY_SIZE(sweep_rates), (unsigned int)AUDIO_SAMPLE_RATE);
 
 	return 0;

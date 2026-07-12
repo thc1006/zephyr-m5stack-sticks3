@@ -248,9 +248,9 @@ int main(void)
 	 * person skimming -- would see a healthy boot and miss it.
 	 */
 	if (audio_rate_sweep() < 0) {
-		printk("*** ES8311 RATE SWEEP FAILED ***\n");
+		printk("*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP FAILED ***\n");
 	} else {
-		printk("*** ES8311 RATE SWEEP PASSED ***\n");
+		printk("*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***\n");
 	}
 #endif
 #endif
