@@ -290,7 +290,7 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   non-zero `mclk_freq` (it would describe a clock on no pin) and word sizes other
   than 16 bits (24- or 32-bit frames would put the master clock at 384 * Fs or
   512 * Fs and silently mis-clock the codec). Both constraints are in the binding.
-- Test: `tests/drivers/audio/es8311` (native_sim ztest, 28/28) covers chip-ID
+- Test: `tests/drivers/audio/es8311` (native_sim ztest, 29/29) covers chip-ID
   read (a foreign id is fatal), the playback and capture configure sequences +
   write ordering, the route transitions (the unused converter is powered DOWN),
   a failed `configure()` leaving no route, volume/mute,

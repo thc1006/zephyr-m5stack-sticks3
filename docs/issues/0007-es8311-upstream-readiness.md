@@ -1,7 +1,11 @@
 # Issue #7 — ES8311 upstream readiness checklist
 
-Tracks the prep for contributing `drivers/audio/es8311.c` (+ binding + ztest)
-to Zephyr upstream. **Strategy as of 2026-07-11: GO — submit our own clean, split
+Tracks the prep for contributing `drivers/audio/es8311.c` (+ Kconfig + binding +
+a `build_all` node) to Zephyr upstream. The **ztest and the emulator are NOT in the
+first PR** - see "What upstream actually requires" below; they are offered as a
+follow-up. The opening of this file used to say "+ ztest" while four sections down it
+said not to ship one, and a reader following it in order would have reached the
+opposite conclusion from the one at the top. **Strategy as of 2026-07-11: GO — submit our own clean, split
 PR.** ADR 0004 originally said "do not compete, engage the live upstream effort".
 Those PRs are closed, unmerged, and no open successor was found, so ADR 0004's
 own "fresh clean-split PR" fallback applies (see its 2026-07-11 update). What is
@@ -69,7 +73,7 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **28/28**
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **29/29**
       (was 11), covering every supported rate, the rejected rates and word sizes,
       the MCLK validation, the input volume/mute round trip, volume clamping and
       I2C error propagation.
@@ -83,11 +87,20 @@ Two things to watch while the PR is open:
       in the authorship or the DCO chain. This is a considered position, not an
       oversight: Zephyr's contribution guidelines have had an "AI Coding Assistants"
       section since PR #104903 (2026-03-06), and it *recommends* an `Assisted-by:`
-      trailer. The modal verb is **should**, not must; nothing in
-      `check_compliance.py` looks for it; and the section's one hard rule points the
-      same way we do, that an AI agent **must not** add a `Signed-off-by`. Omitting
-      the trailer is not a policy violation and cannot be a reviewer's blocker. The
-      human author reviews every line and signs off.
+      trailer. The modal verb is **should**, not must, and nothing in
+      `check_compliance.py` looks for it, so omitting it is not a CI failure and not a
+      policy violation. It is **not** true that a reviewer therefore cannot raise it:
+      `should` is guidance, a reviewer may ask for it, and an earlier version of this
+      file claimed otherwise, which overstated the case. The hard rules are the ones we
+      keep absolutely: an AI agent **must not** add a `Signed-off-by`, no AI is
+      represented as a legal co-author, and the human author reviews every line and
+      carries the sole DCO sign-off. If a Zephyr reviewer asks for an `Assisted-by:`
+      trailer, add it.
+
+      Note also what the mechanical check does and does not cover: `check_es8311_readiness.sh`
+      greps the SOURCE files for AI footers. Attribution is a **commit trailer**, and
+      nothing here checks commit messages, so this tick is a human claim about the
+      commits, not a machine-verified one. Said plainly rather than implied.
 - [x] **Hardware validation of the full rate sweep (HW-019) — DONE, 2026-07-12, PASS.**
       All nine rates measured on a physical StickS3 (a third board, independent of the
       ones used for HW-006/HW-016): the frame clock is timed against the kernel cycle
