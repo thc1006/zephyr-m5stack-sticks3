@@ -83,6 +83,13 @@ fi
 
 grep -q 'everest,es8311' "$ov" || { echo "FAIL: the overlay node did not land" >&2; exit 1; }
 
+# Source files must not be executable: checkpatch fails with EXECUTE_PERMISSIONS, and
+# this repo lives on a Windows filesystem whose mount reports every file as 755, so a
+# plain cp carries that across. Caught by checkpatch -g on the real commit; the CI job
+# runs checkpatch -f, which does not look at the mode.
+chmod 644 "$Z/drivers/audio/es8311.c" "$Z/drivers/audio/Kconfig.es8311" \
+	"$Z/dts/bindings/audio/everest,es8311.yaml"
+
 echo
 echo "grafted. Build it with:"
 echo "  west twister -p native_sim -T tests/drivers/build_all/audio --inline-logs"
