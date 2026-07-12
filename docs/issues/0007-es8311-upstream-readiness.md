@@ -104,7 +104,7 @@ Two things to watch while the PR is open:
 - [x] **Hardware validation of the full rate sweep (HW-019) — DONE, 2026-07-12, PASS.**
       All nine rates measured on a physical StickS3 (a third board, independent of the
       ones used for HW-006/HW-016): the frame clock is timed against the kernel cycle
-      counter and lands within 5 Hz of target at every rate (8000/7999 ... 48000/47995),
+      counter and lands within 5 Hz of target at every rate (8000/7999 ... 48000/47996),
       the clock registers read back identical at every rate, and the ADC is alive at
       every rate. All three route transitions read back correctly on the real part.
       **8 kHz works** (7999 Hz measured), so Espressif's undocumented 512 kHz BCLK floor
@@ -116,8 +116,15 @@ Two things to watch while the PR is open:
       `i2s_esp32_{rx,tx}_stop_transfer()` drop the DMA's in-flight mem-slab block without
       freeing it, so every START/DROP leaks one block per direction, and `i2s_buf_write()`
       allocates with `K_FOREVER`, which turns an exhausted slab into a silent, unkillable
-      block. `scripts/patch_zephyr_i2s_leak.sh` fixes it and is hardware-proved. It does
-      not touch the ES8311 driver and does not gate this submission.
+      block. **And the obvious fix for it is wrong** — simply handing the block back
+      corrupts the mem-slab free list, because on the GDMA path `*_stop_transfer()` stops
+      the DMA channel and never the I2S unit feeding it, so the block is still being
+      written when it goes back on the list. `scripts/patch_zephyr_i2s_leak.sh` is the fix
+      that actually works (quiesce the unit first); HW-021 is the proof, and zephyr issue
+      #113310 / PR #113311 is where it went. None of it touches the ES8311 driver and none
+      of it gates this submission — but the sweep above was **re-run** against the correct
+      fix, because evidence collected on a driver that is scribbling on freed memory is
+      not evidence worth having, however green it looked.
 
 ## What upstream actually requires (checked against origin/main, 2026-07-12)
 
