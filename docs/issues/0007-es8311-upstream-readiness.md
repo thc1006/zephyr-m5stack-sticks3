@@ -88,15 +88,23 @@ Two things to watch while the PR is open:
       same way we do, that an AI agent **must not** add a `Signed-off-by`. Omitting
       the trailer is not a policy violation and cannot be a reviewer's blocker. The
       human author reviews every line and signs off.
-- [ ] **Hardware validation of the full rate sweep (HW-019) — PENDING.** Only
-      16 kHz is hardware-verified today. `CONFIG_APP_AUDIO_RATE_SWEEP` reprograms
-      I2S and the codec at each supported rate, reads the clock registers back off
-      the chip over I2C, and plays a tone while capturing it on the microphone.
-      **8 kHz is the one rate at risk**: both Espressif reference drivers
-      special-case it (x4 instead of x8) claiming BCLK has to be at least 512 kHz.
-      The datasheet does not say that, Linux contradicts it, and Espressif's own
-      11.025 kHz row (x8 at 352.8 kHz) contradicts it too. If it fails on hardware,
-      drop `8000` from `es8311_rates[]` before submitting.
+- [x] **Hardware validation of the full rate sweep (HW-019) — DONE, 2026-07-12, PASS.**
+      All nine rates measured on a physical StickS3 (a third board, independent of the
+      ones used for HW-006/HW-016): the frame clock is timed against the kernel cycle
+      counter and lands within 5 Hz of target at every rate (8000/7999 ... 48000/47995),
+      the clock registers read back identical at every rate, and the ADC is alive at
+      every rate. All three route transitions read back correctly on the real part.
+      **8 kHz works** (7999 Hz measured), so Espressif's undocumented 512 kHz BCLK floor
+      is not a real constraint here and `8000` stays in `es8311_rates[]`. The sweep also
+      restores 16 kHz and measures it before handing the device back.
+      Evidence: `evidence/20260712-hw019-es8311-rate-sweep-PASS.log`.
+
+      The run also found a **real bug in Zephyr's ESP32 I2S driver** — not in the codec:
+      `i2s_esp32_{rx,tx}_stop_transfer()` drop the DMA's in-flight mem-slab block without
+      freeing it, so every START/DROP leaks one block per direction, and `i2s_buf_write()`
+      allocates with `K_FOREVER`, which turns an exhausted slab into a silent, unkillable
+      block. `scripts/patch_zephyr_i2s_leak.sh` fixes it and is hardware-proved. It does
+      not touch the ES8311 driver and does not gate this submission.
 
 ## What upstream actually requires (checked against origin/main, 2026-07-12)
 
