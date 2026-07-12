@@ -1900,6 +1900,8 @@ int audio_i2s_stress(void)
 	unsigned int corrupt_at = 0U;
 	unsigned int underruns = 0U;
 	unsigned int stops = 0U;
+	unsigned int stops_dry = 0U; /* graceful STOPs that drained NOTHING */
+	unsigned int dry_at = 0U;
 	unsigned int canary_bad = 0U;
 	unsigned int done = 0U;
 	int ret;
@@ -2059,6 +2061,37 @@ int audio_i2s_stress(void)
 				       (tail == 1U) ? "" : "s");
 			}
 			stops++;
+
+			/*
+			 * ASSERT IT. A graceful STOP that drains NOTHING is a failure, and
+			 * this line is the only thing in the harness that can see it.
+			 *
+			 * The RX callback's STOPPING branch ALWAYS k_msgq_put()s its final
+			 * block before it goes to rx_disable. So a tail read that finds the
+			 * queue empty means that branch never ran: the RX DMA never finished
+			 * the block it was holding. On this SoC that is exactly what happens
+			 * when the I2S TX unit is stopped, because the TX unit is the source
+			 * of the shared bit clock -- the clock dies with TX and the RX side is
+			 * stranded in I2S_STATE_STOPPING for good.
+			 *
+			 * THE SLAB CENSUS CANNOT SEE THAT. Nothing leaks and nothing is freed
+			 * twice; the stream simply stops existing. Worse, a stranded RX also
+			 * means the STOPPING queue hand-off never executes, so the OTHER bug
+			 * on this path is masked too. Two defects, hiding each other, behind a
+			 * flat 8/8 slab.
+			 *
+			 * That is not hypothetical. This harness ran 100 cycles against a
+			 * driver with BOTH bugs in it and printed STRESS PASSED. The only
+			 * thing that caught it was a human comparing "STOP drained 0 tail
+			 * blocks" against stock Zephyr's "drained 1" by eye. A test that
+			 * prints the evidence and does not check it is not a test.
+			 */
+			if (tail == 0U) {
+				stops_dry++;
+				if (dry_at == 0U) {
+					dry_at = i;
+				}
+			}
 		}
 
 		STRESS_STEP(i, "drop");
@@ -2188,11 +2221,27 @@ restore:
 		return -EIO;
 	}
 
-	printk("\n=== STRESS PASSED: %u cycles -- %u with TX starved on purpose, %u ended\n"
-	       "    with a graceful STOP and a tail read instead of a DROP -- and the slab\n"
-	       "    held %u/%u free the whole way. No leak, and no block freed twice on\n"
-	       "    either the tx_disable path or the STOPPING queue hand-off. ===\n\n",
-	       STRESS_CYCLES, underruns, stops, (unsigned int)BLOCK_COUNT,
+	if (stops_dry != 0U) {
+		printk("\n*** STRESS FAILED: %u of %u graceful STOPs drained NOTHING (first at\n"
+		       "    cycle %u). The RX callback's STOPPING branch always hands its final\n"
+		       "    block to the receive queue before it stops, so an empty tail read\n"
+		       "    means that branch never ran and the RX DMA never finished the block\n"
+		       "    it was holding. On this SoC that is what stopping the I2S TX unit\n"
+		       "    does: the TX unit is the source of the shared bit clock, and the RX\n"
+		       "    side is then stranded in I2S_STATE_STOPPING for good.\n"
+		       "\n"
+		       "    The slab is FLAT and the canary is CLEAN and it is still broken. ***\n\n",
+		       stops_dry, stops, dry_at);
+		return -EIO;
+	}
+
+	printk("\n=== STRESS PASSED: %u cycles -- %u with TX starved on purpose, and %u ended\n"
+	       "    with a graceful I2S_TRIGGER_STOP instead of a DROP. All %u of those\n"
+	       "    drained a tail block (0 came back empty), the slab held %u/%u free the\n"
+	       "    whole way, and the canary was clean. No leak; no block freed twice on\n"
+	       "    the tx_disable path or on the STOPPING queue hand-off; and no stream\n"
+	       "    stranded in STOPPING by a bit clock that stopped with TX. ===\n\n",
+	       STRESS_CYCLES, underruns, stops, stops, (unsigned int)BLOCK_COUNT,
 	       (unsigned int)BLOCK_COUNT);
 
 	return 0;

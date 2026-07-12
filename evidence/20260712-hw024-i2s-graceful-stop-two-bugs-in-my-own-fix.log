@@ -1,31 +1,75 @@
-HW-024  ESP32 I2S: the leak fix I published had TWO bugs of its own, and a
-        DROP-only stress could not see either. This is the run that found them.
+HW-024  ESP32 I2S: the leak fix I published had TWO bugs of its own -- and the harness
+        I built to prove it caught them CAUGHT ONLY ONE. A human caught the other, by
+        eye. This file is the corrected record.
 
-        M5Stack StickS3 (ESP32-S3-PICO-1), Zephyr 4.4.0, 2026-07-12.
-        Upstream: issue #113310, PR #113311 (was: still wrong).
+        M5Stack StickS3 (ESP32-S3-PICO-1), Zephyr 4.4.0, 2026-07-12/13.
+        Upstream: issue #113310, PR #113311.
 
-WHAT THE STRESS COULD NOT SEE
------------------------------
-The old stress ran 100 cycles of configure/START/io/DROP, 20 of them with TX starved.
-It passed, and it was blind: I2S_TRIGGER_DROP goes straight to I2S_STATE_READY under
-irq_lock. I2S_TRIGGER_STOP is the ONLY trigger that ever reaches I2S_STATE_STOPPING --
-and both of the bugs below live on that path.
 
-A test whose input never varies cannot find a defect that only appears when it does.
-That is the same shape as the two earlier withdrawals on this PR.
+READ THIS FIRST: THE FIRST VERSION OF THIS FILE OVERCLAIMED
+------------------------------------------------------------
+It said, of the four-build table below, "the test fails on both of my own bugs. That is
+what makes it a test rather than a demonstration."
 
-So the stress now ends one cycle in three with a graceful STOP and a tail read, instead
-of a DROP. Four builds, one board, one afternoon:
+That was FALSE, and it was published -- in this file, in a commit message, in the body of
+PR #113311, and in a comment to the Espressif area maintainer who had just asked to take
+the fix into his own PR.
 
-    build                                   graceful STOP     mem-slab
-    ------------------------------------------------------------------------------
-    stock upstream Zephyr                   drains 1 block    LEAKS: 8,7,6,5,4...
-    my patch v1 (i2s_hal_tx_stop)           DRAINS NOTHING    flat 8/8
-    my patch v2, part 4 reverted            drains 1 block    CORRUPT: rx=9 of 8
-    my patch v2, complete                   drains 1 block    flat 8/8, canary 0/8
+The harness printed `STOP drained 0 tail blocks` on the i2s_hal_tx_stop build and then
+printed `STRESS PASSED`, because nothing in it ever ASSERTED on that number. `tail` was
+counted, printed, and thrown away; the pass/fail conditions looked only at the mem-slab
+census, the canary, and the cycle count. And the slab census could not possibly see this
+bug: stopping the TX unit kills the shared bit clock, so RX never reaches STOPPING, so
+nothing leaks and nothing is double-freed. Two defects, each hiding the other, behind a
+flat 8/8 slab.
 
-Only the last one is correct, and the test fails on both of my own bugs. That is what
-makes it a test rather than a demonstration.
+What actually caught it was a person reading "drained 0" next to stock Zephyr's
+"drained 1" and asking why. A test that prints the evidence and does not check it is not
+a test, and I said it was one.
+
+The harness now asserts it. Re-measured, and both directions verified below.
+
+
+THE BUG THE OLD HARNESS COULD NOT SEE, AND THE ONE IT COULD
+-----------------------------------------------------------
+    build                                  graceful STOP    mem-slab        verdict
+    ---------------------------------------------------------------------------------
+    stock upstream Zephyr                  drains 1/1       LEAKS 8,7,6...  FAILED
+    my patch v1 (i2s_hal_tx_stop)          DRAINS 0 of 27   flat 8/8        FAILED *
+    my patch v2, RX hand-off removed       drains 1/1       CORRUPT rx=9/8  FAILED
+    my patch v2, complete                  drains 27/27     flat 8/8        PASSED
+
+    * this row is the correction. With the old harness it read PASSED.
+
+The corrected harness's verdict on the tx_stop build, verbatim:
+
+    *** STRESS FAILED: 27 of 27 graceful STOPs drained NOTHING (first at cycle 3).
+        The RX callback's STOPPING branch always hands its final block to the receive
+        queue before it stops, so an empty tail read means that branch never ran and
+        the RX DMA never finished the block it was holding. On this SoC that is what
+        stopping the I2S TX unit does: the TX unit is the source of the shared bit
+        clock, and the RX side is then stranded in I2S_STATE_STOPPING for good.
+
+        The slab is FLAT and the canary is CLEAN and it is still broken. ***
+
+and on the correct driver:
+
+    === STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, and 27 ended with
+        a graceful I2S_TRIGGER_STOP instead of a DROP. All 27 of those drained a tail
+        block (0 came back empty), the slab held 8/8 free the whole way, and the canary
+        was clean. ===
+
+
+WHAT THE OLD STRESS COULD NOT SEE AT ALL
+-----------------------------------------
+The stress that signed off the first version of the fix ran 100 cycles of
+configure/START/io/DROP and passed. I2S_TRIGGER_DROP goes straight to I2S_STATE_READY
+under irq_lock; I2S_TRIGGER_STOP is the only trigger that ever reaches
+I2S_STATE_STOPPING, and BOTH of the bugs below live there. A test whose inputs never vary
+cannot find a defect that only appears when they do.
+
+So the stress now ends one cycle in three with a graceful STOP and a tail read -- and,
+since 2026-07-13, ASSERTS that the tail read returns something.
 
 
 BUG 1 -- I STOPPED THE WRONG UNIT, AND IT KILLED THE BIT CLOCK
@@ -44,8 +88,9 @@ But I did it in BOTH directions "for symmetry", and symmetry is exactly wrong he
 
   -- and it is harmful, because on this SoC the I2S TX unit is what generates the shared
   bit clock. On a full-duplex graceful STOP the TX side stops first; the bit clock dies
-  with it; the RX DMA can then never finish the block it is holding; i2s_esp32_rx_callback()
-  never fires again; and the stream is stranded in I2S_STATE_STOPPING forever.
+  with it; the RX DMA can then never finish the block it is holding;
+  i2s_esp32_rx_callback() never fires again; and the stream is stranded in
+  I2S_STATE_STOPPING forever.
 
 Measured, cycle 3, same code, three drivers:
 
@@ -77,7 +122,7 @@ block that is already on the free list and frees it a second time.
 
 The leak had been covering for this one too.
 
-Measured with part 4 reverted -- the mechanism, step by step, in the census:
+Measured with the RX hand-off removed -- the mechanism, step by step, in the census:
 
     c3.stop      tx=6 rx=7    one RX block in flight, queue empty
     c3.stopped   tx=7 rx=8    rx_stop_transfer() freed the block the QUEUE owns  (7 -> 8)
@@ -102,17 +147,14 @@ fails (kernel/mem_slab.c). That is an implementation detail of the allocator, no
 documented contract. With the hand-off above, that path no longer depends on it.
 
 
-THE CORRECTED PATCH, FOUR PARTS
--------------------------------
-  1. rx_stop_transfer(): stop the I2S RX UNIT (i2s_hal_rx_stop) before dma_stop(), and
-     clear dma_pending in both directions. tx_stop_transfer() is left alone.
-  2. tx_callback(): NULL mem_block after freeing it.
-  3. *_stop_transfer(): return the in-flight block to the slab.
-  4. rx_callback(): NULL mem_block once the QUEUE owns the block.
+AND THE PART WORTH REMEMBERING
+------------------------------
+Bug 1 was found by eye, not by the harness, and the harness then told me -- in capital
+letters, in a log I committed -- that it had found it. Two bugs on the same code path,
+each masking the other, behind a green test.
 
-Result: 100 cycles, 20 with TX starved on purpose, 27 ended with a graceful STOP and a
-tail read, the slab flat at 8/8 free the whole way, and the canary clean -- 0 of 8 blocks
-written to after being handed back.
+The harness now asserts the one thing it was only printing. Both directions are verified
+below: it fails on the tx_stop build and passes on the correct one.
 
 ================================================================================
 1. STOCK upstream Zephyr, no patch. Graceful STOP works; the slab leaks.
@@ -344,8 +386,9 @@ alive uptime_ms=43459 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel
 [monitor captured 9641 chars; last 1.5s silent]
 
 ================================================================================
-2. MY PATCH v1 -- with i2s_hal_tx_stop(). The slab holds, and the graceful STOP is
-   dead: rx frozen at 7, "STOP drained 0 tail blocks", every cycle.
+2. MY PATCH v1 -- with i2s_hal_tx_stop(), against the CORRECTED harness.
+   The slab is flat 8/8 the whole way and the canary is clean. It fails anyway:
+   27 of 27 graceful STOPs drained nothing. This is the run the old harness passed.
 ================================================================================
 *** Booting Zephyr OS build v4.4.0 ***
 
@@ -357,7 +400,7 @@ Board: m5stack_sticks3
 
 [00:00:00.325,000] <inf> gfx: Display ready (135x240)
 
-[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
 
 
 === I2S stress: 100 cycles, TX starved every 5, graceful STOP every 3 ===
@@ -553,97 +596,126 @@ STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches
   final census: tx=8 rx=8 of 8
 
 
-=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, 27 ended
+*** STRESS FAILED: 27 of 27 graceful STOPs drained NOTHING (first at
 
-    with a graceful STOP and a tail read instead of a DROP -- and the slab
+    cycle 3). The RX callback's STOPPING branch always hands its final
 
-    held 8/8 free the whole way. No leak, and no block freed twice on
+    block to the receive queue before it stops, so an empty tail read
 
-    either the tx_disable path or the STOPPING queue hand-off. ===
+    means that branch never ran and the RX DMA never finished the block
 
+    it was holding. On this SoC that is what stopping the I2S TX unit
 
-*** I2S SLAB STRESS PASSED ***
+    does: the TX unit is the source of the shared bit clock, and the RX
 
-alive uptime_ms=22305 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[0.853558 3.744047 8.883956]
-
-alive uptime_ms=23355 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[0.813454 3.776369 8.898322]
-
-alive uptime_ms=24366 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[0.788913 3.785348 8.953988]
-
-alive uptime_ms=25376 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[0.788314 3.805101 8.978530]
-
-alive uptime_ms=26387 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[0.781132 3.798516 8.924060]
-
-alive uptime_ms=27398 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[0.794300 3.769785 8.936630]
-
-alive uptime_ms=28408 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[0.759583 3.817671 8.967755]
-
-alive uptime_ms=29419 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[0.776942 3.785946 8.968354]
-
-alive uptime_ms=30429 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[0.769160 3.822459 8.977931]
-
-alive uptime_ms=31440 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[0.829017 3.775172 8.900117]
-
-alive uptime_ms=32451 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[0.734443 3.840416 8.971347]
-
-alive uptime_ms=33461 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[0.771555 3.802108 8.958178]
-
-alive uptime_ms=34472 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[0.828419 3.791334 8.911490]
-
-alive uptime_ms=35482 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[0.749407 3.829642 8.980325]
-
-alive uptime_ms=36493 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[0.773350 3.807495 8.964763]
-
-alive uptime_ms=37504 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[0.812257 3.782954 8.888744]
-
-alive uptime_ms=38514 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[0.787716 3.782954 8.917476]
-
-alive uptime_ms=39525 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[0.823031 3.750032 8.870787]
-
-alive uptime_ms=40535 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[0.754795 3.830839 8.992895]
-
-alive uptime_ms=41546 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5166 imu=1 accel=[0.842186 3.764997 8.880364]
-
-alive uptime_ms=42557 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[0.729056 3.839818 8.974938]
-
-alive uptime_ms=43567 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[0.827820 3.779961 8.925257]
-
-alive uptime_ms=44578 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[0.850566 3.750032 8.860013]
-
-alive uptime_ms=45588 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[0.731450 3.833233 8.963566]
-
-alive uptime_ms=46599 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[0.794899 3.776369 8.919271]
-
-alive uptime_ms=47610 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5152 imu=1 accel=[0.773949 3.815276 8.961770]
-
-alive uptime_ms=48620 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[0.794899 3.800312 8.937228]
-
-alive uptime_ms=49631 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5166 imu=1 accel=[0.797892 3.768588 8.915680]
-
-alive uptime_ms=50641 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[0.760780 3.827846 8.978530]
-
-alive uptime_ms=51652 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[0.803877 3.797319 8.918673]
-
-alive uptime_ms=52663 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[0.770956 3.795524 9.000677]
-
-alive uptime_ms=53673 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[0.749407 3.849993 8.953988]
-
-alive uptime_ms=54684 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[0.830214 3.735667 8.825296]
-
-alive uptime_ms=55694 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[0.675784 3.869147 9.037189]
-
-alive uptime_ms=56705 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[0.750605 3.812283 8.927053]
-
-alive uptime_ms=57716 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[0.715289 3.826649 8.979727]
-
-alive uptime_ms=58726 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[0.866727 3.747039 8.879167]
+    side is then stranded in I2S_STATE_STOPPING for good.
 
 
-[monitor captured 11450 chars; last 0.5s silent]
+    The slab is FLAT and the canary is CLEAN and it is still broken. ***
+
+
+*** I2S SLAB STRESS FAILED ***
+
+alive uptime_ms=22688 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.607573 0.041899 9.132362]
+
+alive uptime_ms=23739 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.572257 0.041899 9.110813]
+
+alive uptime_ms=24749 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.563279 0.066441 9.107821]
+
+alive uptime_ms=25760 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5160 imu=1 accel=[3.557892 0.027534 9.183240]
+
+alive uptime_ms=26770 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.575250 0.049082 9.092856]
+
+alive uptime_ms=27781 page=0 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5168 imu=1 accel=[3.585426 0.064046 9.122785]
+
+alive uptime_ms=28792 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.600989 0.069433 9.149122]
+
+alive uptime_ms=29802 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.535745 0.056265 9.161093]
+
+alive uptime_ms=30813 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.578842 0.010774 9.144932]
+
+alive uptime_ms=31823 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.605179 0.034716 9.098842]
+
+alive uptime_ms=32834 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.585426 0.062251 9.132960]
+
+alive uptime_ms=33845 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.607573 0.070032 9.101236]
+
+alive uptime_ms=34855 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.585426 0.040702 9.131763]
+
+alive uptime_ms=35866 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[3.606376 0.067638 9.118595]
+
+alive uptime_ms=36876 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.593806 0.061652 9.115602]
+
+alive uptime_ms=37887 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.589616 0.061054 9.130566]
+
+alive uptime_ms=38898 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.602784 0.070631 9.135953]
+
+alive uptime_ms=39908 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.595003 0.068236 9.125179]
+
+alive uptime_ms=40919 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.575849 0.063448 9.133559]
+
+alive uptime_ms=41929 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.602784 0.049681 9.128172]
+
+alive uptime_ms=42940 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5168 imu=1 accel=[3.594404 0.059258 9.147925]
+
+alive uptime_ms=43951 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5168 imu=1 accel=[3.590813 0.056265 9.109616]
+
+alive uptime_ms=44961 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.588419 0.049082 9.107821]
+
+alive uptime_ms=45972 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.577645 0.009577 9.143735]
+
+alive uptime_ms=46982 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.566870 0.036512 9.125179]
+
+alive uptime_ms=47993 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.609369 0.046089 9.120391]
+
+alive uptime_ms=49004 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.596200 0.052674 9.106623]
+
+alive uptime_ms=50014 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.600390 0.038906 9.115003]
+
+alive uptime_ms=51025 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.577645 0.044892 9.134158]
+
+alive uptime_ms=52035 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.592609 0.073025 9.111412]
+
+alive uptime_ms=53046 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5170 imu=1 accel=[3.596799 0.058659 9.113806]
+
+alive uptime_ms=54057 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.586623 0.043096 9.133559]
+
+alive uptime_ms=55067 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.565673 0.046089 9.149720]
+
+alive uptime_ms=56078 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.605179 0.062251 9.117398]
+
+alive uptime_ms=57088 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.603383 0.050279 9.123982]
+
+alive uptime_ms=58099 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.596799 0.052075 9.118595]
+
+alive uptime_ms=59110 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.579440 0.055666 9.135355]
+
+alive uptime_ms=60120 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5166 imu=1 accel=[3.599792 0.036512 9.132960]
+
+alive uptime_ms=61131 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.575250 0.067039 9.125778]
+
+alive uptime_ms=62141 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.570462 0.048484 9.127573]
+
+alive uptime_ms=63152 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.591412 0.065243 9.116799]
+
+alive uptime_ms=64163 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.589017 0.061054 9.114405]
+
+alive uptime_ms=65173 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5166 imu=1 accel=[3.602784 0.046688 9.097046]
+
+alive uptime_ms=66184 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.600390 0.052674 9.131763]
+
+alive uptime_ms=67194 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.574652 0.076018 9.095251]
+
+alive uptime_ms=68205 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.599792 0.085595 9.095849]
+
+alive uptime_ms=69216 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.572856 0.065243 9.170670]
+
+
+[monitor captured 12835 chars; last 0.0s silent]
 
 ================================================================================
-3. MY PATCH v2 with part 4 REVERTED -- the RX callback keeps pointing at the block it
-   gave the queue. rx climbs to 9 of 8 and the census stops the run.
+3. MY PATCH v2 with the RX hand-off REMOVED -- the callback keeps pointing at the block
+   it gave the queue. rx climbs to 9 of 8 and the census stops the run.
 ================================================================================
 *** Booting Zephyr OS build v4.4.0 ***
 
@@ -883,7 +955,8 @@ alive uptime_ms=58906 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel
 [monitor captured 10989 chars; last 0.0s silent]
 
 ================================================================================
-4. MY PATCH v2, COMPLETE. 100 cycles, 20 TX-starved, 27 graceful STOPs, slab flat.
+4. MY PATCH v2, COMPLETE, against the corrected harness. 100 cycles, 20 TX-starved,
+   27 graceful STOPs, all 27 draining a tail block, slab flat, canary clean.
 ================================================================================
 *** Booting Zephyr OS build v4.4.0 ***
 
@@ -895,7 +968,7 @@ Board: m5stack_sticks3
 
 [00:00:00.325,000] <inf> gfx: Display ready (135x240)
 
-[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
 
 
 === I2S stress: 100 cycles, TX starved every 5, graceful STOP every 3 ===
@@ -1091,150 +1164,154 @@ STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches
   final census: tx=8 rx=8 of 8
 
 
-=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, 27 ended
+=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, and 27 ended
 
-    with a graceful STOP and a tail read instead of a DROP -- and the slab
+    with a graceful I2S_TRIGGER_STOP instead of a DROP. All 27 of those
 
-    held 8/8 free the whole way. No leak, and no block freed twice on
+    drained a tail block (0 came back empty), the slab held 8/8 free the
 
-    either the tx_disable path or the STOPPING queue hand-off. ===
+    whole way, and the canary was clean. No leak; no block freed twice on
+
+    the tx_disable path or on the STOPPING queue hand-off; and no stream
+
+    stranded in STOPPING by a bit clock that stopped with TX. ===
 
 
 *** I2S SLAB STRESS PASSED ***
 
-alive uptime_ms=22305 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.107768 0.042498 9.281405]
+alive uptime_ms=22688 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.561483 0.060455 9.159297]
 
-alive uptime_ms=23355 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.073650 0.017358 9.300560]
+alive uptime_ms=23738 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.556096 0.062849 9.122785]
 
-alive uptime_ms=24366 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.105374 0.028731 9.291581]
+alive uptime_ms=24749 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.580637 0.056864 9.141939]
 
-alive uptime_ms=25376 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.102381 0.019154 9.283800]
+alive uptime_ms=25759 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.568067 0.065842 9.145530]
 
-alive uptime_ms=26387 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.048510 0.059258 9.326298]
+alive uptime_ms=26770 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.559089 0.077813 9.120989]
 
-alive uptime_ms=27397 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.083227 0.017957 9.320312]
+alive uptime_ms=27780 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.574053 0.075419 9.131165]
 
-alive uptime_ms=28408 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.089212 0.032921 9.269434]
+alive uptime_ms=28791 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5168 imu=1 accel=[3.583032 0.060455 9.125179]
 
-alive uptime_ms=29419 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.071854 0.033519 9.319714]
+alive uptime_ms=29802 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.439974 0.031125 9.126376]
 
-alive uptime_ms=30429 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.077241 0.046688 9.302355]
+alive uptime_ms=30812 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.573455 0.057462 9.157502]
 
-alive uptime_ms=31440 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.028158 0.039505 9.309538]
+alive uptime_ms=31823 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.611164 0.017358 9.132960]
 
-alive uptime_ms=32450 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.099388 0.052075 9.301757]
+alive uptime_ms=32833 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.550709 0.045491 9.141340]
 
-alive uptime_ms=33461 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.099987 0.028132 9.295771]
+alive uptime_ms=33844 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.596200 0.023344 9.076096]
 
-alive uptime_ms=34472 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.041926 0.034118 9.303553]
+alive uptime_ms=34855 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.566870 0.060455 9.098243]
 
-alive uptime_ms=35482 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.096994 0.035914 9.296370]
+alive uptime_ms=35865 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.592609 0.041301 9.109018]
 
-alive uptime_ms=36493 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.085621 0.025738 9.301158]
+alive uptime_ms=36876 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.572257 0.041301 9.154509]
 
-alive uptime_ms=37503 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.095198 0.023942 9.292180]
+alive uptime_ms=37886 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.574652 0.068835 9.115003]
 
-alive uptime_ms=38514 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.088015 0.031724 9.300560]
+alive uptime_ms=38897 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5166 imu=1 accel=[3.475289 0.007781 9.152713]
 
-alive uptime_ms=39525 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.088015 0.025738 9.285595]
+alive uptime_ms=39908 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[3.556695 0.043096 9.161093]
 
-alive uptime_ms=40535 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.076044 0.031724 9.282004]
+alive uptime_ms=40918 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.547716 0.052674 9.150918]
 
-alive uptime_ms=41546 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.085621 0.023344 9.307144]
+alive uptime_ms=41929 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5150 imu=1 accel=[3.559687 0.070631 9.171867]
 
-alive uptime_ms=42556 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.034743 0.031125 9.319714]
+alive uptime_ms=42939 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5150 imu=1 accel=[3.598594 0.054469 9.022824]
 
-alive uptime_ms=43567 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.083825 0.043096 9.332284]
+alive uptime_ms=43950 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.590214 0.083799 9.095849]
 
-alive uptime_ms=44578 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.071255 0.047885 9.309538]
+alive uptime_ms=44961 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.587820 0.060455 9.097046]
 
-alive uptime_ms=45588 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.061678 0.030527 9.322707]
+alive uptime_ms=45971 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.550709 0.010175 9.123982]
 
-alive uptime_ms=46599 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.070058 0.019752 9.295173]
+alive uptime_ms=46982 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.550709 0.055068 9.137749]
 
-alive uptime_ms=47609 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.079037 0.029928 9.302954]
+alive uptime_ms=47992 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.569265 0.053871 9.140742]
 
-alive uptime_ms=48620 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.076643 0.031724 9.323904]
+alive uptime_ms=49003 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.583032 0.034716 9.084476]
 
-alive uptime_ms=49631 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.069460 0.026337 9.305947]
+alive uptime_ms=50014 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.574652 0.056265 9.095251]
 
-alive uptime_ms=50641 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[3.079635 0.035315 9.305947]
+alive uptime_ms=51024 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.595003 0.046089 9.124580]
 
-alive uptime_ms=51652 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.093402 0.048484 9.328692]
+alive uptime_ms=52035 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.560885 0.063448 9.147326]
 
-alive uptime_ms=52662 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.085621 0.037111 9.307743]
+alive uptime_ms=53045 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.517189 0.047885 9.201197]
 
-alive uptime_ms=53673 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.083227 0.033519 9.301757]
+alive uptime_ms=54056 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.568666 0.023942 9.119792]
 
-alive uptime_ms=54684 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.079037 0.011372 9.289187]
+alive uptime_ms=55067 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.532752 0.093376 9.094652]
 
-alive uptime_ms=55694 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.080833 0.022745 9.284997]
+alive uptime_ms=56077 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.569265 0.049681 9.149720]
 
-alive uptime_ms=56705 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.095198 0.024541 9.305348]
+alive uptime_ms=57088 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.563279 0.032921 9.153312]
 
-alive uptime_ms=57715 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.079037 0.041301 9.312531]
+alive uptime_ms=58098 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.592010 0.064046 9.095251]
 
-alive uptime_ms=58726 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5154 imu=1 accel=[3.076044 0.022745 9.316721]
+alive uptime_ms=59109 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.564476 0.077813 9.150319]
 
-alive uptime_ms=59737 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.077840 0.034118 9.297567]
+alive uptime_ms=60120 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.577046 0.053871 9.131165]
 
-alive uptime_ms=60747 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.076643 0.037111 9.302355]
+alive uptime_ms=61130 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.526766 0.061652 9.180846]
 
-alive uptime_ms=61758 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.072453 0.035315 9.310137]
+alive uptime_ms=62141 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.569265 0.068835 9.138946]
 
-alive uptime_ms=62768 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.077840 0.026337 9.304750]
+alive uptime_ms=63151 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.560885 0.053272 9.170670]
 
-alive uptime_ms=63779 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.065270 0.034716 9.313728]
+alive uptime_ms=64162 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.568666 0.018555 9.099441]
 
-alive uptime_ms=64790 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.085022 0.041899 9.298165]
+alive uptime_ms=65173 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5166 imu=1 accel=[3.526766 0.033519 9.191620]
 
-alive uptime_ms=65800 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.075445 0.025139 9.301757]
+alive uptime_ms=66183 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.583032 0.040702 9.104828]
 
-alive uptime_ms=66811 page=0 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5166 imu=1 accel=[3.071255 0.029329 9.304151]
+alive uptime_ms=67194 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5154 imu=1 accel=[3.505218 0.046089 9.216760]
 
-alive uptime_ms=67821 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.076643 0.040104 9.300560]
+alive uptime_ms=68204 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.580637 0.063448 9.138348]
 
-alive uptime_ms=68832 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.075445 0.030527 9.308341]
+alive uptime_ms=69215 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.541730 0.099362 9.073104]
 
-alive uptime_ms=69843 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.056291 0.004189 9.347248]
+alive uptime_ms=70226 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.583032 0.056265 9.112011]
 
-alive uptime_ms=70853 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.106571 0.001197 9.255068]
+alive uptime_ms=71236 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.580039 0.057462 9.132960]
 
-alive uptime_ms=71864 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.058685 0.031724 9.325700]
+alive uptime_ms=72247 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.563877 0.113728 9.132362]
 
-alive uptime_ms=72874 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.079635 0.021548 9.307144]
+alive uptime_ms=73257 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.585426 0.076018 9.101236]
 
-alive uptime_ms=73885 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.077840 0.030527 9.293377]
+alive uptime_ms=74268 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[3.580637 0.107143 9.129968]
 
-alive uptime_ms=74896 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.086220 0.025738 9.292180]
+alive uptime_ms=75279 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.602186 0.099362 9.142538]
 
-alive uptime_ms=75906 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.070657 0.034118 9.311334]
+alive uptime_ms=76289 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.529759 0.079011 9.188627]
 
-alive uptime_ms=76917 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.086818 0.029329 9.305947]
+alive uptime_ms=77300 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.492049 0.131685 9.242499]
 
-alive uptime_ms=77927 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.075445 0.044294 9.292778]
+alive uptime_ms=78310 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.538738 0.080806 9.159297]
 
-alive uptime_ms=78938 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.080833 0.035914 9.304151]
+alive uptime_ms=79321 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.547716 0.073623 9.169473]
 
-alive uptime_ms=79949 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.065270 0.028132 9.305947]
+alive uptime_ms=80332 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.541730 0.054469 9.150918]
 
-alive uptime_ms=80959 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.177202 0.029329 9.294574]
+alive uptime_ms=81342 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.545920 0.061652 9.176057]
 
-alive uptime_ms=81970 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.131711 0.035914 9.280807]
+alive uptime_ms=82353 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.541132 0.059258 9.171269]
 
-alive uptime_ms=82980 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.073051 0.025139 9.295173]
+alive uptime_ms=83363 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.570462 0.064046 9.158100]
 
-alive uptime_ms=83991 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.053298 0.046089 9.304750]
+alive uptime_ms=84374 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.553103 0.052075 9.161093]
 
-alive uptime_ms=85002 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5164 imu=1 accel=[3.091008 0.028132 9.296968]
+alive uptime_ms=85385 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.556695 0.076018 9.146129]
 
-alive uptime_ms=86012 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.073650 0.020351 9.304750]
+alive uptime_ms=86395 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.572257 0.039505 9.136552]
 
-alive uptime_ms=87023 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.073051 0.031125 9.311932]
+alive uptime_ms=87406 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.680598 0.019154 9.125778]
 
-alive uptime_ms=88033 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.144879 0.040104 9.368797]
+alive uptime_ms=88416 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.550709 0.064645 9.151516]
 
-alive uptime_ms=89044 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.017384 0.017957 9.315524]
+alive uptime_ms=89427 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.573455 0.071229 9.154509]
 
 
-[monitor captured 14777 chars; last 0.5s silent]
+[monitor captured 14929 chars; last 0.0s silent]
