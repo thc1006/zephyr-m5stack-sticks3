@@ -17,6 +17,8 @@ resets the chip on connect, so the capture starts at the banner.
 Usage:  python scripts/monitor_capture_windows.py COM9 30 out.log [zephyr.elf] [--reset]
 Requires: pip install esp-idf-monitor pywinpty
 """
+import io
+import re
 import sys
 import time
 
@@ -83,10 +85,20 @@ while time.time() < end:
     total += len(data)
     logf.write(data)
     logf.flush()
+    # (trailing terminal padding is stripped when the log is closed, below)
 try:
     proc.terminate(force=True)
 except Exception:
     pass
 logf.write("\n[monitor captured %d chars; last %.1fs silent]\n" % (total, quiet))
 logf.close()
+
+# ConPTY pads every line out to the terminal width, so the log ends up full of
+# trailing spaces the device never printed. That is terminal padding, not evidence,
+# and Zephyr's checkpatch fails a commit that carries it. Strip it, and the carriage
+# returns with it, so what lands in evidence/ is what the device actually said.
+with io.open(LOG, encoding="utf-8", errors="replace") as f:
+    text = f.read()
+with io.open(LOG, "w", encoding="utf-8", newline="\n") as f:
+    f.write("\n".join(re.sub(r"[ \t\r]+$", "", line) for line in text.split("\n")))
 print("captured %d chars to %s" % (total, LOG))
