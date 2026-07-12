@@ -42,21 +42,33 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_REG_CLK_LRCK_L  0x08U /* DIV_LRCK[7:0] */
 #define ES8311_REG_SDP_IN      0x09U /* serial data port, DAC path (SDIN) */
 #define ES8311_REG_SDP_OUT     0x0AU /* serial data port, ADC path (ASDOUT) */
-#define ES8311_REG_SYSTEM_0D   0x0DU /* analog power: bias, VREF, VMID */
+#define ES8311_REG_PWRUP_AB    0x0BU /* PWRUP_A [7:3], PWRUP_B [3:1] */
+#define ES8311_REG_PWRUP_C     0x0CU /* PWRUP_B [0], PWRUP_C [6:0] */
+#define ES8311_REG_SYSTEM_0D   0x0DU /* analog power: bias, VREF, VMIDSEL */
 #define ES8311_REG_SYSTEM_0E   0x0EU /* ADC power */
+#define ES8311_REG_LOW_POWER   0x0FU /* LPDAC, LPPGA, LPPGAOUT, LPVCMMOD, LPADCVRP ... */
+#define ES8311_REG_ANALOG_10   0x10U /* SYNCMODE, VMIDLOW, DAC_IBIAS_SW, IBIAS_SW, VX2OFF */
+#define ES8311_REG_ANALOG_11   0x11U /* VSEL */
 #define ES8311_REG_SYSTEM_12   0x12U /* DAC power */
 #define ES8311_REG_SYSTEM_13   0x13U /* output select: line-out or headphone */
 #define ES8311_REG_ADC_PGA     0x14U /* LINSEL microphone mux, PGA gain */
 #define ES8311_REG_ADC_RAMP    0x15U /* ADC volume ramp rate */
 #define ES8311_REG_ADC_SCALE   0x16U /* ADC polarity, ADC_SCALE */
 #define ES8311_REG_ADC_VOLUME  0x17U /* ADC digital volume */
+#define ES8311_REG_ADC_ALC     0x18U /* ALC_EN, ADC_AUTOMUTE_EN, ALC_WINSIZE */
+#define ES8311_REG_ADC_ALC_LVL 0x19U /* ALC maximum and minimum gain */
+#define ES8311_REG_ADC_AUTOMUTE 0x1AU /* automute noise gate */
 #define ES8311_REG_ADC_HPF1    0x1BU /* ADC high-pass filter, stage 1 */
 #define ES8311_REG_ADC_HPF2    0x1CU /* EQ bypass + ADC high-pass filter stage 2 */
 #define ES8311_REG_DAC_MUTE    0x31U /* DAC mute */
 #define ES8311_REG_DAC_VOLUME  0x32U /* DAC digital volume */
+#define ES8311_REG_DAC_OFFSET  0x33U /* DAC DC offset */
+#define ES8311_REG_DAC_DRC     0x34U /* DRC_EN, DRC_WINSIZE */
+#define ES8311_REG_DAC_DRC_LVL 0x35U /* DRC maximum and minimum level */
 #define ES8311_REG_DAC_EQ      0x37U /* DAC equaliser bypass */
-#define ES8311_REG_GPIO        0x44U /* GPIO, ADCDAT_SEL */
+#define ES8311_REG_GPIO        0x44U /* ADC2DAC_SEL (bit 7), ADCDAT_SEL [6:4] */
 #define ES8311_REG_ADC_GP45    0x45U /* GP control */
+#define ES8311_REG_INI         0xFAU /* I2C_RETIME, INI_REG (bit 0) */
 #define ES8311_REG_CHIP_ID1    0xFDU /* chip id, high byte */
 #define ES8311_REG_CHIP_ID2    0xFEU /* chip id, low byte */
 
@@ -64,11 +76,84 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_CHIP_ID2 0x11U
 
 /*
- * 0x00: CSM_ON. This does NOT reset the register file: it powers the clock state
- * machine up and clears the reset bits, so every other register keeps whatever a
- * previous configure() left in it. Nothing below may rely on reset defaults.
+ * 0x00: CSM_ON. The datasheet's RST_DIG is "reset digital EXCEPT control port block",
+ * and the control port block is where the registers live -- so no value of 0x00 ever
+ * resets the register file. Writing CSM_ON powers the clock state machine up and clears
+ * the reset bits; every other register keeps whatever a previous configure(), a previous
+ * boot, or a previous firmware left in it.
+ *
+ * The only register-file reset on this part is 0xFA bit 0, and it is not usable as one:
+ * see ES8311_INI_RELEASE.
+ *
+ * So this driver programs every register its behaviour depends on. That used to be an
+ * aspiration -- the comment said it while eleven registers went unwritten -- and
+ * es8311_known_state[] below is what makes it true.
  */
 #define ES8311_RESET_CSM_ON 0x80U
+
+/*
+ * THE REGISTERS THIS DRIVER DEPENDS ON AND USED TO LEAVE ALONE.
+ *
+ * A codec that is never reset inherits its whole register file from whatever ran last:
+ * a vendor bootloader, another OS, an earlier firmware, or this driver's own previous
+ * route. Two of these are not housekeeping, they are correctness:
+ *
+ *   0x18 ALC_EN. The datasheet is explicit, under the ADC volume register itself:
+ *        "When ALC is on, ADC_VOLUME = MAXGAIN". A stuck ALC bit silently turns 0x17 --
+ *        which this driver DOES write, and exposes as AUDIO_PROPERTY_INPUT_VOLUME --
+ *        from a volume into a servo-loop ceiling. ALC is a user-flippable switch on
+ *        Linux, so it is trivially reachable in the wild.
+ *   0x34 DRC_EN. The exact mirror image on the playback side, and the datasheet makes
+ *        the same claim under 0x32 (with an obvious copy-paste slip: it says
+ *        "ADC_VOLUME" inside the DAC volume register).
+ *
+ * 0x0C is the other one that is not cosmetic: its power-on default is 0x20, i.e.
+ * PWRUP_C = 32, which is outside the field's own documented 0..31 range, and PWRUP_A/B/C
+ * time the analog power-up sequence in units that scale with LRCK.
+ *
+ * Values follow the vendor reference drivers, and Linux's own es8311.c (in tree since
+ * v6.10), wherever those write these registers at all. Where none of them do -- 0x0F,
+ * 0x19, 0x1A, 0x33, 0x35 -- the value is the power-on default, written anyway so that the
+ * dependency is stated rather than inherited.
+ *
+ * Writing all of this costs nothing. Measured on an ES8311 whose analog was fully
+ * settled: the capture noise floor was 103 counts before and 109 after, with no settling
+ * transient at all (evidence/20260712-hw023-*). The alternative -- resetting the part to
+ * get a known state -- costs about six seconds of deaf ADC while three 1 uF reference
+ * capacitors recharge, and that is why this driver does not do it.
+ */
+#define ES8311_PWRUP_MIN     0x00U /* 0x0B: PWRUP_A = 0, PWRUP_B[3:1] = 0 */
+#define ES8311_PWRUP_C_MIN   0x00U /* 0x0C: PWRUP_C = 0. Power-on default is 32. */
+#define ES8311_LOW_POWER_OFF 0x00U /* 0x0F: every low-power-mode bit clear */
+#define ES8311_ANALOG_10_VAL 0x1FU /* 0x10: differs from the 0x13 default in IBIAS_SW */
+#define ES8311_ANALOG_11_VAL 0x7FU /* 0x11: VSEL. The datasheet says "Internal use". */
+#define ES8311_ALC_OFF       0x00U /* 0x18: ALC_EN and ADC_AUTOMUTE_EN clear */
+#define ES8311_ALC_LVL_DEF   0x00U /* 0x19 */
+#define ES8311_AUTOMUTE_OFF  0x00U /* 0x1A */
+#define ES8311_DAC_OFFSET_0  0x00U /* 0x33 */
+#define ES8311_DRC_OFF       0x00U /* 0x34: DRC_EN clear */
+#define ES8311_DRC_LVL_DEF   0x00U /* 0x35 */
+
+/*
+ * 0xFA bit 0, INI_REG: "reset registers to default except itself".
+ *
+ * It is a LEVEL, not a pulse. While it is set the register file is HELD at its defaults:
+ * every write is silently discarded and every read returns 0x00. Measured the hard way --
+ * a probe set it and did not clear it, and because the ES8311 has no reset pin and a warm
+ * SoC reset does not reach the codec, the NEXT boot came up with every register reading
+ * 0x00, the frame clock measuring a perfect 7999 Hz, the codec stone deaf, and the driver
+ * reporting success. The vendor Linux driver corroborates it from the other side: it
+ * writes 0x01 here at shutdown and leaves it asserted, deliberately, to hold the register
+ * file at defaults across a reboot.
+ *
+ * So a driver that never writes 0xFA can be handed a chip it cannot possibly recover.
+ * Clearing it is the first register write this driver makes.
+ *
+ * (Using it as a register-file reset is a different question, and the answer is no: it
+ * reverts 0x0D/0x0E/0x12 to their powered-DOWN defaults, so it disturbs the analog and
+ * costs the same multi-second recharge as the 0x00 block reset. Measured.)
+ */
+#define ES8311_INI_RELEASE 0x00U
 
 
 /*
@@ -162,8 +247,17 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_DAC_MUTE_ON   0x60U
 #define ES8311_DAC_MUTE_OFF  0x00U
 
-/* Settle delays (ms). */
-#define ES8311_RESET_DELAY_MS  10
+/*
+ * Settle delays (ms).
+ *
+ * These bound the DIGITAL settling only -- the clock state machine coming up, and the
+ * analog power-up sequence being armed. They say nothing about the ANALOG, which on this
+ * part is three 1 uF filtering capacitors on VMID, ADCVREF and DACVREF, takes seconds to
+ * charge from cold, and is not specified by the datasheet at all. Mainline Linux's
+ * es8311.c says as much in its own reset function: "Specific delay is not documented".
+ * Nothing here can or should try to wait that out; the driver simply never causes it.
+ */
+#define ES8311_CSM_SETTLE_MS   10
 #define ES8311_PWR_UP_DELAY_MS 10
 #define ES8311_GPIO_DELAY_MS   1
 
@@ -221,9 +315,15 @@ static const uint32_t es8311_rates[] = {
 	8000U, 11025U, 12000U, 16000U, 22050U, 24000U, 32000U, 44100U, 48000U,
 };
 
+/*
+ * There is deliberately no reset GPIO here. The ES8311 has no reset pin: its twenty pins
+ * are the I2C three, MCLK, SCLK, LRCK, ASDOUT, DSDIN, MIC1P/N, OUTP/N, the four supply
+ * pairs, and the three analog filtering-capacitor pins (VMID, ADCVREF, DACVREF). There is
+ * no signal to wire a reset line to. enable-gpios remains, because a board CAN gate the
+ * codec's supply with a GPIO -- that is a board-level switch, not a chip pin.
+ */
 struct es8311_config {
 	struct i2c_dt_spec bus;
-	struct gpio_dt_spec reset_gpio;
 	struct gpio_dt_spec enable_gpio;
 };
 
@@ -255,6 +355,42 @@ static int es8311_reg_read(const struct device *dev, uint8_t reg, uint8_t *val)
 	const struct es8311_config *cfg = dev->config;
 
 	return i2c_reg_read_byte_dt(&cfg->bus, reg, val);
+}
+
+/*
+ * See the ES8311_PWRUP_MIN block above for why each of these is here. In address order,
+ * because the analog power-up timers (0x0B, 0x0C) have to be in place before anything
+ * clears the power-down bits in 0x0D and starts the sequence they time.
+ */
+static const struct es8311_reg_val {
+	uint8_t reg;
+	uint8_t val;
+} es8311_known_state[] = {
+	{ES8311_REG_PWRUP_AB, ES8311_PWRUP_MIN},
+	{ES8311_REG_PWRUP_C, ES8311_PWRUP_C_MIN},
+	{ES8311_REG_LOW_POWER, ES8311_LOW_POWER_OFF},
+	{ES8311_REG_ANALOG_10, ES8311_ANALOG_10_VAL},
+	{ES8311_REG_ANALOG_11, ES8311_ANALOG_11_VAL},
+	{ES8311_REG_ADC_ALC, ES8311_ALC_OFF},
+	{ES8311_REG_ADC_ALC_LVL, ES8311_ALC_LVL_DEF},
+	{ES8311_REG_ADC_AUTOMUTE, ES8311_AUTOMUTE_OFF},
+	{ES8311_REG_DAC_OFFSET, ES8311_DAC_OFFSET_0},
+	{ES8311_REG_DAC_DRC, ES8311_DRC_OFF},
+	{ES8311_REG_DAC_DRC_LVL, ES8311_DRC_LVL_DEF},
+};
+
+static int es8311_write_known_state(const struct device *dev)
+{
+	for (size_t i = 0U; i < ARRAY_SIZE(es8311_known_state); i++) {
+		int ret = es8311_reg_write(dev, es8311_known_state[i].reg,
+					   es8311_known_state[i].val);
+
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
 static int es8311_reg_update(const struct device *dev, uint8_t reg, uint8_t mask, uint8_t val)
@@ -405,11 +541,12 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 * input mute that this call then overwrites, leaving the cache muted and the
 	 * microphone live.
 	 *
-	 * A configure() never starts from a clean chip: register 0x00 powers the
-	 * clock state machine up and clears the reset bits, it does not reset the
-	 * register file, so a converter a previous route powered up is still up.
-	 * Every route therefore programs BOTH directions, powering down the one it
-	 * does not use rather than leaving it as it found it.
+	 * A configure() never starts from a clean chip, because this driver never resets
+	 * the part -- resetting it would cost seconds of settling on the capture path, and
+	 * it buys nothing that es8311_write_known_state() does not buy for free. So a
+	 * converter a previous route powered up is still up. Every route therefore programs
+	 * BOTH directions, powering down the one it does not use rather than leaving it as
+	 * it found it.
 	 */
 	if (playback && capture) {
 		clk_mgr = ES8311_CLK_MGR_BOTH;
@@ -424,6 +561,20 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 
 	sdp_in = ES8311_SDP_I2S_16BIT | (playback ? 0U : ES8311_SDP_MUTE);
 	sdp_out = ES8311_SDP_I2S_16BIT | ((capture && !data->adc_mute) ? 0U : ES8311_SDP_MUTE);
+
+	/*
+	 * FIRST, unhold the register file.
+	 *
+	 * If 0xFA bit 0 is set -- and a previous firmware may well have left it set; the
+	 * vendor Linux driver does so deliberately at shutdown -- then every write below
+	 * this line is silently discarded and every read returns 0x00, while this function
+	 * returns 0. Nothing else can be done until it is cleared, so nothing else is
+	 * attempted first.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
+	if (ret < 0) {
+		goto end;
+	}
 
 	/*
 	 * QUIESCE BEFORE RECLOCKING.
@@ -460,20 +611,35 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * The ADC is NOT powered down here, only muted at its serial port above. It
-	 * drives no speaker, so it cannot pop, and power-cycling it on every configure
-	 * costs a DC offset the high-pass filter then has to settle back out -- measured
-	 * on silicon, the capture noise floor rose from about 70 to about 500 counts.
-	 * The route logic below still powers it down when the new route does not carry
-	 * capture, which is the case that actually matters.
+	 * The ADC is NOT powered down here, only muted at its serial port above. It drives
+	 * no speaker, so it cannot pop -- and taking its analog down and back up on every
+	 * configure() would restart a settling time measured in SECONDS, not milliseconds,
+	 * while the reference capacitors recharge. (An earlier version of this comment
+	 * blamed a DC offset that the high-pass filter had to settle out, and quoted a
+	 * noise floor rising from ~70 to ~500 counts. The number was real; the explanation
+	 * was not. A floor of 500 on a part whose settled floor is ~100 is a reading taken
+	 * part-way up that same recharge curve.) The route logic below still powers the ADC
+	 * down when the new route does not carry capture, which is the case that matters.
 	 */
 
-	/* Power the clock state machine up. This does not reset any register. */
+	/* Power the clock state machine up. This resets no register: see 0x00 above. */
 	ret = es8311_reg_write(dev, ES8311_REG_RESET, ES8311_RESET_CSM_ON);
 	if (ret < 0) {
 		goto end;
 	}
-	k_msleep(ES8311_RESET_DELAY_MS);
+	k_msleep(ES8311_CSM_SETTLE_MS);
+
+	/*
+	 * Now put every register this driver depends on into a known state, before the
+	 * clock tree below and before anything clears the power-down bits in 0x0D. The
+	 * codec is never reset, so without this the driver would be inheriting an ALC, a
+	 * DRC, a low-power mode or a set of analog power-up timers from whatever ran last
+	 * -- and two of those quietly redefine registers it does write.
+	 */
+	ret = es8311_write_known_state(dev);
+	if (ret < 0) {
+		goto end;
+	}
 
 	ret = es8311_reg_write(dev, ES8311_REG_CLK_MANAGER, clk_mgr);
 	if (ret < 0) {
@@ -607,16 +773,6 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		if (ret < 0) {
 			goto end;
 		}
-
-		ret = es8311_reg_write(dev, ES8311_REG_GPIO, ES8311_GPIO_ADCDAT_ADC);
-		if (ret < 0) {
-			goto end;
-		}
-
-		ret = es8311_reg_write(dev, ES8311_REG_ADC_GP45, ES8311_ADC_GP45_DEFAULT);
-		if (ret < 0) {
-			goto end;
-		}
 	} else {
 		/*
 		 * Power the ADC down and take the microphone off the input mux. A
@@ -633,6 +789,31 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		if (ret < 0) {
 			goto end;
 		}
+	}
+
+	/*
+	 * 0x44 and 0x45 belong to BOTH routes, and used to be written only on capture.
+	 *
+	 * 0x44 bit 7 is ADC2DAC_SEL, which routes the ADC digitally into the DAC. That is a
+	 * PLAYBACK control living in a register whose other field happens to be about the
+	 * ADC. A playback-only configure() never touched it -- so a chip that came up with
+	 * bit 7 set, from a vendor bootloader or an aborted loopback, played the ADC instead
+	 * of the caller's audio while the same route had just powered that ADC down. Silence
+	 * out of the speaker, configure() returning 0, every register the driver checked
+	 * reading back exactly as intended, and no way out of it on any later call unless
+	 * capture happened to be routed once.
+	 *
+	 * 0x45 is chip-wide (FORCECSM, PULLUP_SE) and has nothing to do with the route
+	 * either.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_GPIO, ES8311_GPIO_ADCDAT_ADC);
+	if (ret < 0) {
+		goto end;
+	}
+
+	ret = es8311_reg_write(dev, ES8311_REG_ADC_GP45, ES8311_ADC_GP45_DEFAULT);
+	if (ret < 0) {
+		goto end;
 	}
 
 	data->playback = playback;
@@ -888,39 +1069,69 @@ static int es8311_init(const struct device *dev)
 			LOG_ERR("Failed to configure enable GPIO (%d)", ret);
 			return ret;
 		}
-	}
 
-	if (cfg->reset_gpio.port != NULL) {
-		if (!gpio_is_ready_dt(&cfg->reset_gpio)) {
-			LOG_ERR("Reset GPIO not ready");
-			return -ENODEV;
-		}
-
-		/* Assert reset, settle, then release it. */
-		ret = gpio_pin_configure_dt(&cfg->reset_gpio, GPIO_OUTPUT_ACTIVE);
-		if (ret < 0) {
-			LOG_ERR("Failed to configure reset GPIO (%d)", ret);
-			return ret;
-		}
-
+		/* Let the supply reach the part before its first I2C transaction. */
 		k_msleep(ES8311_GPIO_DELAY_MS);
-
-		ret = gpio_pin_set_dt(&cfg->reset_gpio, 0);
-		if (ret < 0) {
-			LOG_ERR("Failed to deassert reset GPIO (%d)", ret);
-			return ret;
-		}
-
-		k_msleep(ES8311_RESET_DELAY_MS);
 	}
 
-	return es8311_check_id(dev);
+	ret = es8311_check_id(dev);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/*
+	 * init() used to write ZERO registers, and that was a hazard, not a simplification.
+	 *
+	 * The ES8311 has no reset pin -- the datasheet's twenty-pin list has no such
+	 * signal -- so nothing a warm reboot does reaches it. west flash, sys_reboot(), a
+	 * watchdog and a debugger's reset-on-attach all reset the SoC and leave the codec
+	 * exactly as the previous firmware left it. Meanwhile the SoC's I2S peripheral DOES
+	 * reset, so the bit clock stops; and this codec takes its master clock from the bit
+	 * clock. A DAC that was powered and unmuted when the reboot hit therefore has its
+	 * modulator frozen on whatever sample it held -- a DC level, sitting on the
+	 * amplifier, for as long as it takes the application to get around to configure().
+	 * If the previous route was capture, the microphone stays live at its last PGA gain
+	 * with no software in control of it. Neither needs a hostile prior firmware; this
+	 * driver's own previous boot is enough.
+	 *
+	 * So: release the register file (see 0xFA), then put the part somewhere safe -- both
+	 * serial ports muted, the DAC muted and powered down -- and leave it there until a
+	 * configure() asks for something.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
+	if (ret < 0) {
+		LOG_ERR("Failed to release the register file (%d)", ret);
+		return ret;
+	}
+
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_IN, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+	if (ret < 0) {
+		goto quiesce_failed;
+	}
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+	if (ret < 0) {
+		goto quiesce_failed;
+	}
+	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+	if (ret < 0) {
+		goto quiesce_failed;
+	}
+	ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_12, ES8311_DAC_PWR_DOWN);
+	if (ret < 0) {
+		goto quiesce_failed;
+	}
+
+	return 0;
+
+quiesce_failed:
+	LOG_ERR("Failed to quiesce the codec (%d)", ret);
+
+	return ret;
 }
 
 #define ES8311_INST(idx)                                                                           \
 	static const struct es8311_config es8311_config_##idx = {                                  \
 		.bus = I2C_DT_SPEC_INST_GET(idx),                                                  \
-		.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(idx, reset_gpios, {0}),                     \
 		.enable_gpio = GPIO_DT_SPEC_INST_GET_OR(idx, enable_gpios, {0}),                   \
 	};                                                                                         \
 	static struct es8311_data es8311_data_##idx;                                               \

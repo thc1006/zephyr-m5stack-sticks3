@@ -64,6 +64,32 @@ extern void emul_es8311_release(const struct emul *target);
 #define ES8311_REG_CHIP_ID1    0xFD
 #define ES8311_REG_CHIP_ID2    0xFE
 
+/*
+ * The registers the driver used to depend on and never write. Every one of them is a
+ * state a previous firmware -- or this driver's own previous boot, on a part with no
+ * reset pin that a warm reboot cannot reach -- can hand it.
+ */
+#define ES8311_REG_PWRUP_AB     0x0B
+#define ES8311_REG_PWRUP_C      0x0C /* power-on default 0x20: PWRUP_C = 32 */
+#define ES8311_REG_LOW_POWER    0x0F
+#define ES8311_REG_ANALOG_10    0x10
+#define ES8311_REG_ANALOG_11    0x11
+#define ES8311_REG_ADC_ALC      0x18 /* ALC_EN bit 7 */
+#define ES8311_REG_ADC_ALC_LVL  0x19
+#define ES8311_REG_ADC_AUTOMUTE 0x1A
+#define ES8311_REG_DAC_OFFSET   0x33
+#define ES8311_REG_DAC_DRC      0x34 /* DRC_EN bit 7 */
+#define ES8311_REG_DAC_DRC_LVL  0x35
+#define ES8311_REG_INI          0xFA /* INI_REG bit 0 holds the register file down */
+
+#define ES8311_ALC_EN        0x80 /* 0x18 bit 7: "when ALC is on, ADC_VOLUME = MAXGAIN" */
+#define ES8311_DRC_EN        0x80 /* 0x34 bit 7: the same, for the DAC volume */
+#define ES8311_ADC2DAC_SEL   0x80 /* 0x44 bit 7: routes the ADC into the DAC */
+#define ES8311_RESET_BITS    0x1F /* 0x00 [4:0]: the digital block resets */
+
+/* A register in the map that the driver never writes, for use as a witness. */
+#define ES8311_REG_UNUSED 0x36
+
 #define ES8311_SDP_MUTE 0x40 /* 0x09 / 0x0A bit 6 */
 
 /* Every rate the driver accepts, and the 256fs master clock each one implies. */
@@ -1107,6 +1133,144 @@ ZTEST(es8311, test_failed_configure_disarms_start_but_never_stop)
  * the property tests would silently become no-ops after any test that left a
  * single-direction route behind, and they would pass by doing nothing.
  */
+/*
+ * THE DEFECT CLASS THE OLD SUITE COULD NOT SEE.
+ *
+ * Every one of the twenty-nine tests above starts from an emulator whose register file is
+ * all zeros -- which is to say, from a chip in exactly the state the driver would like to
+ * find it in. The driver never resets the part (a reset costs seconds of analog settling
+ * on the capture path), so on real hardware it inherits its whole register file from
+ * whatever ran last: a vendor bootloader, ESP-ADF, an earlier firmware, or its own
+ * previous boot. The ES8311 has no reset pin, so not even a warm reboot clears it.
+ *
+ * A suite whose inputs never vary cannot find a defect that only appears when they do.
+ * These four vary them.
+ */
+static void dirty_the_chip(void)
+{
+	/*
+	 * Not arbitrary. Each of these is a state the part can really be handed, and the
+	 * first three are the ones that quietly redefine a register the driver DOES write:
+	 *
+	 *   ALC on  -> the datasheet, under the ADC volume register: "When ALC is on,
+	 *              ADC_VOLUME = MAXGAIN". 0x17 stops being a volume.
+	 *   DRC on  -> the same claim under the DAC volume register. 0x32 stops being one.
+	 *   0x44 b7 -> ADC2DAC_SEL. The DAC plays the ADC instead of the caller's audio.
+	 */
+	reg_put(ES8311_REG_ADC_ALC, ES8311_ALC_EN);
+	reg_put(ES8311_REG_DAC_DRC, ES8311_DRC_EN);
+	reg_put(ES8311_REG_ADC_MUX, ES8311_ADC2DAC_SEL);
+	reg_put(ES8311_REG_LOW_POWER, 0xFF);       /* every low-power mode, incl. LPDAC */
+	reg_put(ES8311_REG_PWRUP_C, 0x20);         /* the power-on default, PWRUP_C = 32 */
+	reg_put(ES8311_REG_PWRUP_AB, 0xFF);
+	reg_put(ES8311_REG_ADC_ALC_LVL, 0xFF);
+	reg_put(ES8311_REG_ADC_AUTOMUTE, 0xFF);
+	reg_put(ES8311_REG_DAC_OFFSET, 0xFF);      /* a DC offset into the amplifier */
+	reg_put(ES8311_REG_DAC_DRC_LVL, 0xFF);
+}
+
+ZTEST(es8311, test_configure_normalizes_a_dirty_chip)
+{
+	struct audio_codec_cfg cfg;
+
+	dirty_the_chip();
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
+
+	zassert_equal(reg_get(ES8311_REG_ADC_ALC), 0x00U,
+		      "ALC left on: 0x17 is a servo ceiling, not the volume the driver set");
+	zassert_equal(reg_get(ES8311_REG_DAC_DRC), 0x00U,
+		      "DRC left on: 0x32 is a compressor ceiling, not the volume");
+	zassert_equal(reg_get(ES8311_REG_ADC_MUX) & ES8311_ADC2DAC_SEL, 0x00U,
+		      "ADC2DAC_SEL left set: the DAC plays the microphone, not the caller");
+	zassert_equal(reg_get(ES8311_REG_LOW_POWER), 0x00U, "low-power modes left on");
+	zassert_equal(reg_get(ES8311_REG_PWRUP_C), 0x00U, "PWRUP_C left at its default");
+	zassert_equal(reg_get(ES8311_REG_PWRUP_AB), 0x00U, "PWRUP_A/B left dirty");
+	zassert_equal(reg_get(ES8311_REG_DAC_OFFSET), 0x00U, "a DC offset left on the DAC");
+	zassert_equal(reg_get(ES8311_REG_ADC_ALC_LVL), 0x00U, "ALC levels left dirty");
+	zassert_equal(reg_get(ES8311_REG_ADC_AUTOMUTE), 0x00U, "automute left dirty");
+	zassert_equal(reg_get(ES8311_REG_DAC_DRC_LVL), 0x00U, "DRC levels left dirty");
+}
+
+ZTEST(es8311, test_playback_only_still_clears_adc2dac_sel)
+{
+	struct audio_codec_cfg cfg;
+
+	/*
+	 * 0x44 used to be written only on the capture path, on the reasonable-looking
+	 * grounds that ADCDAT_SEL is about the ADC. But bit 7 of the same register is
+	 * ADC2DAC_SEL, and that is a PLAYBACK control. So a playback-only configure() never
+	 * touched it: a chip handed over with bit 7 set played its own microphone instead of
+	 * the caller's audio, through a route that had just powered that microphone down --
+	 * silently, with configure() returning 0 and every register the driver checked
+	 * reading back exactly as intended, and with no way out on any later call unless
+	 * capture happened to be routed once.
+	 */
+	reg_put(ES8311_REG_ADC_MUX, ES8311_ADC2DAC_SEL);
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
+
+	zassert_equal(reg_get(ES8311_REG_ADC_MUX) & ES8311_ADC2DAC_SEL, 0x00U,
+		      "a playback-only route left ADC2DAC_SEL set: the speaker plays the mic");
+}
+
+ZTEST(es8311, test_ini_reg_is_released_before_anything_else)
+{
+	struct audio_codec_cfg cfg;
+
+	/*
+	 * 0xFA bit 0 is a LEVEL, not a pulse: while it is set the register file is held at
+	 * its defaults, every write is silently discarded, and every read returns 0x00.
+	 * The vendor Linux driver sets it at shutdown ON PURPOSE, to hold the file down
+	 * across a reboot. A driver that does not clear it can be handed a chip it cannot
+	 * recover -- and cannot even tell it has been, because configure() still returns 0.
+	 *
+	 * So it has to be the FIRST write, before the mutes: on a held chip every write
+	 * after it would go nowhere.
+	 */
+	emul_es8311_reset_log(emul);
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
+
+	zassert_equal(emul_es8311_write_at(emul, 0), ES8311_REG_INI,
+		      "0xFA must be the first write: on a held chip nothing after it lands");
+	zassert_equal(reg_get(ES8311_REG_INI), 0x00U, "0xFA bit 0 left set");
+}
+
+ZTEST(es8311, test_the_driver_never_resets_the_register_file)
+{
+	struct audio_codec_cfg cfg;
+
+	/*
+	 * The one thing that must NOT come back.
+	 *
+	 * Both reference drivers open with 0x00 = 0x1F, and this driver deliberately does
+	 * not, because doing so powers the analog down and the ES8311's reference sits on
+	 * three 1 uF capacitors: measured on hardware, the ADC then returns a zero noise
+	 * floor for about six seconds. That is a deliberate deviation from every reference
+	 * implementation, which makes it exactly the kind of thing a future contributor
+	 * "fixes" -- and the cost would be invisible in any test that does not look for it,
+	 * because the part recovers perfectly a few seconds later.
+	 *
+	 * The emulator models the register-file reset. Leave a witness in a register the
+	 * driver never writes, and if anything ever asserts those reset bits, it dies.
+	 */
+	reg_put(ES8311_REG_UNUSED, 0x5A);
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
+
+	zassert_equal(reg_get(ES8311_REG_UNUSED), 0x5A,
+		      "the register file was reset: someone asserted 0x00 bits [4:0]. That "
+		      "costs about six seconds of deaf ADC while the analog reference "
+		      "capacitors recharge. See the binding.");
+	zassert_equal(reg_get(ES8311_REG_RESET) & ES8311_RESET_BITS, 0x00U,
+		      "0x00 must be left at CSM_ON with no reset bit set");
+}
+
 static void es8311_before(void *fixture)
 {
 	struct audio_codec_cfg cfg;

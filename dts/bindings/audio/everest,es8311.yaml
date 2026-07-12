@@ -28,35 +28,46 @@ description: |
   A board that wires a real MCLK into the codec would need register 0x01 bit 7
   cleared and its own divider values, which this driver does not implement.
 
+  This driver does not reset the codec, and there is no reset-gpios property,
+  because the ES8311 has no reset pin. Its twenty pins are the I2C three, MCLK,
+  SCLK, LRCK, ASDOUT, DSDIN, MIC1P/N, OUTP/N, the four supply pairs, and three
+  analog filtering-capacitor pins. There is no signal to wire a reset line to.
+
+  Nor does it issue the register-0x00 software reset that the reference drivers
+  use. That reset does not do what its name suggests: RST_DIG is documented as
+  "reset digital except control port block", and the control port block is where
+  the registers live, so no value of 0x00 resets the register file. What it does
+  do is clear CSM_ON, which powers the analog down -- and the ES8311's analog
+  reference sits on three 1 uF capacitors (VMID, ADCVREF, DACVREF; there is no
+  microphone-bias pin). Charging them back takes SECONDS. Measured on an ES8311
+  on real hardware, the ADC returns a zero noise floor for about six seconds
+  after the reset, and then works normally forever. No datasheet or reference
+  driver specifies any settling time -- mainline Linux's es8311.c says so in as
+  many words -- so nothing can be waited out from a table.
+
+  A reset is only ever a shortcut to a known register state, and this driver
+  reaches the same state the long way, by programming every register its
+  behaviour depends on. That costs nothing: measured on a settled part, the
+  capture noise floor was 103 counts before those writes and 109 after, with no
+  settling transient at all. So capture works from the first block, on a warm
+  reboot as well as a cold one, and the driver never spends six seconds deaf.
+
+  What it cannot avoid is the same six seconds on a genuine cold power-on, when
+  the board -- not the driver -- charges those capacitors. Capture is not
+  trustworthy until they are charged. Playback is unaffected.
+
 compatible: "everest,es8311"
 
 include: [i2c-device.yaml]
 
 properties:
-  reset-gpios:
-    type: phandle-array
-    description: |
-      GPIO connected to the codec reset pin (active low), when a discrete reset
-      line is wired. The driver asserts it, settles, and releases it at init.
-
-      This driver does NOT issue the register-0x00 software reset. It is worth
-      saying why, because the reference drivers do and a reader will expect it.
-      Adding the reference sequence (assert the reset bits, wait, release, start
-      the clock state machine) was measured on an ES8311 on real hardware and it
-      leaves the ADC deaf: the capture noise floor collapses to zero at 8 kHz and
-      the microphone hears nothing below roughly 22 kHz, while every register the
-      driver writes reads back exactly as intended. Initialising the two system
-      registers the reset does not leave usable (0x0B, 0x0C), as both reference
-      drivers do, does not change it. The root cause is not established, so the
-      reset is not shipped: a driver that silently halves its own capture
-      bandwidth is worse than one that does not reset the part.
-
-      The practical consequence is that configure() must not rely on reset
-      defaults, and it does not: every route programs both directions in full,
-      including powering down the converter it does not use.
-
   enable-gpios:
     type: phandle-array
     description: |
-      GPIO that gates power to the codec, when such a switch is present. It is
-      driven active before the codec is probed.
+      GPIO that gates power to the codec, when a board puts a switch on its
+      supply. It is driven active before the codec is probed. This is a
+      board-level power switch, not a codec pin; the ES8311 has no enable input.
+
+      Cutting this supply discharges the codec's analog reference capacitors, so
+      capture is deaf for several seconds after it is restored. See the settling
+      note above.

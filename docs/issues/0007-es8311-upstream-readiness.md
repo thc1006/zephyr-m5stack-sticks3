@@ -73,7 +73,11 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **29/29**
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **33/33**. The
+  four added in HW-023 seed a DIRTY register file before `configure()`, which is the one
+  input the first twenty-nine never varied: they all started from an all-zero emulator, so
+  they could not see any defect that only appears on a chip the driver did not reset. Three
+  of the four fail on the driver as it stood.
       (was 11), covering every supported rate, the rejected rates and word sizes,
       the MCLK validation, the input volume/mute round trip, volume clamping and
       I2C error propagation.
