@@ -31,6 +31,8 @@ LOG_MODULE_REGISTER(emul_es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
 
 #define ES8311_EMUL_WLOG_LEN 64
 
+#define ES8311_REG_RESET    0x00U
+#define ES8311_RESET_BITS   0x1FU /* the digital/CMG/master/ADC/DAC resets */
 #define ES8311_REG_CHIP_ID1 0xFDU
 #define ES8311_REG_CHIP_ID2 0xFEU
 #define ES8311_CHIP_ID1     0x83U
@@ -189,6 +191,26 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 		if (data->pause_armed && m->buf[0] == data->pause_reg) {
 			k_sem_give(&data->reached);
 			(void)k_sem_take(&data->release, K_FOREVER);
+		}
+
+		/*
+		 * Model the register-file reset. The low five bits of register 0x00 are
+		 * the digital, clock-manager, master, ADC and DAC resets; asserting them
+		 * clears the writable register file on the real part, and the chip-id
+		 * registers survive it. CSM_ON (bit 7) is a different bit in the same
+		 * register and resets nothing.
+		 *
+		 * Without this the emulator cannot tell a real reset from a CSM_ON write,
+		 * and a test claiming to check that init() resets the chip would be
+		 * checking nothing at all.
+		 */
+		if (m->buf[0] == ES8311_REG_RESET && (m->buf[1] & ES8311_RESET_BITS) != 0U) {
+			uint8_t id1 = data->regs[ES8311_REG_CHIP_ID1];
+			uint8_t id2 = data->regs[ES8311_REG_CHIP_ID2];
+
+			memset(data->regs, 0, sizeof(data->regs));
+			data->regs[ES8311_REG_CHIP_ID1] = id1;
+			data->regs[ES8311_REG_CHIP_ID2] = id2;
 		}
 
 		data->regs[m->buf[0]] = m->buf[1];

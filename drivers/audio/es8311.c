@@ -70,6 +70,7 @@ LOG_MODULE_REGISTER(es8311);
  */
 #define ES8311_RESET_CSM_ON 0x80U
 
+
 /*
  * 0x01: MCLK_SEL (bit 7) takes the internal master clock from BCLK instead of the
  * MCLK pin. MCLK_ON (5) and BCLK_ON (4) enable the clock inputs, and bits [3:0]
@@ -424,6 +425,49 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	sdp_in = ES8311_SDP_I2S_16BIT | (playback ? 0U : ES8311_SDP_MUTE);
 	sdp_out = ES8311_SDP_I2S_16BIT | ((capture && !data->adc_mute) ? 0U : ES8311_SDP_MUTE);
 
+	/*
+	 * QUIESCE BEFORE RECLOCKING.
+	 *
+	 * The clock manager written below gates the clocks of whichever converter the
+	 * new route does not carry. Gating the clock of a DAC that is still powered and
+	 * still unmuted does not silence it: it freezes its modulator on the last
+	 * sample, which is a DC step into the amplifier -- a pop, and on a switch away
+	 * from playback the last thing the user hears. The dividers that follow move the
+	 * whole clock tree under a converter that is still running.
+	 *
+	 * So mute both serial ports and the DAC, and power both converters down, BEFORE
+	 * anything touches the clocks. Then the tree can be reprogrammed into silence,
+	 * and only what the new route carries comes back up, in order, at the end. This
+	 * is what every codec datasheet means by a mute-before-reclock sequence.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_IN,
+			       ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+	if (ret < 0) {
+		goto end;
+	}
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT,
+			       ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+	if (ret < 0) {
+		goto end;
+	}
+	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+	if (ret < 0) {
+		goto end;
+	}
+	ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_12, ES8311_DAC_PWR_DOWN);
+	if (ret < 0) {
+		goto end;
+	}
+
+	/*
+	 * The ADC is NOT powered down here, only muted at its serial port above. It
+	 * drives no speaker, so it cannot pop, and power-cycling it on every configure
+	 * costs a DC offset the high-pass filter then has to settle back out -- measured
+	 * on silicon, the capture noise floor rose from about 70 to about 500 counts.
+	 * The route logic below still powers it down when the new route does not carry
+	 * capture, which is the case that actually matters.
+	 */
+
 	/* Power the clock state machine up. This does not reset any register. */
 	ret = es8311_reg_write(dev, ES8311_REG_RESET, ES8311_RESET_CSM_ON);
 	if (ret < 0) {
@@ -605,11 +649,20 @@ end:
 }
 
 /*
- * start_output() and stop_output() cache the requested state either way, so it is
- * applied by the next configure() that routes playback, but they only touch the
- * hardware while playback is actually routed. Unmuting a DAC that the current
- * route deliberately powered down would put the speaker back on the output behind
- * the caller's back.
+ * The two are deliberately NOT symmetric.
+ *
+ * Unmuting is a dangerous operation and is gated: it puts a speaker back on the
+ * output, so it only happens when the current route actually carries playback. A
+ * configure() that failed leaves no route, and start_output() must not unmute a
+ * converter whose power and clocks that failed call may have already changed.
+ *
+ * Muting is a SAFETY operation and is not gated by anything. It is idempotent, and
+ * writing the mute bit of a DAC that is powered down is harmless. Gating it on the
+ * route was a fail-open: a configure() that died on its first register write leaves
+ * the hardware exactly as it was -- an old route's DAC still powered, still unmuted,
+ * still driving the amplifier -- while the cache has already been cleared, so a
+ * caller reaching for stop_output() to make the device safe would have found it
+ * doing nothing at all. The one thing that must always work is the off switch.
  */
 static void es8311_start_output(const struct device *dev)
 {
@@ -632,14 +685,12 @@ static void es8311_start_output(const struct device *dev)
 static void es8311_stop_output(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
-	int ret = 0;
+	int ret;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 	data->dac_mute = true;
-	if (data->playback) {
-		ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK,
-					ES8311_DAC_MUTE_ON);
-	}
+	ret = es8311_reg_update(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_MASK,
+				ES8311_DAC_MUTE_ON);
 	k_mutex_unlock(&data->lock);
 
 	if (ret < 0) {

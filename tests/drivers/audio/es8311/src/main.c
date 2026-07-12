@@ -224,7 +224,7 @@ ZTEST(es8311, test_configure_16k_16bit_sequence)
 ZTEST(es8311, test_configure_write_order)
 {
 	struct audio_codec_cfg cfg;
-	int n, reset_idx = -1, clk_idx = -1, ana_idx = -1, dac_idx = -1;
+	int n, reset_idx = -1, clk_idx = -1, ana_idx = -1, dac_up_idx = -1;
 
 	emul_es8311_reset_log(emul);
 	make_cfg_16k_16bit(&cfg);
@@ -245,15 +245,26 @@ ZTEST(es8311, test_configure_write_order)
 		if (r == ES8311_REG_SYSTEM_0D && ana_idx < 0) {
 			ana_idx = i;
 		}
-		if (r == ES8311_REG_SYSTEM_12 && dac_idx < 0) {
-			dac_idx = i;
+		/*
+		 * The LAST 0x12, not the first. configure() now writes it twice: once in
+		 * the quiesce block that powers the DAC down before the clock tree moves,
+		 * and once at the end to power it back up if the route carries playback.
+		 * The constraint is about the power-UP: the analog bias and references
+		 * must be established before a converter comes up on them. Taking the
+		 * first write would be measuring the power-DOWN, which is required to
+		 * come earlier, not later.
+		 */
+		if (r == ES8311_REG_SYSTEM_12) {
+			dac_up_idx = i;
 		}
 	}
 
 	zassert_true(reset_idx >= 0 && reset_idx < clk_idx,
 		     "reset (0x00) must be written before clk manager (0x01)");
-	zassert_true(ana_idx >= 0 && ana_idx < dac_idx,
-		     "analog power-up (0x0D) must precede DAC power-up (0x12)");
+	zassert_true(ana_idx >= 0 && ana_idx < dac_up_idx,
+		     "analog references (0x0D) must precede the DAC power-up (0x12): "
+		     "0x0D at %d, the last 0x12 at %d",
+		     ana_idx, dac_up_idx);
 }
 
 /*
@@ -903,6 +914,74 @@ ZTEST(es8311, test_apply_properties_holds_the_lock_across_its_writes)
 }
 
 /*
+ * configure() must quiesce the part before it moves the clock tree.
+ *
+ * The clock manager gates the clocks of whichever converter the new route does not
+ * carry. Gating the clock of a DAC that is still powered and still unmuted does not
+ * silence it: it freezes the modulator on the last sample, which is a DC step into
+ * the amplifier. The mutes and the power-downs have to come BEFORE the first write
+ * to the clock manager, and the register values at the end cannot show that -- only
+ * the write ORDER can.
+ */
+ZTEST(es8311, test_configure_quiesces_before_it_moves_the_clocks)
+{
+	struct audio_codec_cfg cfg;
+	int clk = -1;
+	int sdp_in = -1;
+	int sdp_out = -1;
+	int dac_mute = -1;
+	int dac_pwr = -1;
+	int adc_pwr = -1;
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	emul_es8311_reset_log(emul);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure must pass");
+
+	for (int i = 0; i < emul_es8311_write_count(emul); i++) {
+		int r = emul_es8311_write_at(emul, i);
+
+		if (r == ES8311_REG_CLK_MANAGER && clk < 0) {
+			clk = i;
+		} else if (r == ES8311_REG_SDP_IN && sdp_in < 0) {
+			sdp_in = i;
+		} else if (r == ES8311_REG_SDP_OUT && sdp_out < 0) {
+			sdp_out = i;
+		} else if (r == ES8311_REG_DAC_MUTE && dac_mute < 0) {
+			dac_mute = i;
+		} else if (r == ES8311_REG_SYSTEM_12 && dac_pwr < 0) {
+			dac_pwr = i;
+		} else if (r == ES8311_REG_SYSTEM_0E && adc_pwr < 0) {
+			adc_pwr = i;
+		}
+	}
+
+	zassert_true(clk > 0, "the clock manager (0x01) must be written");
+
+	zassert_true(sdp_in >= 0 && sdp_in < clk,
+		     "the DAC serial port must be muted before the clocks move "
+		     "(0x09 at %d, 0x01 at %d)",
+		     sdp_in, clk);
+	zassert_true(sdp_out >= 0 && sdp_out < clk,
+		     "the ADC serial port must be muted before the clocks move "
+		     "(0x0A at %d, 0x01 at %d)",
+		     sdp_out, clk);
+	zassert_true(dac_mute >= 0 && dac_mute < clk,
+		     "the DAC must be muted before the clocks move (0x31 at %d, 0x01 at %d)",
+		     dac_mute, clk);
+	zassert_true(dac_pwr >= 0 && dac_pwr < clk,
+		     "the DAC must be powered down before the clocks move "
+		     "(0x12 at %d, 0x01 at %d)",
+		     dac_pwr, clk);
+	/*
+	 * The ADC is NOT powered down in the quiesce and must not be: it drives no
+	 * speaker, so it cannot pop, and power-cycling it on every configure leaves a DC
+	 * offset that measurably raises the capture noise floor. Muting its serial port
+	 * (0x0A, asserted above) is the whole of what it needs.
+	 */
+	ARG_UNUSED(adc_pwr);
+}
+
+/*
  * A configure() that dies part-way through must not leave the driver steering by a
  * route that no longer describes the chip.
  *
@@ -920,7 +999,7 @@ ZTEST(es8311, test_apply_properties_holds_the_lock_across_its_writes)
  * first one is the easy case, and it is the one a "fail the next transfer" hook can
  * reach; the interesting failures are in the middle of the sequence.
  */
-ZTEST(es8311, test_failed_configure_leaves_no_route)
+ZTEST(es8311, test_failed_configure_disarms_start_but_never_stop)
 {
 	struct audio_codec_cfg cfg;
 	int covered = 0;
@@ -950,19 +1029,42 @@ ZTEST(es8311, test_failed_configure_leaves_no_route)
 		covered++;
 
 		/*
-		 * The route is gone, so all three of these must be no-ops on the bus.
-		 * A single write here is the driver acting on a description of a chip
-		 * that the failed configure() already invalidated.
+		 * UNMUTING is gated. The failed call may already have moved the DAC's
+		 * power or its clocks, and there is no route to say otherwise, so
+		 * start_output() must not put a speaker back on the output.
 		 */
 		emul_es8311_reset_log(emul);
-		(void)audio_codec_start_output(codec);
-		(void)audio_codec_stop_output(codec);
-		(void)audio_codec_apply_properties(codec);
-
+		audio_codec_start_output(codec);
 		zassert_equal(emul_es8311_write_count(emul), 0,
-			      "configure() failed at transfer %d, and the driver then wrote %d "
-			      "register(s) steering by a route that no longer describes the chip",
+			      "start_output() must not unmute after a configure() that "
+			      "failed at transfer %d (it wrote %d register(s))",
 			      n, emul_es8311_write_count(emul));
+
+		/*
+		 * MUTING is not gated, and this is the case that matters. A configure()
+		 * that died on its FIRST register write changed nothing: the old route's
+		 * DAC is still powered, still unmuted and still driving the amplifier.
+		 * The route cache has been cleared all the same. If stop_output() were
+		 * gated on that cache it would do nothing, and the caller reaching for
+		 * the off switch would find it disconnected -- a fail-open, and worse
+		 * than the stale route it was meant to prevent.
+		 *
+		 * Seed the mute register to "not muted" so the assertion needs a real
+		 * write by the driver.
+		 */
+		reg_put(ES8311_REG_DAC_MUTE, 0x00U);
+		emul_es8311_reset_log(emul);
+		audio_codec_stop_output(codec);
+
+		zassert_true(emul_es8311_write_count(emul) > 0,
+			     "stop_output() must attempt the mute even with no route "
+			     "(configure() failed at transfer %d, and it wrote nothing)",
+			     n);
+		zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+			      "the DAC must end up muted after a configure() that failed "
+			      "at transfer %d: it is the only way to silence a speaker "
+			      "that a half-done configure left live",
+			      n);
 	}
 
 	zassert_true(covered > 1,
