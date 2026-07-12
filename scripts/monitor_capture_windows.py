@@ -42,21 +42,51 @@ print("monitoring %s for %.0fs (%s)" % (PORT, SECS, "reset on connect" if RESET
 logf = open(LOG, "w", encoding="utf-8", errors="replace")
 proc = PtyProcess.spawn(cmd, dimensions=(40, 120))
 
+# PtyProcess.read() BLOCKS until data arrives, so a device that goes silent -- which
+# is exactly what a firmware hang looks like -- wedges this loop forever and the
+# deadline above is never re-checked. That happened on HW-019b: the sweep stopped
+# printing mid-run, the monitor never returned, and it held the COM port until it was
+# killed by hand. Read on a worker thread and let the main loop own the clock.
+import threading
+
+try:
+    import queue
+except ImportError:  # pragma: no cover - py2
+    import Queue as queue
+
+q = queue.Queue()
+
+
+def _pump():
+    while True:
+        try:
+            d = proc.read(4096)
+        except Exception:
+            break
+        if not d:
+            break
+        q.put(d)
+
+
+threading.Thread(target=_pump, daemon=True).start()
+
 end = time.time() + SECS
 total = 0
-while time.time() < end and proc.isalive():
+quiet = 0.0
+while time.time() < end:
     try:
-        data = proc.read(4096)
-    except EOFError:
-        break
-    if data:
-        total += len(data)
-        logf.write(data)
-        logf.flush()
+        data = q.get(timeout=0.5)
+    except queue.Empty:
+        quiet += 0.5
+        continue
+    quiet = 0.0
+    total += len(data)
+    logf.write(data)
+    logf.flush()
 try:
     proc.terminate(force=True)
 except Exception:
     pass
-logf.write("\n[monitor captured %d chars]\n" % total)
+logf.write("\n[monitor captured %d chars; last %.1fs silent]\n" % (total, quiet))
 logf.close()
 print("captured %d chars to %s" % (total, LOG))

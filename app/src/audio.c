@@ -337,13 +337,50 @@ bool audio_ready(void)
 	return ready;
 }
 
+/*
+ * Refuse to start a stream when the I2S mem-slab has been eaten, and say why.
+ *
+ * Zephyr's ESP32 I2S driver leaks one slab block per direction on every START/DROP
+ * cycle: i2s_esp32_{rx,tx}_stop_transfer() set stream->data->mem_block -- the block
+ * the DMA is working on -- to NULL without returning it to the slab, and DROP calls
+ * exactly those. Every capture session here ends in a DROP, so eight sessions empty
+ * an eight-block slab.
+ *
+ * And it does not fail: i2s_buf_write() allocates with K_FOREVER
+ * (drivers/i2s/i2s_common.c), so an exhausted slab is an unkillable block with no
+ * error, no fault and no log line. The device simply stops, which is how it presented
+ * on hardware (HW-019) and how it would present to a user who opened the AUDIO page
+ * nine times.
+ *
+ * scripts/patch_zephyr_i2s_leak.sh fixes the driver; it is a three-hunk change and it
+ * is hardware-proved (evidence/20260712-hw019-es8311-rate-sweep-PASS.log). This check
+ * is for anyone who builds without it: a message beats a mystery.
+ */
+static bool audio_slab_ok(const char *what)
+{
+	uint32_t tx = k_mem_slab_num_free_get(&tx_slab);
+	uint32_t rx = k_mem_slab_num_free_get(&rx_slab);
+
+	if (tx >= 2U && rx >= 2U) {
+		return true;
+	}
+
+	LOG_ERR("%s refused: I2S mem-slab exhausted (tx=%u rx=%u of %u). The ESP32 I2S "
+		"driver leaks a block per START/DROP; run scripts/patch_zephyr_i2s_leak.sh "
+		"against your Zephyr tree. Starting anyway would block forever inside "
+		"i2s_buf_write().",
+		what, tx, rx, (unsigned int)BLOCK_COUNT);
+
+	return false;
+}
+
 void audio_beep(void)
 {
 	uint32_t total_frames;
 	uint32_t blocks;
 	int ret;
 
-	if (!ready) {
+	if (!ready || !audio_slab_ok("beep")) {
 		return;
 	}
 
@@ -653,6 +690,10 @@ static void meter_session(void)
 	uint16_t wpeak = 0U;
 	uint32_t wc = 0U;
 
+	if (!audio_slab_ok("mic meter")) {
+		return;
+	}
+
 	/* Start ONE full-duplex session (amp stays OFF for capture). */
 	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
 	audio_codec_start_output(codec_dev);
@@ -766,6 +807,10 @@ static void do_record(void)
 	uint32_t empty = 0U;
 	bool logged = false;
 
+	if (!audio_slab_ok("record")) {
+		return;
+	}
+
 	rec_samples = 0U;
 	rec_peak = 0U;
 	rec_abort = false;
@@ -848,7 +893,7 @@ static void do_play(void)
 	uint32_t pos = 0U;
 	int ret;
 
-	if (rec_samples == 0U) {
+	if (rec_samples == 0U || !audio_slab_ok("playback")) {
 		return;
 	}
 	rec_state = AUDIO_REC_PLAYING;
@@ -1109,6 +1154,18 @@ static int sweep_io(size_t *frames)
 }
 
 /*
+ * Name each step as it is entered.
+ *
+ * A silent hang is the one failure a print-the-result sweep cannot locate. Every
+ * error path here prints, but a call that never returns prints nothing: HW-019b
+ * stopped dead after 32 kHz with no error line and no fault, and the log gave no way
+ * to tell which call had not come back. The last marker in the log now names it.
+ *
+ * Lower case and indented, so `grep '^SWEEP'` still gives the clean per-rate summary.
+ */
+#define SWEEP_STEP(r, s) printk("  sweep.%u: %s\n", (unsigned int)(r), (s))
+
+/*
  * Put the I2S back into a state configure() will accept, whatever state it is in.
  * DROP alone is not enough: a stream that hit an error is left in ERROR with its
  * slab blocks still held, and only PREPARE returns them. Without this a single
@@ -1143,7 +1200,22 @@ static int sweep_one(uint32_t rate)
 	size_t frames = 0U;
 	int ret;
 
+	/*
+	 * The slab census. i2s_buf_write() allocates its block with K_FOREVER
+	 * (drivers/i2s/i2s_common.c), NOT with the i2s_config timeout, so an exhausted
+	 * TX slab is not an error: it is an unkillable block. HW-019b hung exactly
+	 * there, silently, on the eighth rate. Print what the slab holds before and
+	 * after the reset, so a leak shows up as a number instead of as a hang.
+	 */
+	printk("  sweep.%u: slab pre-reset  tx=%u rx=%u\n", (unsigned int)rate,
+	       k_mem_slab_num_free_get(&tx_slab), k_mem_slab_num_free_get(&rx_slab));
+
+	SWEEP_STEP(rate, "reset");
 	sweep_reset_i2s();
+
+	printk("  sweep.%u: slab post-reset tx=%u rx=%u  (of %u)\n", (unsigned int)rate,
+	       k_mem_slab_num_free_get(&tx_slab), k_mem_slab_num_free_get(&rx_slab),
+	       (unsigned int)BLOCK_COUNT);
 
 	i2s_cfg.word_size = AUDIO_WORD_BITS;
 	i2s_cfg.channels = AUDIO_CHANNELS;
@@ -1154,6 +1226,7 @@ static int sweep_one(uint32_t rate)
 	i2s_cfg.block_size = BLOCK_SIZE;
 	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
 
+	SWEEP_STEP(rate, "cfg-tx");
 	ret = i2s_configure(i2s_dev, I2S_DIR_TX, &i2s_cfg);
 	if (ret < 0) {
 		printk("SWEEP %-6u FAIL i2s_configure(TX)=%d\n", rate, ret);
@@ -1169,12 +1242,14 @@ static int sweep_one(uint32_t rate)
 	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
 	codec_cfg.dai_cfg.i2s = i2s_cfg;
 
+	SWEEP_STEP(rate, "cfg-codec");
 	ret = audio_codec_configure(codec_dev, &codec_cfg);
 	if (ret < 0) {
 		printk("SWEEP %-6u FAIL audio_codec_configure=%d\n", rate, ret);
 		return ret;
 	}
 
+	SWEEP_STEP(rate, "cfg-rx");
 	i2s_cfg.mem_slab = &rx_slab;
 	i2s_cfg.timeout = LOOP_IO_TIMEOUT_MS;
 	ret = i2s_configure(i2s_dev, I2S_DIR_RX, &i2s_cfg);
@@ -1183,6 +1258,7 @@ static int sweep_one(uint32_t rate)
 		return ret;
 	}
 
+	SWEEP_STEP(rate, "regs");
 	/* 1. Read the clock registers back off the real codec. */
 	for (size_t i = 0; i < ARRAY_SIZE(sweep_expect); i++) {
 		uint8_t v = 0U;
@@ -1195,6 +1271,7 @@ static int sweep_one(uint32_t rate)
 		}
 	}
 
+	SWEEP_STEP(rate, "prequeue");
 	/* Pre-queue so TX does not underrun the moment the clocks start. */
 	for (int i = 0; i < 2; i++) {
 		ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
@@ -1205,6 +1282,7 @@ static int sweep_one(uint32_t rate)
 		}
 	}
 
+	SWEEP_STEP(rate, "start");
 	ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
 	if (ret < 0) {
 		printk("SWEEP %-6u FAIL i2s_trigger(START)=%d\n", rate, ret);
@@ -1212,6 +1290,7 @@ static int sweep_one(uint32_t rate)
 		return ret;
 	}
 
+	SWEEP_STEP(rate, "warmup");
 	/* Let the DMA reach steady state before anything is measured. */
 	for (uint32_t b = 0U; b < SWEEP_WARMUP_BLOCKS; b++) {
 		ret = sweep_io(&frames);
@@ -1221,6 +1300,7 @@ static int sweep_one(uint32_t rate)
 		}
 	}
 
+	SWEEP_STEP(rate, "baseline");
 	/*
 	 * 3. Silence baseline, amplifier still off. A codec whose clock tree did
 	 * not come up returns all zeros or a stuck constant here; a running one
@@ -1257,6 +1337,7 @@ static int sweep_one(uint32_t rate)
 		}
 	}
 
+	SWEEP_STEP(rate, "amp");
 	/* The clocks are already running, so raising the amplifier here cannot pop. */
 	ret = gpio_pin_set_dt(&amp_gpio, 1);
 	if (ret < 0) {
@@ -1290,6 +1371,7 @@ static int sweep_one(uint32_t rate)
 	 * well, keeps both directions fed, and leaves the queue empty for the clock
 	 * measurement that follows.
 	 */
+	SWEEP_STEP(rate, "settle");
 	settle = (((uint32_t)AMP_SETTLE_MS * rate) / (1000U * BLOCK_FRAMES)) + 1U;
 	for (uint32_t b = 0U; b < settle; b++) {
 		ret = sweep_io(&frames);
@@ -1304,6 +1386,7 @@ static int sweep_one(uint32_t rate)
 	 * iteration costs exactly one block of DMA time, so the elapsed cycles over
 	 * a known number of blocks give the rate the hardware is really running at.
 	 */
+	SWEEP_STEP(rate, "timed");
 	t0 = k_cycle_get_32();
 
 	for (uint32_t b = 0U; b < SWEEP_TIMED_BLOCKS; b++) {
@@ -1338,6 +1421,7 @@ static int sweep_one(uint32_t rate)
 	rate_ok = (measured + tolerance >= rate) && (measured <= rate + tolerance);
 
 stop:
+	SWEEP_STEP(rate, "stop");
 	(void)gpio_pin_set_dt(&amp_gpio, 0);
 	sweep_reset_i2s();
 
