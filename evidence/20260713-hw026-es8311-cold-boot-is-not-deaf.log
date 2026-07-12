@@ -1,0 +1,266 @@
+HW-026  ES8311: a COLD power-on does NOT go deaf. HW-023's explanation is refuted,
+        and the root cause of the six seconds is open again.
+
+        M5Stack StickS3 (3rd unit, COM35), Zephyr 4.4.0, 2026-07-13.
+        The board was PHYSICALLY UNPLUGGED and REPLUGGED. This is the one thing no
+        amount of west flash, sys_reboot() or reset-on-connect can simulate: the
+        ES8311 has no reset pin, so none of those reach it.
+
+WHAT HW-023 CONCLUDED, AND WHY IT NEEDED THIS RUN
+-------------------------------------------------
+HW-023 established -- correctly, and it still stands -- that the ES8311's ADC returns a
+noise floor of exactly zero for about 6.2 seconds after the 0x00 block reset, and that
+there is no sample-rate dependence (the rate sweep had been reading its own elapsed time
+as a frequency response).
+
+It then EXPLAINED that with a tidy story: the reset clears CSM_ON, which powers the
+analog down; the ES8311 has no microphone-bias pin and its analog reference sits on three
+1 uF capacitors (VMID, ADCVREF, DACVREF); discharging and recharging them is the six
+seconds. The story predicts something testable and expensive: a genuine cold power-on
+starts from fully discharged capacitors, so a cold-booted board's microphone should be
+deaf for the same six seconds.
+
+It is not. The story is wrong.
+
+RESULT
+------
+Cold power-on. t is milliseconds since POWER WAS APPLIED, not since a reset. The sweep
+reaches its first rate 2.2 s into the boot, which is the earliest this instrument can
+sample anything.
+
+    8000    t=2239 ms   floor=10053   tone_rms=1254    adc=alive   PASS
+    11025   t=3708 ms   floor=176     tone_rms=2239    adc=alive   PASS
+    12000   t=5078 ms   floor=152     tone_rms=1672    adc=alive   PASS
+    16000   t=6181 ms   floor=298     tone_rms=2942    adc=alive   PASS
+    22050   t=7047 ms   floor=101     tone_rms=3976    adc=alive   PASS
+    24000   t=7862 ms   floor=88      tone_rms=4001    adc=alive   PASS
+    32000   t=8541 ms   floor=108     tone_rms=5221    adc=alive   PASS
+    44100   t=9105 ms   floor=99      tone_rms=10179   adc=alive   PASS
+    48000   t=9642 ms   floor=117     tone_rms=14533   adc=alive   PASS
+
+All nine rates pass. The ADC is ALIVE at 2.2 seconds after power-on.
+
+What it does show is a settling transient of a completely different shape: the noise floor
+starts about a hundred times too high (10053 against a settled 81..116) and DECAYS to
+baseline by roughly seven seconds. That is a large analog offset being nulled out, not a
+dead converter.
+
+THE THREE CASES, AT THE SAME MOMENT
+-----------------------------------
+    at t = 2 to 3 seconds          noise floor
+    -------------------------------------------------------------------
+    cold power-on (this run)       10053, decaying   ADC ALIVE
+    warm boot (control, measured    93, flat         ADC ALIVE
+      many times today)
+    after a 0x00 reset (HW-023)     0                ADC DEAF
+
+Three different behaviours at the same elapsed time, so this is not an artefact of when
+the instrument happens to look. The reset and the cold boot are genuinely different
+events, and only the reset kills the ADC.
+
+WHAT THIS MEANS
+---------------
+1. HW-023's MEASUREMENT stands: the 0x00 reset costs about 6.2 seconds of a zero noise
+   floor. Reproduced many times.
+
+2. HW-023's EXPLANATION is refuted. A cold power-on charges the same three capacitors
+   from zero and does not go deaf. So the discharge is not the mechanism, or not all of
+   it. Root cause is open again.
+
+3. The conclusion "do not reset this part" is STRONGER, not weaker. The reset costs
+   something a cold boot does not. It is not "the cold start you were going to pay
+   anyway, brought forward" -- it puts the part somewhere a cold start never goes.
+
+4. One thing is worth noting even though it explains nothing yet: cycling only the
+   codec's ANALOG supply (the L3B rail, M5PM1 PYG2) reproduces the deafness exactly, with
+   no reset at all -- while cutting power to the WHOLE BOARD does not. What (a) the 0x00
+   reset and (b) the L3B cycle share, and (c) the cold boot does not, is that they are
+   PARTIAL power-downs. That is a hypothesis. It has not been tested and it is not a
+   finding.
+
+AND THE HONEST NOTE
+-------------------
+The claim this run refutes was mine, it was three hours old, and it was already committed
+-- in the driver's comments, in the devicetree binding, and in the risk register -- as
+"what it cannot avoid is the same six seconds on a genuine cold power-on". It was a good
+story that fit every measurement I had. It took one physical unplug to kill it, and the
+only reason it did not ship is that somebody pulled the cable.
+
+METHOD, AND WHY IT IS AWKWARD
+-----------------------------
+A cold boot cannot be captured the usual way. The COM port does not exist until the board
+is powered, so a monitor cannot be attached before power-on; by the time it is, the first
+rates have already been measured and printed into a void. And the monitor must attach with
+--no-reset, because a reset-on-connect would not re-discharge anything -- that is the whole
+point -- but it WOULD restart the sweep, which would then run warm and measure nothing.
+
+So each row is stamped with the milliseconds since boot, stored, and the table is replayed
+on an endless loop afterwards. A monitor attached minutes later still reads the run. An
+earlier version replayed only twenty times and the window was missed.
+
+================================================================================
+=== HW-026 COLD-BOOT REPLAY 52 (t is ms since POWER-ON, not since reset) ===
+
+  the same image, WARM-booted, reads floor 81..116 at every rate
+
+  including 8 kHz. Any deaf rate below is deaf because of WHEN it was
+
+  measured, not because of its frequency -- nothing reset this chip.
+
+  REPLAY 8000   t=2239   ms  lrck=7999   floor=10053 tone_rms=1254    adc=alive PASS
+
+  REPLAY 11025  t=3708   ms  lrck=11024  floor=176   tone_rms=2239    adc=alive PASS
+
+  REPLAY 12000  t=5078   ms  lrck=11999  floor=152   tone_rms=1672    adc=alive PASS
+
+  REPLAY 16000  t=6181   ms  lrck=15999  floor=298   tone_rms=2942    adc=alive PASS
+
+  REPLAY 22050  t=7047   ms  lrck=22049  floor=101   tone_rms=3976    adc=alive PASS
+
+  REPLAY 24000  t=7862   ms  lrck=23998  floor=88    tone_rms=4001    adc=alive PASS
+
+  REPLAY 32000  t=8541   ms  lrck=31998  floor=108   tone_rms=5221    adc=alive PASS
+
+  REPLAY 44100  t=9105   ms  lrck=44096  floor=99    tone_rms=10179   adc=alive PASS
+
+  REPLAY 48000  t=9642   ms  lrck=47996  floor=117   tone_rms=14533   adc=alive PASS
+
+
+
+=== HW-026 COLD-BOOT REPLAY 53 (t is ms since POWER-ON, not since reset) ===
+
+  the same image, WARM-booted, reads floor 81..116 at every rate
+
+  including 8 kHz. Any deaf rate below is deaf because of WHEN it was
+
+  measured, not because of its frequency -- nothing reset this chip.
+
+  REPLAY 8000   t=2239   ms  lrck=7999   floor=10053 tone_rms=1254    adc=alive PASS
+
+  REPLAY 11025  t=3708   ms  lrck=11024  floor=176   tone_rms=2239    adc=alive PASS
+
+  REPLAY 12000  t=5078   ms  lrck=11999  floor=152   tone_rms=1672    adc=alive PASS
+
+  REPLAY 16000  t=6181   ms  lrck=15999  floor=298   tone_rms=2942    adc=alive PASS
+
+  REPLAY 22050  t=7047   ms  lrck=22049  floor=101   tone_rms=3976    adc=alive PASS
+
+  REPLAY 24000  t=7862   ms  lrck=23998  floor=88    tone_rms=4001    adc=alive PASS
+
+  REPLAY 32000  t=8541   ms  lrck=31998  floor=108   tone_rms=5221    adc=alive PASS
+
+  REPLAY 44100  t=9105   ms  lrck=44096  floor=99    tone_rms=10179   adc=alive PASS
+
+  REPLAY 48000  t=9642   ms  lrck=47996  floor=117   tone_rms=14533   adc=alive PASS
+
+
+
+=== HW-026 COLD-BOOT REPLAY 54 (t is ms since POWER-ON, not since reset) ===
+
+  the same image, WARM-booted, reads floor 81..116 at every rate
+
+  including 8 kHz. Any deaf rate below is deaf because of WHEN it was
+
+  measured, not because of its frequency -- nothing reset this chip.
+
+  REPLAY 8000   t=2239   ms  lrck=7999   floor=10053 tone_rms=1254    adc=alive PASS
+
+  REPLAY 11025  t=3708   ms  lrck=11024  floor=176   tone_rms=2239    adc=alive PASS
+
+  REPLAY 12000  t=5078   ms  lrck=11999  floor=152   tone_rms=1672    adc=alive PASS
+
+  REPLAY 16000  t=6181   ms  lrck=15999  floor=298   tone_rms=2942    adc=alive PASS
+
+  REPLAY 22050  t=7047   ms  lrck=22049  floor=101   tone_rms=3976    adc=alive PASS
+
+  REPLAY 24000  t=7862   ms  lrck=23998  floor=88    tone_rms=4001    adc=alive PASS
+
+  REPLAY 32000  t=8541   ms  lrck=31998  floor=108   tone_rms=5221    adc=alive PASS
+
+  REPLAY 44100  t=9105   ms  lrck=44096  floor=99    tone_rms=10179   adc=alive PASS
+
+  REPLAY 48000  t=9642   ms  lrck=47996  floor=117   tone_rms=14533   adc=alive PASS
+
+
+=== HW-026 COLD-BOOT REPLAY 55 (t is ms since POWER-ON, not since reset) ===
+
+  the same image, WARM-booted, reads floor 81..116 at every rate
+
+  including 8 kHz. Any deaf rate below is deaf because of WHEN it was
+
+  measured, not because of its frequency -- nothing reset this chip.
+
+  REPLAY 8000   t=2239   ms  lrck=7999   floor=10053 tone_rms=1254    adc=alive PASS
+
+  REPLAY 11025  t=3708   ms  lrck=11024  floor=176   tone_rms=2239    adc=alive PASS
+
+  REPLAY 12000  t=5078   ms  lrck=11999  floor=152   tone_rms=1672    adc=alive PASS
+
+  REPLAY 16000  t=6181   ms  lrck=15999  floor=298   tone_rms=2942    adc=alive PASS
+
+  REPLAY 22050  t=7047   ms  lrck=22049  floor=101   tone_rms=3976    adc=alive PASS
+
+  REPLAY 24000  t=7862   ms  lrck=23998  floor=88    tone_rms=4001    adc=alive PASS
+
+  REPLAY 32000  t=8541   ms  lrck=31998  floor=108   tone_rms=5221    adc=alive PASS
+
+  REPLAY 44100  t=9105   ms  lrck=44096  floor=99    tone_rms=10179   adc=alive PASS
+
+  REPLAY 48000  t=9642   ms  lrck=47996  floor=117   tone_rms=14533   adc=alive PASS
+
+
+=== HW-026 COLD-BOOT REPLAY 56 (t is ms since POWER-ON, not since reset) ===
+
+  the same image, WARM-booted, reads floor 81..116 at every rate
+
+  including 8 kHz. Any deaf rate below is deaf because of WHEN it was
+
+  measured, not because of its frequency -- nothing reset this chip.
+
+  REPLAY 8000   t=2239   ms  lrck=7999   floor=10053 tone_rms=1254    adc=alive PASS
+
+  REPLAY 11025  t=3708   ms  lrck=11024  floor=176   tone_rms=2239    adc=alive PASS
+
+  REPLAY 12000  t=5078   ms  lrck=11999  floor=152   tone_rms=1672    adc=alive PASS
+
+  REPLAY 16000  t=6181   ms  lrck=15999  floor=298   tone_rms=2942    adc=alive PASS
+
+  REPLAY 22050  t=7047   ms  lrck=22049  floor=101   tone_rms=3976    adc=alive PASS
+
+  REPLAY 24000  t=7862   ms  lrck=23998  floor=88    tone_rms=4001    adc=alive PASS
+
+  REPLAY 32000  t=8541   ms  lrck=31998  floor=108   tone_rms=5221    adc=alive PASS
+
+  REPLAY 44100  t=9105   ms  lrck=44096  floor=99    tone_rms=10179   adc=alive PASS
+
+  REPLAY 48000  t=9642   ms  lrck=47996  floor=117   tone_rms=14533   adc=alive PASS
+
+
+=== HW-026 COLD-BOOT REPLAY 57 (t is ms since POWER-ON, not since reset) ===
+
+  the same image, WARM-booted, reads floor 81..116 at every rate
+
+  including 8 kHz. Any deaf rate below is deaf because of WHEN it was
+
+  measured, not because of its frequency -- nothing reset this chip.
+
+  REPLAY 8000   t=2239   ms  lrck=7999   floor=10053 tone_rms=1254    adc=alive PASS
+
+  REPLAY 11025  t=3708   ms  lrck=11024  floor=176   tone_rms=2239    adc=alive PASS
+
+  REPLAY 12000  t=5078   ms  lrck=11999  floor=152   tone_rms=1672    adc=alive PASS
+
+  REPLAY 16000  t=6181   ms  lrck=15999  floor=298   tone_rms=2942    adc=alive PASS
+
+  REPLAY 22050  t=7047   ms  lrck=22049  floor=101   tone_rms=3976    adc=alive PASS
+
+  REPLAY 24000  t=7862   ms  lrck=23998  floor=88    tone_rms=4001    adc=alive PASS
+
+  REPLAY 32000  t=8541   ms  lrck=31998  floor=108   tone_rms=5221    adc=alive PASS
+
+  REPLAY 44100  t=9105   ms  lrck=44096  floor=99    tone_rms=10179   adc=alive PASS
+
+  REPLAY 48000  t=9642   ms  lrck=47996  floor=117   tone_rms=14533   adc=alive PASS
+
+
+[monitor captured 6766 chars; last 3.5s silent]

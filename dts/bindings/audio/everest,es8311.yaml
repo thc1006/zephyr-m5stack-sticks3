@@ -37,24 +37,30 @@ description: |
   use. That reset does not do what its name suggests: RST_DIG is documented as
   "reset digital except control port block", and the control port block is where
   the registers live, so no value of 0x00 resets the register file. What it does
-  do is clear CSM_ON, which powers the analog down -- and the ES8311's analog
-  reference sits on three 1 uF capacitors (VMID, ADCVREF, DACVREF; there is no
-  microphone-bias pin). Charging them back takes SECONDS. Measured on an ES8311
-  on real hardware, the ADC returns a zero noise floor for about six seconds
-  after the reset, and then works normally forever. No datasheet or reference
-  driver specifies any settling time -- mainline Linux's es8311.c says so in as
-  many words -- so nothing can be waited out from a table.
+  do is clear CSM_ON, which powers the analog down. Measured on an ES8311 on real
+  hardware, the ADC then returns a noise floor of exactly zero for about six
+  seconds, and afterwards works normally and indefinitely. No datasheet or
+  reference driver specifies any settling time -- mainline Linux's es8311.c says
+  so in as many words -- so nothing can be waited out from a table.
 
   A reset is only ever a shortcut to a known register state, and this driver
   reaches the same state the long way, by programming every register its
   behaviour depends on. That costs nothing: measured on a settled part, the
   capture noise floor was 103 counts before those writes and 109 after, with no
-  settling transient at all. So capture works from the first block, on a warm
-  reboot as well as a cold one, and the driver never spends six seconds deaf.
+  settling transient at all.
 
-  What it cannot avoid is the same six seconds on a genuine cold power-on, when
-  the board -- not the driver -- charges those capacitors. Capture is not
-  trustworthy until they are charged. Playback is unaffected.
+  A COLD POWER-ON DOES NOT COST THE SIX SECONDS, and that is what makes the reset
+  a bad trade rather than a wash. Measured on a physically unplugged and replugged
+  board: the ADC is alive at the earliest moment it can be sampled, 2.2 s after
+  power-on, with an elevated noise floor that decays to its settled value within
+  about seven seconds. At that same 2.2 s mark after a register reset, the floor
+  is zero. So the reset does not merely bring a cold start forward; it puts the
+  part somewhere a cold start never goes. What that is has not been established.
+
+  Cutting the codec's analog supply reproduces the deaf six seconds, with no reset
+  involved at all. So does the reset. A full power-cycle of the board does not.
+  Whatever the mechanism is, it appears to be a partial power-down rather than the
+  discharge itself.
 
 compatible: "everest,es8311"
 
@@ -68,6 +74,7 @@ properties:
       supply. It is driven active before the codec is probed. This is a
       board-level power switch, not a codec pin; the ES8311 has no enable input.
 
-      Cutting this supply discharges the codec's analog reference capacitors, so
-      capture is deaf for several seconds after it is restored. See the settling
-      note above.
+      Measured on one board: cutting the codec's analog supply and restoring it
+      leaves the ADC deaf for several seconds, the same way the register-0x00
+      reset does -- and unlike a full cold power-on, which does not. See the
+      settling note above before wiring this.

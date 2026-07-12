@@ -116,11 +116,19 @@ LOG_MODULE_REGISTER(es8311);
  * 0x19, 0x1A, 0x33, 0x35 -- the value is the power-on default, written anyway so that the
  * dependency is stated rather than inherited.
  *
- * Writing all of this costs nothing. Measured on an ES8311 whose analog was fully
- * settled: the capture noise floor was 103 counts before and 109 after, with no settling
- * transient at all (evidence/20260712-hw023-*). The alternative -- resetting the part to
- * get a known state -- costs about six seconds of deaf ADC while three 1 uF reference
- * capacitors recharge, and that is why this driver does not do it.
+ * Writing all of this costs nothing. Measured on an ES8311 whose analog was settled: the
+ * capture noise floor was 103 counts before these writes and 109 after, with no settling
+ * transient at all. The alternative -- resetting the part to get a known state -- costs
+ * about six seconds during which the ADC returns a noise floor of exactly zero. That is
+ * why this driver does not do it.
+ *
+ * And a cold power-on does NOT cost it, which is the whole reason the reset is a bad
+ * trade rather than a wash. Measured on a physically unplugged and replugged board: the
+ * ADC is alive at the earliest moment it can be sampled (2.2 s after power-on, the first
+ * rate the sweep reaches), with an elevated noise floor that decays to its settled value
+ * within about seven seconds. At the same 2.2 s mark after a register reset, the floor is
+ * zero. So the reset is not merely "the same cold start, earlier": it puts the part
+ * somewhere a cold start never goes, and the mechanism for that is not established.
  */
 #define ES8311_PWRUP_MIN     0x00U /* 0x0B: PWRUP_A = 0, PWRUP_B[3:1] = 0 */
 #define ES8311_PWRUP_C_MIN   0x00U /* 0x0C: PWRUP_C = 0. Power-on default is 32. */

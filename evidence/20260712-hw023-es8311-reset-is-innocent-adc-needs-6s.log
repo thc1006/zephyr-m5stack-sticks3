@@ -149,6 +149,16 @@ Pulsing 0xFA bit 0 therefore also costs a settle. That does not matter, because 
 driver does not need it: WRITING 0xFA = 0x00 is in the D1 and D2 sets and is free.
 
 
+PARTIALLY SUPERSEDED BY HW-026 -- READ THIS FIRST
+------------------------------------------------
+Everything MEASURED below stands. The EXPLANATION offered for the six seconds -- that the
+reset discharges three 1 uF analog reference capacitors and recharging them is the cost --
+is REFUTED by evidence/20260713-hw026-es8311-cold-boot-is-not-deaf.log. A genuine cold
+power-on charges those same capacitors from zero and the ADC is ALIVE at the earliest
+moment it can be sampled (2.2 s), while at that same 2.2 s after a reset the floor is 0.
+The reset does something a cold start does not, and what that is remains unknown. The
+conclusion -- do not reset this part -- is unchanged and is stronger for it.
+
 CONCLUSION
 ----------
 The conclusion "do not reset the ES8311" stands. Every reason previously given for it
