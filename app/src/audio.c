@@ -860,7 +860,21 @@ static void do_record(void)
 			uint16_t r;
 			int rc;
 
-			if (loop_tx(zero_block) < 0) {
+			/*
+			 * A silent break. This one ends the session and bumps `restarts`,
+			 * and it said nothing at all -- so a recording that restarted once,
+			 * every single time, looked like a recording that just worked. The
+			 * read error below has always logged; the write error never did, and
+			 * it is the one that was actually firing.
+			 */
+			rc = loop_tx(zero_block);
+			if (rc < 0) {
+				if (!logged) {
+					LOG_WRN("rec: loop_tx %d at %u ms (restarting)", rc,
+						(unsigned int)(rec_samples * 1000U /
+							       AUDIO_SAMPLE_RATE));
+					logged = true;
+				}
 				break;
 			}
 			rc = i2s_buf_read(i2s_dev, rx_buf, &size);
