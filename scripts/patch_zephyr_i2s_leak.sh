@@ -113,20 +113,48 @@ import sys
 path = sys.argv[1]
 src = io.open(path, encoding="utf-8", newline="\n").read()
 
-# --- part 1: stop the PRODUCER before the consumer, and bind "stopped" to "safe to free" ---
+# --- part 1: stop the PRODUCER before the consumer, on BOTH paths ---
 #
-# The order is not a guess. ESP-IDF's own I2S driver stops the I2S peripheral before it
-# calls gdma_stop(), and puts the GDMA/FIFO reset in the START path rather than the STOP
-# path. Zephyr's ESP32 I2S driver skipped the first half of that, and this is the whole
-# gap: a GDMA channel whose producer is still running does not stop writing just because
-# it has been told to.
+# i2s_hal_rx_stop() appears exactly once in this driver, in i2s_esp32_rx_start_transfer().
+# It is called NOWHERE in the stop path -- not on the GDMA branch and not on the non-GDMA
+# one. So the I2S RX unit goes on clocking samples into the FIFO while the DMA is being
+# told to stop, and on the GDMA branch that is enough to overwrite a mem-slab free list
+# with captured audio, measured.
 #
-# dma_stop()'s return value stops being decorative here. Today ESP32's implementation can
-# only fail with -EINVAL on a bad channel index, so this branch is unreachable in
+# ESP-IDF's own i2s_rx_stop() calls i2s_hal_rx_stop() FIRST, above its own #if/#else, on
+# both branches. Zephyr skipped it on both. That is one omission, not two, and it is
+# fixed here in one place.
+#
+# The non-GDMA branch needs more than that, and Espressif's code says exactly what:
+#
+#     static void i2s_rx_reset(i2s_port_t i2s_num) {
+#     #if SOC_GDMA_SUPPORTED
+#             gdma_reset(p_i2s[i2s_num]->rx_dma_chan);
+#     #else
+#             i2s_hal_rx_reset_dma(&(p_i2s[i2s_num]->hal));
+#     #endif
+#
+# i2s_hal_rx_reset_dma() -- I2S_IN_RST, "Set this bit to reset in DMA FSM" -- is the
+# non-GDMA analogue of the gdma_reset() this series adds to dma_stop(). Espressif pairs
+# them in the same #if/#else. It is added here for the same reason.
+#
+# And i2s_hal_rx_disable_dma() is NOT a stop, which is worth writing down because it looks
+# like one:
+#
+#     #define i2s_hal_rx_disable_dma(hal) i2s_ll_enable_dma((hal)->dev, false)
+#     static inline void i2s_ll_enable_dma(i2s_dev_t *hw, bool ena) {
+#             hw->fifo_conf.dscr_en = ena;
+#     }
+#
+# I2S_DSCR_EN is "Set this bit to enable I2S DMA mode" (ESP32 TRM p.439). A mode select.
+# It promises neither that no new burst starts nor that an in-flight one retires.
+#
+# dma_stop()'s return value stops being decorative here. ESP32's implementation can only
+# fail with -EINVAL on a bad channel index today, so the branch is unreachable in
 # practice -- but the entire point of this patch is that a block may only go back to the
-# slab once the hardware has actually let go of it, and that has to be a consequence of
-# the stop succeeding, not a thing done next to it. A leaked block is a slow bleed; a
-# block the DMA is still writing to is a crash.
+# slab once the hardware has let go of it, and that has to be a CONSEQUENCE of the stop
+# succeeding, not a thing done next to it. A leaked block is a slow bleed; a block the DMA
+# is still writing to is a crash.
 RX_Q_OLD = """	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 
 #if SOC_GDMA_SUPPORTED
@@ -134,23 +162,42 @@ RX_Q_OLD = """	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 #else
 	const i2s_hal_context_t *hal = &(dev_cfg->hal);
 
-	esp_intr_disable(stream->data->irq_handle);"""
+	esp_intr_disable(stream->data->irq_handle);
+	i2s_hal_rx_stop_link(hal);
+	i2s_hal_rx_disable_intr(hal);
+	i2s_hal_rx_disable_dma(hal);
+	i2s_hal_clear_intr_status(hal, I2S_INTR_MAX);
+#endif /* SOC_GDMA_SUPPORTED */"""
 RX_Q_NEW = """	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 	const i2s_hal_context_t *hal = &(dev_cfg->hal);
 	int err;
 
-#if SOC_GDMA_SUPPORTED
 	/*
-	 * The producer first, then the consumer. Stopping the GDMA channel alone does not
-	 * stop it writing: the I2S RX unit goes on filling the FIFO and the channel goes on
-	 * draining it into the buffer, for long enough to overwrite a mem-slab free list.
-	 * This is the order ESP-IDF's own I2S driver uses.
+	 * The producer, then the consumer -- and on BOTH paths. This call was missing from
+	 * the stop path entirely; it appears only in rx_start_transfer(). A DMA that is
+	 * told to stop while the I2S unit is still filling the FIFO does not stop writing.
+	 * ESP-IDF's i2s_rx_stop() calls this first, above its own #if/#else.
 	 */
 	i2s_hal_rx_stop(hal);
+
+#if SOC_GDMA_SUPPORTED
 	err = dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);
 #else
 	err = 0;
-	esp_intr_disable(stream->data->irq_handle);"""
+	esp_intr_disable(stream->data->irq_handle);
+	i2s_hal_rx_stop_link(hal);
+	i2s_hal_rx_disable_intr(hal);
+	i2s_hal_rx_disable_dma(hal);
+	/*
+	 * The non-GDMA analogue of the gdma_reset() this series adds to dma_stop().
+	 * I2S_IN_RST: "Set this bit to reset in DMA FSM." ESP-IDF pairs the two in the same
+	 * #if/#else in its own i2s_rx_reset(). Note that i2s_hal_rx_disable_dma() above is
+	 * NOT a stop -- it writes I2S_DSCR_EN, "enable I2S DMA mode", a mode select that
+	 * promises nothing about a transfer already under way.
+	 */
+	i2s_hal_rx_reset_dma(hal);
+	i2s_hal_clear_intr_status(hal, I2S_INTR_MAX);
+#endif /* SOC_GDMA_SUPPORTED */"""
 
 # There is deliberately no TX counterpart. i2s_esp32_tx_stop_transfer() keeps calling
 # dma_stop() alone, because the TX DMA only reads from the block and because the I2S TX
@@ -193,10 +240,42 @@ STOP_NEW = """	stream->data->transferring = false;
 		return;
 	}
 
+#if SOC_GDMA_SUPPORTED
 	if (stream->data->mem_block != NULL) {
 		k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
 		stream->data->mem_block = NULL;
 	}
+#else
+	/*
+	 * ESP32 and ESP32-S2 STILL LEAK THIS BLOCK, ON PURPOSE.
+	 *
+	 * The stop sequence above now matches -- and exceeds -- what ESP-IDF itself does
+	 * before it frees this same class of buffer: the I2S unit is stopped first, the
+	 * descriptor link is stopped, and the in-DMA FSM is reset. ESP-IDF frees after
+	 * that (i2s_set_clk() -> i2s_stop() -> i2s_realloc_dma_buffer()), which is real
+	 * evidence that it is enough.
+	 *
+	 * It is not enough evidence to free the block here, for three reasons.
+	 *
+	 * The thing that actually owns an in-flight write is the AHB master and its
+	 * command FIFO -- I2S_AHBM_RST and I2S_AHBM_FIFO_RST in I2S_LC_CONF_REG -- and
+	 * neither has any accessor in the HAL. Nothing above touches them. Nothing can.
+	 *
+	 * ESP-IDF's free is separated from its stop by a mutex, a state transition and a
+	 * log line: microseconds. This one lands nanoseconds later, inside an IRAM_ATTR
+	 * function running in ISR context. A window ESP-IDF survives is not a window this
+	 * survives.
+	 *
+	 * And the whole subject of this patch is a stop that looked sufficient and was
+	 * not. On the GDMA path that cost a free list overwritten with captured audio, and
+	 * it was only found because the hardware was on the desk. Repeating the same
+	 * inference on parts nobody in this thread can run would be indefensible. A slow
+	 * leak is strictly safer than heap corruption on hardware nobody can see.
+	 *
+	 * Drop this #if the moment somebody runs it on an ESP32 or an ESP32-S2.
+	 */
+	stream->data->mem_block = NULL;
+#endif /* SOC_GDMA_SUPPORTED */
 	stream->data->mem_block_len = 0;
 }"""
 
@@ -283,14 +362,14 @@ RX_CB_NEW = """	err = k_msgq_put(&stream->data->queue, &item, K_NO_WAIT);
 # Both i2s_hal_rx_stop() and i2s_hal_tx_stop() already appear in the pristine driver -- in
 # *_start_transfer(), which stops and resets the unit before arming the next transfer --
 # so a bare name test says "already patched" about a tree that is untouched.
-RX_QUIESCED = ("\ti2s_hal_rx_stop(hal);\n"
-               "\terr = dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);")
+RX_QUIESCED = "\ti2s_hal_rx_stop(hal);\n\n#if SOC_GDMA_SUPPORTED\n\terr = dma_stop("
 TX_QUIESCED = "\ti2s_hal_tx_stop(hal);\n\tdma_stop(stream->conf->dma_dev, stream->conf->dma_channel);"
 
 if src.count(RX_QUIESCED) == 1 and \
         src.count("stream->data->dma_pending = false;\n\tstream->data->transferring") == 2 and \
         src.count("The receive queue owns the block now") == 1 and \
-        src.count("\tif (err < 0) {\n\t\t/*\n\t\t * The channel may still be running") == 2:
+        src.count("\tif (err < 0) {\n\t\t/*\n\t\t * The channel may still be running") == 2 and \
+        src.count("ESP32 and ESP32-S2 STILL LEAK THIS BLOCK") == 2:
     print("  already patched; nothing to do")
     raise SystemExit(0)
 

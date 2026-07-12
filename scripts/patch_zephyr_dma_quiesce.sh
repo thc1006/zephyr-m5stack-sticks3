@@ -72,19 +72,28 @@ src = io.open(path, encoding="utf-8", newline="\n").read()
 
 RESET_COMMENT = """
 	/*
-	 * Writing the STOP bit only asks the channel to stop; it goes on writing into the
-	 * caller's buffer after this function has returned. Reset it -- "Reset DMA RX
-	 * channel FSM and FIFO pointer" -- so that dma_stop() means what the API says it
-	 * means and the buffer really can be reused.
+	 * Writing the STOP bit only ASKS the channel to stop. The ESP32-S3 TRM makes the
+	 * distinction in the register definitions themselves: GDMA_INLINK_STOP_CHn is
+	 * (R/W/SC), a self-clearing command strobe with no acknowledge, while
+	 * GDMA_INLINK_PARK_CHn is (RO) status. "I asked" and "it happened" are different
+	 * bits, and dma_stop() was only ever writing the first one.
 	 *
-	 * The descriptor FSM's PARK bit is NOT sufficient and must not be used here: it
-	 * reads idle while the data path is still draining. Only the FIFO reset stops the
-	 * writes.
+	 * So reset the channel. GDMA_IN_RST_CHn is "used to reset GDMA channel n RX FSM and
+	 * RX FIFO pointer" -- the FIFO is exactly the state the park bit cannot see, and the
+	 * TRM's own programming procedures make this reset step one of every START and
+	 * describe no stop procedure at all. It is the only sanctioned way to put a channel
+	 * into a known state.
 	 *
-	 * dma_esp32_start() re-arms the descriptor address and the interrupt enable, and
-	 * the descriptor list lives in RAM, so a reset here costs a restarted transfer
-	 * nothing. This driver already resets the channel to ARM a transfer, in
-	 * dma_esp32_config_*() and dma_esp32_reload().
+	 * Do NOT reach for the park bit instead. It reads idle while the data path is still
+	 * draining, and ESP-IDF never polls it either -- gdma_ll_*_is_desc_fsm_idle() has no
+	 * caller anywhere in that tree.
+	 *
+	 * A reset costs a restarted transfer nothing, and that is documented rather than
+	 * inferred: ESP-IDF's gdma.h says of gdma_reset(), "Resetting a DMA channel won't
+	 * break the connection with the target peripheral." This driver already relies on
+	 * that -- it resets the channel to ARM a transfer, in dma_esp32_config_*() and in
+	 * dma_esp32_reload(), which the I2S driver calls between the chunks of a single
+	 * oversized block while the peripheral is still running.
 	 */"""
 
 # The driver exists in two forms and the patch has to fit both. v4.4.0 calls the LL
