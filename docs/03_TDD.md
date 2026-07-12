@@ -101,8 +101,12 @@ playback configure sequence + write ordering, the capture (ADC) configure sequen
 **the route transitions** (a route programs BOTH directions and powers the one it
 does not carry DOWN - the earlier test asserted that a capture-only route left the
 DAC *untouched*, which was not a test of correct behaviour but a pin holding the bug
-in place: register 0x00 does not reset the register file, so a DAC a previous route
-powered up stayed up), **a failed `configure()` disarming start but never stop** (the
+in place: this driver deliberately never resets the codec, so a DAC a previous route
+powered up stayed up), **a dirty register file** (the first 29 tests all started from
+an all-zero emulator, which is a chip in exactly the state the driver would like to
+find it in, so the suite structurally could not see the one defect class the no-reset
+design creates; four tests now seed a dirty chip first, and three of them fail on the
+driver as it stood before HW-023), **a failed `configure()` disarming start but never stop** (the
 I2C failure is walked across every transfer, not just the first; `start_output()`
 must not unmute, and `stop_output()` MUST still attempt the mute -- the first version
 gated the mute on the route too, which was a fail-open: a configure() that died on

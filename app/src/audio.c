@@ -1113,11 +1113,24 @@ uint32_t audio_rec_len_ms(void)
  *    else. An acoustic loopback cannot do this, because TX and RX share the same
  *    clock and a common error cancels out in the digital domain.
  *
- * 3. The ADC is checked for LIFE, with the amplifier off. A codec whose internal
- *    clock tree failed to come up cannot run its modulator, and the captured
- *    block is then all zeros or a stuck constant. A running ADC returns a
- *    dithering noise floor. This is the codec-side evidence, and it is the check
- *    that would actually catch a clock tree that did not lock.
+ * 3. The ADC is checked for LIFE, with the amplifier off. A running ADC returns a
+ *    dithering noise floor; a codec whose clock tree failed to come up returns
+ *    zeros or a stuck constant.
+ *
+ *    BUT A ZERO FLOOR DOES NOT MEAN A DEAD CLOCK TREE, and reading it that way is
+ *    what manufactured this project's worst wrong conclusion. It far more often
+ *    means "less than about six seconds since the codec's analog was disturbed":
+ *    the ES8311's analog reference sits on three 1 uF capacitors and the ADC is
+ *    deaf while they charge (HW-023). The check cannot tell the two apart. It is
+ *    only meaningful once the analog has settled -- which, on a warm-booted board,
+ *    it did minutes ago, since nothing a warm reset does reaches the codec.
+ *
+ * AND THE ORDER OF THE RATE TABLE IS NOT A FREE CHOICE. It ascends, and so does
+ * time, so a settling effect and a rate effect are perfectly confounded in any run
+ * that starts from a disturbed codec. That is not hypothetical: it is exactly how
+ * "the software reset deafens the ADC below 22 kHz" was manufactured, and reversing
+ * the table is what disproved it. Do not reorder this table without saying why, and
+ * do not read a low-rate cliff off it without reversing it first.
  *
  * The speaker is judged by ear. The on-board speaker couples very weakly into the
  * adjacent microphone (HW-016 established this: the 440 Hz beep barely moved the
@@ -1350,9 +1363,10 @@ static int sweep_one(uint32_t rate)
 
 	SWEEP_STEP(rate, "baseline");
 	/*
-	 * 3. Silence baseline, amplifier still off. A codec whose clock tree did
-	 * not come up returns all zeros or a stuck constant here; a running one
-	 * returns a dithering noise floor.
+	 * 3. Silence baseline, amplifier still off. A running ADC returns a dithering
+	 * noise floor; a codec whose clock tree did not come up returns zeros or a stuck
+	 * constant. So does one whose analog was disturbed less than about six seconds
+	 * ago, and this cannot tell them apart -- see the header.
 	 */
 	for (uint32_t b = 0U; b < SWEEP_BASELINE_BLOCKS; b++) {
 		int16_t lo = INT16_MAX;
@@ -1671,9 +1685,15 @@ int audio_rate_sweep(void)
 	printk("regs  : the clock registers read back off the chip over I2C\n");
 	printk("lrck  : the frame clock MEASURED against the kernel cycle counter,\n");
 	printk("        which is not derived from the I2S clock\n");
-	printk("adc   : the microphone noise floor with the amplifier off. A codec\n");
-	printk("        whose clock tree did not lock cannot run its modulator and\n");
-	printk("        returns zeros or a stuck constant here\n");
+	printk("adc   : the microphone noise floor with the amplifier off. A running ADC\n");
+	printk("        returns a dithering floor; a zero one means the codec's clock tree\n");
+	printk("        did not come up -- OR that its analog was disturbed less than ~6 s\n");
+	printk("        ago and its reference caps are still charging (HW-023). This cannot\n");
+	printk("        tell those apart, so a zero floor is not by itself a fault.\n");
+	printk("order : the rates ASCEND, and so does time, so a settling effect and a rate\n");
+	printk("        effect are confounded in any run that starts from a disturbed codec.\n");
+	printk("        Reading a low-rate cliff off this table without reversing it first is\n");
+	printk("        exactly how 'the reset deafens the ADC below 22 kHz' was invented.\n");
 	printk("tone  : the captured level with the amplifier on. Reported, not\n");
 	printk("        asserted: this speaker couples weakly into this microphone.\n");
 	printk("        Judge the speaker by ear; the pitch rises across the sweep\n");

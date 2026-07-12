@@ -15,7 +15,7 @@ HW-023  ES8311: "the software reset deafens the ADC below ~22 kHz" is WRONG, and
 
 WHAT WAS CLAIMED
 ----------------
-evidence/20260712-hw019-software-reset-deafens-adc.log concluded:
+evidence/20260712-hw019-reset-then-a-deaf-adc-SUPERSEDED.log concluded:
 
     "the software reset deafens the ADC below ~22 kHz; root cause unknown"
 

@@ -1,44 +1,51 @@
-# HW-019 diagnostic - the software reset deafens the ADC below ~22 kHz.
-# 2026-07-12, COM35. Driver with the reference reset sequence (0x1F, delay, 0x00,
-# CSM_ON) plus the 0x0B/0x0C system-register init that Linux and ESP-ADF do.
-# Every register the driver writes reads back correctly. The ADC is deaf anyway.
-# Root cause NOT established. The reset is not shipped; see the binding.
-
-[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
-]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
---- esp-idf-monitor 1.9.0 on \\.\COM35 115200
---- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
---- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
-ESP-ROM:esp32s3-20210327
-Build:Mar 27 2021
-rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
-Saved PC:0x403773aa
-SPIWP:0xee
-mode:DIO, clock div:1
-load:0x3fc90190,len:0x2cec
-load:0x40374000,len:0xc17c
-load:0x50000000,len:0x24
-SHA-256 comparison failed:
-Calculated: 2d669a8c13aba570d5985f48f0dbb9a2387a841b34e5870bbf9afebfc5d08bb6
-Expected: 0000000030110000000000000000000000000000000000000000000000000000
-Attempting to boot anyway...
-entry 0x4037a924
-I (soc_init): ESP Simple boot
-I (soc_init): compile time Jul 12 2026 08:53:10
-W (soc_init): Unicore bootloader
-I (soc_init): chip revision: v0.2
-I (flash_init): Boot SPI Speed : 80MHz
-I (flash_init): SPI Mode       : DIO
-I (flash_init): SPI Flash Size : 8MB
-I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
-I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
-I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
-I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d548h ( 54600)
-I (boot): DROM[2C: lma=00020000h vma=3c010000h size=047ach ( 18348)
-I (boot): libc heap size 145 kB.
-I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
-I (spi_flash): detected chip: gd
-I (spi_flash): flash io: dio
+# SUPERSEDED. The conclusion this file was written to record is WRONG.
+#
+# Superseded by: evidence/20260712-hw023-es8311-reset-is-innocent-adc-needs-6s.log
+#
+# The captured serial output below is untouched and is still a true record of what the
+# hardware did. It is the interpretation that was wrong, and it was wrong in a way this
+# run could not have detected.
+#
+# WHAT THIS FILE ORIGINALLY CLAIMED
+# ---------------------------------
+#   "HW-019 diagnostic - the software reset deafens the ADC below ~22 kHz."
+#   "Every register the driver writes reads back correctly. The ADC is deaf anyway."
+#   "Root cause NOT established. The reset is not shipped; see the binding."
+#
+# WHY IT IS WRONG
+# ---------------
+# The rate sweep below walks 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100,
+# 48000 -- always, and only, in that order. That is increasing sample rate. It is also,
+# unavoidably, increasing time since the reset, at roughly two seconds a rate.
+#
+# So "deaf below 22 kHz" and "deaf for the first ten seconds" fit these same nine numbers
+# equally well, and nothing in this run, or in any run of this sweep ever made, could
+# tell them apart.
+#
+# Reversing the rate table separates them, and there is no third outcome. With the same
+# reset, 48 kHz measured FIRST came back deaf (tone_rms=1) and 8 kHz measured LAST came
+# back alive (tone_rms=923, against a no-reset baseline of 777). The deafness follows the
+# clock. It does not follow the rate. There is no low-sample-rate cutoff and there never
+# was one.
+#
+# WHAT IS ACTUALLY TRUE
+# ---------------------
+# The ES8311's analog reference sits on three 1 uF capacitors -- VMID, ADCVREF, DACVREF;
+# the part has no microphone-bias pin at all. The 0x00 block reset clears CSM_ON, which
+# powers the analog down and discharges them. Charging them back takes about 6.2 seconds,
+# and the ADC returns a zero noise floor until it is done. Then it works normally, and it
+# keeps working. Measured directly, at one fixed rate, one configure, one START:
+#
+#     t=543..3103 ms   floor=0
+#     t=5663 ms        floor=35
+#     t=6175 ms        floor=101      <- awake; the settled floor here is 81..116
+#     t=9759 ms        floor=113
+#
+# The conclusion "do not reset this part" survives. Every reason given for it here does
+# not. And the driver does not need a reset anyway: writing every register it depends on
+# reaches the same known state at zero settling cost.
+#
+# ================================================================================
 *** Booting Zephyr OS build v4.4.0 ***
 M5StickS3 Zephyr validation app
 Board: m5stack_sticks3
