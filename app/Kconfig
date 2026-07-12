@@ -81,16 +81,25 @@ config APP_I2S_STRESS
 	  what makes it visible, and the guard is what keeps this test from hanging
 	  on an unpatched tree instead of reporting.
 
-	  The deliberate underruns are the point of the "deliberately" part. They
-	  drive the driver down its tx_disable path, where the TX DMA callback has
-	  already freed the block. That is the one path where returning the in-flight
-	  block in stop_transfer() could become a DOUBLE free, and the census would
-	  show it: a free count above the slab's block count means the free list has
-	  been corrupted.
+	  It also proves that the OBVIOUS fix for the leak is wrong. Simply handing the
+	  block back crashes within two cycles: on the SOC_GDMA_SUPPORTED path,
+	  *_stop_transfer() calls dma_stop() and never stops the I2S unit feeding the
+	  DMA, so the block is still being written when it lands back on the free list,
+	  and the next allocation dereferences captured audio as a pointer. The canary
+	  in this test measures it -- stamp every free RX block, hand them back, wait,
+	  take them again, and exactly one comes back written to, every cycle. The leak
+	  had been masking that: the block was never returned, so the stray writes went
+	  where nobody would look.
 
-	  Run it against a patched tree (expect a full, flat census) and against an
-	  unpatched one (expect the leak, reported rather than hung). Validation aid;
-	  leave it off for normal builds.
+	  The deliberate underruns cover a second, independent hazard. They drive the
+	  driver down its tx_disable path, where the TX DMA callback has already freed
+	  the block -- the one place where returning it could also be a plain double
+	  free. The census sees that too: a free count above the slab's block count
+	  means the free list has a cycle in it.
+
+	  Run it against a patched tree (expect a flat census and a clean canary) and
+	  against an unpatched one (expect the leak, reported rather than hung).
+	  Validation aid; leave it off for normal builds.
 
 config APP_I2S_STRESS_CYCLES
 	int "How many START/DROP cycles the stress test runs"

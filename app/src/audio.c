@@ -368,9 +368,13 @@ bool audio_ready(void)
  * on hardware (HW-019) and how it would present to a user who opened the AUDIO page
  * nine times.
  *
- * scripts/patch_zephyr_i2s_leak.sh fixes the driver; it is a three-hunk change and it
- * is hardware-proved (evidence/20260712-hw019-es8311-rate-sweep-PASS.log). This check
- * is for anyone who builds without it: a message beats a mystery.
+ * scripts/patch_zephyr_i2s_leak.sh fixes the driver, and the fix is NOT the obvious one:
+ * simply handing the block back crashes, because on the GDMA path *_stop_transfer()
+ * stops the DMA channel and never the I2S unit feeding it, so the block is still being
+ * written when it lands back on the free list. The leak was masking that. See HW-021
+ * (evidence/20260712-hw021-i2s-slab-quiesce-PASS.log) and CONFIG_APP_I2S_STRESS.
+ *
+ * This check is for anyone who builds without the fix: a message beats a mystery.
  */
 static bool audio_slab_ok(const char *what)
 {
@@ -1742,26 +1746,34 @@ int audio_rate_sweep(void)
 #ifdef CONFIG_APP_I2S_STRESS
 
 /*
- * I2S START/DROP stress: the census that makes the mem-slab leak visible, and the
- * deliberate underrun that drives the driver down the one path where the fix for it
- * could be a double free.
+ * I2S START/DROP stress. This is the test that found the leak, then found that the
+ * OBVIOUS fix for the leak is worse than the leak, and then proved the real one.
  *
- * Zephyr's ESP32 I2S driver loses one slab block per direction on every START/DROP:
- * i2s_esp32_{rx,tx}_stop_transfer() set stream->data->mem_block -- the block the DMA
- * is working on -- to NULL without returning it to the slab, and DROP calls exactly
- * those. It cannot present as an error, because i2s_buf_write() allocates with
- * K_FOREVER: an exhausted slab is an unkillable block with no error, no fault and no
- * log line. So the census is what makes it visible, and the guard below is what makes
- * this test REPORT on an unpatched tree instead of hanging in it.
+ * THE LEAK. Zephyr's ESP32 I2S driver loses one slab block per direction on every
+ * START/DROP: i2s_esp32_{rx,tx}_stop_transfer() set stream->data->mem_block -- the
+ * block the DMA is working on -- to NULL without returning it to the slab, and DROP
+ * calls exactly those. It cannot present as an error, because i2s_buf_write()
+ * allocates with K_FOREVER: an exhausted slab is an unkillable block with no error,
+ * no fault and no log line. The census is what makes it visible, and the guard below
+ * is what makes this test REPORT on an unpatched tree instead of hanging in it.
  *
- * The fix returns the in-flight block in stop_transfer(). The hazard is that the TX
- * DMA callback ALREADY freed that block a few lines earlier and (before the fix) did
- * not clear the pointer -- so on the tx_disable path, freeing it again would be a
- * second free of the same block. That path is reached when the TX queue runs dry.
- * Every STRESS_UNDERRUN_EVERY cycles this test stops feeding TX and lets it, on
- * purpose. A double free puts a cycle in the slab's free list, and the census sees
- * it: a free count ABOVE the slab's block count is impossible unless the list is
- * corrupt.
+ * WHY THE OBVIOUS FIX IS WRONG. Just handing the block back crashes within two cycles:
+ * k_mem_slab_alloc walks a free list whose next pointer has been overwritten with
+ * captured audio. On the SOC_GDMA_SUPPORTED path, *_stop_transfer() calls dma_stop()
+ * and NOTHING ELSE -- it never stops the I2S unit feeding the DMA, unlike the
+ * non-GDMA branch three lines below it. So the block is still being written when it
+ * lands back on the free list. THE LEAK WAS MASKING THAT: the block was never
+ * returned, so the stray writes went somewhere nobody would ever look.
+ *
+ * The canary below is what measures it: stamp every free RX block, hand them back,
+ * wait, take them again. One comes back written to, every cycle. With the I2S unit
+ * actually stopped, none do.
+ *
+ * AND THE DELIBERATE UNDERRUN. Starving TX drives the driver down its tx_disable
+ * path, where the TX DMA callback has already freed the block -- the one place where
+ * returning the in-flight block could ALSO be a plain double free. That is a second,
+ * independent hazard, and the census sees it: a free count ABOVE the slab's block
+ * count is impossible unless the free list has a cycle in it.
  */
 
 /*

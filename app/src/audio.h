@@ -128,10 +128,14 @@ int audio_rate_sweep(void);
  * Zephyr's ESP32 I2S driver loses the DMA's in-flight slab block on every DROP, and
  * i2s_buf_write() allocates with K_FOREVER -- so an exhausted slab is not an error,
  * it is a silent, unkillable block. The census makes the leak visible; the guard
- * makes this REPORT on an unpatched tree rather than hang in it. The starved cycles
- * drive the driver down its tx_disable path, which is the one place the fix for the
- * leak could free the same block twice; a free count above the slab's block count is
- * how that would show.
+ * makes this REPORT on an unpatched tree rather than hang in it.
+ *
+ * The canary makes something else visible: that simply handing the block back is NOT
+ * the fix. On the GDMA path the driver stops the DMA channel and never the I2S unit
+ * feeding it, so the block is still being written when it goes back on the free list.
+ * The starved cycles cover a second hazard -- the tx_disable path, where the TX
+ * callback has already freed the block, so returning it could also be a plain double
+ * free; a free count above the slab's block count is how that would show.
  *
  * Returns 0 only if every cycle ran and the census never moved. Blocks for a few
  * seconds; call it once, from main.
