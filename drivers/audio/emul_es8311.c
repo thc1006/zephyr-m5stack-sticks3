@@ -264,8 +264,8 @@ static int es8311_emul_init(const struct emul *target, const struct device *pare
 }
 
 #define ES8311_EMUL(n)                                                                             \
-	static struct es8311_emul_data es8311_emul_data_##n;                                        \
-	EMUL_DT_INST_DEFINE(n, es8311_emul_init, &es8311_emul_data_##n, NULL, &es8311_emul_api,     \
+	static struct es8311_emul_data es8311_emul_data_##n;                                       \
+	EMUL_DT_INST_DEFINE(n, es8311_emul_init, &es8311_emul_data_##n, NULL, &es8311_emul_api,    \
 			    NULL)
 
 DT_INST_FOREACH_STATUS_OKAY(ES8311_EMUL)

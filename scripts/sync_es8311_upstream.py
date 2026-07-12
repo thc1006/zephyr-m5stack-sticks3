@@ -17,14 +17,21 @@ that lived outside the repo INTO the tree, which made an untracked file the real
 source and let the tracked one drift behind it silently. Now the file a reviewer
 can actually see is the one everything is generated from.
 
-Two files differ between here and upstream, and both differences live in this one
-script so that neither can drift quietly:
+Three things differ between here and upstream, and every difference lives in this
+one script so that none of them can drift quietly:
 
   es8311.c        the DEVICE_API declaration (see above).
   Kconfig.es8311  the `depends on AUDIO_CODEC`. Upstream sources every codec
                   Kconfig from inside `if AUDIO_CODEC ... endif`, so not one of the
                   eleven siblings states that dependency and ours must not either.
                   Out of tree the file is sourced at the top level, where it has to.
+  testcase.yaml   the test metadata FILENAME. Upstream rejects the legacy
+                  `testcase.yaml` and requires `tests.yaml`; the twister in
+                  v4.4.0, which this repo pins and runs, finds nothing under the
+                  new name. So the tracked copy keeps the old name and the
+                  upstream form is emitted under the new one. Renaming the
+                  tracked file to satisfy upstream silently disables the entire
+                  suite here, with twister reporting success on zero tests.
 
 Usage:
     python3 scripts/sync_es8311_upstream.py <output-dir>
