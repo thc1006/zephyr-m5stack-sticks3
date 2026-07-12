@@ -867,13 +867,24 @@ static void apply_fn(void *p1, void *p2, void *p3)
 	(void)audio_codec_apply_properties(codec);
 }
 
+/*
+ * The stop thread announces itself on both sides of the call, so the test can assert
+ * the thing it actually cares about -- that stop_output() is still BLOCKED when the
+ * apply thread is parked inside its register write -- instead of inferring it from
+ * which write happened to land last.
+ */
+static K_SEM_DEFINE(stop_started, 0, 1);
+static K_SEM_DEFINE(stop_finished, 0, 1);
+
 static void stop_fn(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
+	k_sem_give(&stop_started);
 	audio_codec_stop_output(codec);
+	k_sem_give(&stop_finished);
 }
 
 ZTEST(es8311, test_apply_properties_holds_the_lock_across_its_writes)
@@ -895,11 +906,25 @@ ZTEST(es8311, test_apply_properties_holds_the_lock_across_its_writes)
 	zassert_ok(emul_es8311_wait_paused(emul, K_SECONDS(1)),
 		   "apply_properties() never reached the DAC volume write");
 
+	k_sem_reset(&stop_started);
+	k_sem_reset(&stop_finished);
+
 	b = k_thread_create(&stop_thread, stop_stack, K_THREAD_STACK_SIZEOF(stop_stack),
 			    stop_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(2), 0, K_NO_WAIT);
 
-	/* Give stop_output() time either to block on the lock or to race past it. */
-	k_msleep(50);
+	zassert_ok(k_sem_take(&stop_started, K_SECONDS(1)), "the stop thread never ran");
+	k_msleep(50); /* let it reach the mutex */
+
+	/*
+	 * THE assertion, and it is direct rather than inferred: the apply thread is
+	 * parked inside its first register write, so if apply_properties() holds the lock
+	 * across its writes, stop_output() cannot have got through. If it HAS finished,
+	 * the lock was dropped after the snapshot and the two are racing -- which is the
+	 * bug -- and no amount of reasoning about which write lands last would prove it.
+	 */
+	zassert_not_equal(k_sem_take(&stop_finished, K_NO_WAIT), 0,
+			  "stop_output() completed while apply_properties() was parked "
+			  "mid-write: the lock is not held across the register writes");
 
 	emul_es8311_release(emul);
 	zassert_ok(k_thread_join(a, K_SECONDS(1)), "the apply_properties() thread hung");
