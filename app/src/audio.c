@@ -1850,6 +1850,44 @@ int audio_rate_sweep(void)
 #define STRESS_STOP_EVERY 3U   /* graceful STOP instead of DROP on every Nth cycle */
 #define STRESS_STOP_MS    150  /* TX must drain before the RX STOPPING branch fires */
 
+/*
+ * AND DRAIN, WHICH IS NOT THE SAME PATH.
+ *
+ * I wrote, in the driver comments, the commit message, the PR body and a comment to an
+ * upstream maintainer, that "I2S_TRIGGER_STOP is the only trigger that ever reaches
+ * I2S_STATE_STOPPING". That is false, and the driver says so in three lines:
+ *
+ *     case I2S_TRIGGER_STOP:
+ *             __fallthrough;
+ *     case I2S_TRIGGER_DRAIN:
+ *
+ * I had quoted that exact __fallthrough in my own analysis and then written the opposite.
+ *
+ * DRAIN reaches STOPPING by a DIFFERENT route through TX:
+ *
+ *     STOP   -> tx_stop_without_draining = true    TX stops after its in-flight block
+ *     DRAIN  -> tx_stop_without_draining = false   TX keeps pulling blocks off the queue
+ *                                                  and restarting DMA until it is empty
+ *
+ * So under DRAIN the RX callback's ownership hand-off (k_msgq_put, then mem_block = NULL)
+ * interleaves with a TX side that is still arming new transfers, for as long as the TX
+ * queue holds blocks. That is precisely the window this patch changes, and nothing was
+ * exercising it.
+ */
+#define STRESS_DRAIN_EVERY  7U   /* graceful DRAIN on every Nth cycle */
+#define STRESS_DRAIN_QUEUE  3U   /* TX blocks queued for DRAIN to work through */
+#define STRESS_DRAIN_MS     400  /* TX must empty its queue before RX can stop */
+
+#ifdef CONFIG_APP_I2S_DMA_PARK_STATS
+/*
+ * Exported by the patched drivers/dma/dma_esp32_gdma.c. See scripts/patch_zephyr_dma_park.sh.
+ */
+extern volatile uint32_t dma_esp32_park_spins_max;
+extern volatile uint32_t dma_esp32_park_busy_stops;
+extern volatile uint32_t dma_esp32_park_total_stops;
+extern volatile uint32_t dma_esp32_park_timeouts;
+#endif
+
 static int16_t stress_rx[BLOCK_FRAMES * AUDIO_CHANNELS];
 
 /*
@@ -1901,6 +1939,8 @@ int audio_i2s_stress(void)
 	unsigned int underruns = 0U;
 	unsigned int stops = 0U;
 	unsigned int stops_dry = 0U; /* graceful STOPs that drained NOTHING */
+	unsigned int drains = 0U;
+	unsigned int drains_dry = 0U; /* DRAINs that drained NOTHING */
 	unsigned int dry_at = 0U;
 	unsigned int canary_bad = 0U;
 	unsigned int done = 0U;
@@ -1911,29 +1951,64 @@ int audio_i2s_stress(void)
 		return -ENODEV;
 	}
 
+#ifdef CONFIG_APP_I2S_DMA_PARK_STATS
+	/*
+	 * IS THE RACE REAL, OR ONLY A CONTRACT VIOLATION?
+	 *
+	 * dma_esp32_stop() writes the GDMA STOP bit and returns 0 without ever looking at
+	 * the descriptor FSM's PARK bit -- the bit its own get_status() uses to answer
+	 * "busy". So a caller that frees the buffer on a successful dma_stop() is relying
+	 * on a timing property nothing documents.
+	 *
+	 * That is a real defect in the API contract whatever the silicon does. But whether
+	 * the FSM is EVER still running when dma_stop() returns is a question of fact, and
+	 * a fix for a race nobody has observed deserves to say so. So the park wait counts
+	 * its own spins, and this prints them.
+	 *
+	 *   busy_stops = 0   the FSM had always already parked. The wait costs nothing and
+	 *                    the fix is about the contract, not about a reproduced failure.
+	 *                    Say that, rather than implying a bug was caught.
+	 *   busy_stops > 0   the window is real and measured, and freeing the block on a
+	 *                    bare dma_stop() was reaching into memory the DMA still owned.
+	 */
+	dma_esp32_park_spins_max = 0U;
+	dma_esp32_park_busy_stops = 0U;
+	dma_esp32_park_total_stops = 0U;
+	dma_esp32_park_timeouts = 0U;
+#endif
+
 	/* Park the capture thread; it only touches I2S while `ready` is set. */
 	ready = false;
 	k_msleep(100);
 
-	printk("\n=== I2S stress: %u cycles, TX starved every %u, graceful STOP every %u ===\n",
-	       STRESS_CYCLES, STRESS_UNDERRUN_EVERY, STRESS_STOP_EVERY);
-	printk("slab : free blocks per direction, read BEFORE each cycle. It must stay\n");
-	printk("       at %u. Falling means the driver is losing the DMA's in-flight\n",
+	printk("\n=== I2S stress: %u cycles; TX starved every %u, STOP every %u, DRAIN every %u\n",
+	       STRESS_CYCLES, STRESS_UNDERRUN_EVERY, STRESS_STOP_EVERY, STRESS_DRAIN_EVERY);
+	printk("slab  : free blocks per direction, read BEFORE each cycle. It must stay\n");
+	printk("        at %u. Falling means the driver is losing the DMA's in-flight\n",
 	       (unsigned int)BLOCK_COUNT);
-	printk("       block on every DROP; rising above %u means a block was freed\n",
+	printk("        block on every DROP; rising above %u means a block was freed\n",
 	       (unsigned int)BLOCK_COUNT);
-	printk("       twice and the free list has a cycle in it.\n");
-	printk("starve: TX is left to run dry, which drives the driver down its\n");
-	printk("       tx_disable path -- one of the two places the leak fix could\n");
-	printk("       double-free.\n");
-	printk("STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches\n");
-	printk("       I2S_STATE_STOPPING -- DROP goes straight to READY -- and that is\n");
-	printk("       where the RX callback hands its block to the queue while still\n");
-	printk("       pointing at it. A DROP-only stress cannot see that path at all.\n\n");
+	printk("        twice and the free list has a cycle in it.\n");
+	printk("starve: TX is left to run dry, which drives the driver down its tx_disable\n");
+	printk("        path -- one of the places the leak fix could double-free.\n");
+	printk("STOP  : and DRAIN. BOTH reach I2S_STATE_STOPPING (the driver falls through\n");
+	printk("        from one case to the other); DROP goes straight to READY under\n");
+	printk("        irq_lock and never gets there at all. STOPPING is where the RX\n");
+	printk("        callback hands its block to the queue while still pointing at it,\n");
+	printk("        so a DROP-only stress cannot see that path.\n");
+	printk("DRAIN : not a duplicate of STOP. STOP sets tx_stop_without_draining, so TX\n");
+	printk("        stops after its in-flight block; DRAIN does not, so TX keeps pulling\n");
+	printk("        blocks off its queue and re-arming DMA until it is empty -- and every\n");
+	printk("        one of those restarts overlaps an RX ownership hand-off.\n");
+	printk("tail  : a STOP or DRAIN that drains NOTHING is a FAILURE, not a note. The\n");
+	printk("        STOPPING branch always queues its final block before it stops, so an\n");
+	printk("        empty tail read means it never ran. The slab census cannot see that:\n");
+	printk("        this test printed 'drained 0' for 27 cycles and then printed PASSED.\n\n");
 
 	for (unsigned int i = 1U; i <= STRESS_CYCLES; i++) {
 		bool starve = (i % STRESS_UNDERRUN_EVERY) == 0U;
-		bool graceful = !starve && (i % STRESS_STOP_EVERY) == 0U;
+		bool draining = !starve && (i % STRESS_DRAIN_EVERY) == 0U;
+		bool graceful = !starve && !draining && (i % STRESS_STOP_EVERY) == 0U;
 		uint32_t tx = k_mem_slab_num_free_get(&tx_slab);
 		uint32_t rx = k_mem_slab_num_free_get(&rx_slab);
 
@@ -1957,9 +2032,10 @@ int audio_i2s_stress(void)
 			break;
 		}
 
-		if (i <= 10U || (i % 10U) == 0U || starve || graceful) {
+		if (i <= 10U || (i % 10U) == 0U || starve || graceful || draining) {
 			printk("  stress %3u: slab tx=%u rx=%u%s\n", i, tx, rx,
-			       starve	 ? "   TX starved on purpose"
+			       starve	  ? "   TX starved on purpose"
+			       : draining ? "   graceful DRAIN + tail read"
 			       : graceful ? "   graceful STOP + tail read"
 					  : "");
 		}
@@ -2011,6 +2087,68 @@ int audio_i2s_stress(void)
 					       "(%d) ***\n",
 					       i, b, ret);
 					goto restore;
+				}
+			}
+		}
+
+		if (draining) {
+			unsigned int tail = 0U;
+
+			/*
+			 * DRAIN, which is NOT the same path as STOP even though both land in
+			 * I2S_STATE_STOPPING. Load the TX queue up first: DRAIN's whole job is
+			 * to play those out, so with an empty queue it degenerates into a STOP
+			 * and tests nothing new.
+			 */
+			STRESS_STEP(i, "drain-fill");
+			for (unsigned int b = 0U; b < STRESS_DRAIN_QUEUE; b++) {
+				ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+				if (ret < 0) {
+					printk("*** STRESS: drain prefill failed at cycle %u "
+					       "(%d) ***\n",
+					       i, ret);
+					goto restore;
+				}
+			}
+
+			STRESS_STEP(i, "drain");
+			ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DRAIN);
+			if (ret < 0) {
+				printk("*** STRESS: DRAIN failed at cycle %u (%d) ***\n", i, ret);
+				goto restore;
+			}
+
+			/*
+			 * TX keeps pulling blocks off its queue and re-arming DMA until the
+			 * queue is empty, and only then stops -- so the RX side cannot reach
+			 * its STOPPING branch until all of that is done. Every one of those TX
+			 * restarts overlaps an RX ownership hand-off.
+			 */
+			k_msleep(STRESS_DRAIN_MS);
+			STRESS_STEP(i, "drained");
+
+			STRESS_STEP(i, "tail-read");
+			for (unsigned int b = 0U; b < BLOCK_COUNT + 1U; b++) {
+				size_t sz = sizeof(stress_rx);
+
+				if (i2s_buf_read(i2s_dev, stress_rx, &sz) < 0) {
+					break;
+				}
+				tail++;
+			}
+			STRESS_STEP(i, "tail-done");
+
+			if (i <= 10U || (i % 10U) == 0U) {
+				printk("             DRAIN drained %u tail block%s\n", tail,
+				       (tail == 1U) ? "" : "s");
+			}
+			drains++;
+
+			/* Asserted, for the same reason the STOP tail is. */
+			if (tail == 0U) {
+				drains_dry++;
+				if (dry_at == 0U) {
+					dry_at = i;
 				}
 			}
 		}
@@ -2221,28 +2359,55 @@ restore:
 		return -EIO;
 	}
 
-	if (stops_dry != 0U) {
-		printk("\n*** STRESS FAILED: %u of %u graceful STOPs drained NOTHING (first at\n"
-		       "    cycle %u). The RX callback's STOPPING branch always hands its final\n"
-		       "    block to the receive queue before it stops, so an empty tail read\n"
-		       "    means that branch never ran and the RX DMA never finished the block\n"
-		       "    it was holding. On this SoC that is what stopping the I2S TX unit\n"
-		       "    does: the TX unit is the source of the shared bit clock, and the RX\n"
-		       "    side is then stranded in I2S_STATE_STOPPING for good.\n"
+#ifdef CONFIG_APP_I2S_DMA_PARK_STATS
+	printk("\n=== GDMA descriptor-FSM park, measured ===\n");
+	printk("  dma_stop() calls              %u\n", dma_esp32_park_total_stops);
+	printk("  ...that returned with the FSM still running   %u\n", dma_esp32_park_busy_stops);
+	printk("  worst-case spins waiting for PARK             %u\n", dma_esp32_park_spins_max);
+	printk("  park timeouts                                 %u\n", dma_esp32_park_timeouts);
+	if (dma_esp32_park_busy_stops == 0U) {
+		printk("  => the FSM had ALWAYS already parked. The wait costs nothing here,\n");
+		printk("     and this fix is about the API contract, not a reproduced failure.\n");
+		printk("     dma_stop() still must not claim success it has not observed.\n\n");
+	} else {
+		printk("  => THE WINDOW IS REAL. dma_stop() returned %u times while the DMA was\n",
+		       dma_esp32_park_busy_stops);
+		printk("     still running. Freeing the block on a bare dma_stop() was handing\n");
+		printk("     the slab memory the hardware had not finished with.\n\n");
+	}
+	if (dma_esp32_park_timeouts != 0U) {
+		printk("*** STRESS FAILED: the GDMA descriptor FSM never parked %u time(s).\n"
+		       "    The block was NOT returned to the slab, which is the only safe\n"
+		       "    answer, but the channel is wedged. ***\n\n",
+		       dma_esp32_park_timeouts);
+		return -EIO;
+	}
+#endif
+
+	if (stops_dry != 0U || drains_dry != 0U) {
+		printk("\n*** STRESS FAILED: %u of %u graceful STOPs and %u of %u DRAINs drained\n"
+		       "    NOTHING (first at cycle %u). The RX callback's STOPPING branch always\n"
+		       "    hands its final block to the receive queue before it stops, so an\n"
+		       "    empty tail read means that branch never ran and the RX DMA never\n"
+		       "    finished the block it was holding. On this SoC that is what stopping\n"
+		       "    the I2S TX unit does: the TX unit is the source of the shared bit\n"
+		       "    clock, and the RX side is then stranded in I2S_STATE_STOPPING for\n"
+		       "    good.\n"
 		       "\n"
 		       "    The slab is FLAT and the canary is CLEAN and it is still broken. ***\n\n",
-		       stops_dry, stops, dry_at);
+		       stops_dry, stops, drains_dry, drains, dry_at);
 		return -EIO;
 	}
 
-	printk("\n=== STRESS PASSED: %u cycles -- %u with TX starved on purpose, and %u ended\n"
-	       "    with a graceful I2S_TRIGGER_STOP instead of a DROP. All %u of those\n"
-	       "    drained a tail block (0 came back empty), the slab held %u/%u free the\n"
-	       "    whole way, and the canary was clean. No leak; no block freed twice on\n"
-	       "    the tx_disable path or on the STOPPING queue hand-off; and no stream\n"
-	       "    stranded in STOPPING by a bit clock that stopped with TX. ===\n\n",
-	       STRESS_CYCLES, underruns, stops, stops, (unsigned int)BLOCK_COUNT,
-	       (unsigned int)BLOCK_COUNT);
+	printk("\n=== STRESS PASSED: %u cycles -- %u with TX starved on purpose, %u ended with\n"
+	       "    a graceful I2S_TRIGGER_STOP and %u with an I2S_TRIGGER_DRAIN instead of a\n"
+	       "    DROP. BOTH reach I2S_STATE_STOPPING, by different routes through TX, and\n"
+	       "    all %u of them drained a tail block (0 came back empty). The slab held\n"
+	       "    %u/%u free the whole way and the canary was clean. No leak; no block freed\n"
+	       "    twice on the tx_disable path or on the STOPPING queue hand-off; and no\n"
+	       "    stream stranded in STOPPING by a bit clock that stopped with TX. ===\n\n",
+	       STRESS_CYCLES, underruns, stops, drains, stops + drains,
+	       (unsigned int)BLOCK_COUNT, (unsigned int)BLOCK_COUNT);
 
 	return 0;
 }

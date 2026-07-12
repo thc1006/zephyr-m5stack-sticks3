@@ -113,7 +113,20 @@ import sys
 path = sys.argv[1]
 src = io.open(path, encoding="utf-8", newline="\n").read()
 
-# --- part 1: quiesce the I2S unit, not just the DMA channel ---
+# --- part 1: stop the PRODUCER before the consumer, and bind "stopped" to "safe to free" ---
+#
+# The order is not a guess. ESP-IDF's own I2S driver stops the I2S peripheral before it
+# calls gdma_stop(), and puts the GDMA/FIFO reset in the START path rather than the STOP
+# path. Zephyr's ESP32 I2S driver skipped the first half of that, and this is the whole
+# gap: a GDMA channel whose producer is still running does not stop writing just because
+# it has been told to.
+#
+# dma_stop()'s return value stops being decorative here. Today ESP32's implementation can
+# only fail with -EINVAL on a bad channel index, so this branch is unreachable in
+# practice -- but the entire point of this patch is that a block may only go back to the
+# slab once the hardware has actually let go of it, and that has to be a consequence of
+# the stop succeeding, not a thing done next to it. A leaked block is a slow bleed; a
+# block the DMA is still writing to is a crash.
 RX_Q_OLD = """	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 
 #if SOC_GDMA_SUPPORTED
@@ -124,43 +137,77 @@ RX_Q_OLD = """	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 	esp_intr_disable(stream->data->irq_handle);"""
 RX_Q_NEW = """	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 	const i2s_hal_context_t *hal = &(dev_cfg->hal);
+	int err;
 
 #if SOC_GDMA_SUPPORTED
+	/*
+	 * The producer first, then the consumer. Stopping the GDMA channel alone does not
+	 * stop it writing: the I2S RX unit goes on filling the FIFO and the channel goes on
+	 * draining it into the buffer, for long enough to overwrite a mem-slab free list.
+	 * This is the order ESP-IDF's own I2S driver uses.
+	 */
 	i2s_hal_rx_stop(hal);
-	dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);
+	err = dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);
 #else
+	err = 0;
 	esp_intr_disable(stream->data->irq_handle);"""
 
 # There is deliberately no TX counterpart. i2s_esp32_tx_stop_transfer() keeps calling
 # dma_stop() alone, because the TX DMA only reads from the block and because the I2S TX
 # unit is the source of the shared bit clock -- stopping it strands a full-duplex RX
-# stream in I2S_STATE_STOPPING with a block it can never finish.
+# stream in I2S_STATE_STOPPING with a block it can never finish. TX still gets the error
+# check and the ownership rule.
+TX_Q_OLD = """	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
 
-# --- part 3: return the in-flight block ---
+#if SOC_GDMA_SUPPORTED
+	dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);
+#else
+	const i2s_hal_context_t *hal = &(dev_cfg->hal);
+
+	esp_intr_disable(stream->data->irq_handle);"""
+TX_Q_NEW = """	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
+	int err;
+
+#if SOC_GDMA_SUPPORTED
+	err = dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);
+#else
+	const i2s_hal_context_t *hal = &(dev_cfg->hal);
+
+	err = 0;
+	esp_intr_disable(stream->data->irq_handle);"""
+
+# --- part 3: return the in-flight block, but ONLY if the channel really stopped ---
 STOP_OLD = """	stream->data->mem_block = NULL;
 	stream->data->mem_block_len = 0;
 
 	stream->data->transferring = false;
 }"""
-STOP_NEW = """	if (stream->data->mem_block != NULL) {
+STOP_NEW = """	stream->data->transferring = false;
+
+	if (err < 0) {
+		/*
+		 * The channel may still be running, so its block is not ours to give away.
+		 * Keeping it leaks one block; handing it back is the free-list corruption
+		 * this patch exists to prevent.
+		 */
+		return;
+	}
+
+	if (stream->data->mem_block != NULL) {
 		k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
 		stream->data->mem_block = NULL;
 	}
 	stream->data->mem_block_len = 0;
-
-	stream->data->transferring = false;
 }"""
 
 # --- part 1b: clear dma_pending (a stale latched completion must not be believed) ---
-PENDING_OLD = """	stream->data->mem_block_len = 0;
+PENDING_OLD = """	stream->data->transferring = false;
 
+	if (err < 0) {"""
+PENDING_NEW = """	stream->data->dma_pending = false;
 	stream->data->transferring = false;
-}"""
-PENDING_NEW = """	stream->data->mem_block_len = 0;
 
-	stream->data->dma_pending = false;
-	stream->data->transferring = false;
-}"""
+	if (err < 0) {"""
 
 # --- part 2: the TX callback must NULL mem_block after freeing it ---
 TX_CB_OLD = """	k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
@@ -236,12 +283,14 @@ RX_CB_NEW = """	err = k_msgq_put(&stream->data->queue, &item, K_NO_WAIT);
 # Both i2s_hal_rx_stop() and i2s_hal_tx_stop() already appear in the pristine driver -- in
 # *_start_transfer(), which stops and resets the unit before arming the next transfer --
 # so a bare name test says "already patched" about a tree that is untouched.
-RX_QUIESCED = "\ti2s_hal_rx_stop(hal);\n\tdma_stop(stream->conf->dma_dev, stream->conf->dma_channel);"
+RX_QUIESCED = ("\ti2s_hal_rx_stop(hal);\n"
+               "\terr = dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);")
 TX_QUIESCED = "\ti2s_hal_tx_stop(hal);\n\tdma_stop(stream->conf->dma_dev, stream->conf->dma_channel);"
 
 if src.count(RX_QUIESCED) == 1 and \
         src.count("stream->data->dma_pending = false;\n\tstream->data->transferring") == 2 and \
-        src.count("The queue owns the block now") == 1:
+        src.count("The receive queue owns the block now") == 1 and \
+        src.count("\tif (err < 0) {\n\t\t/*\n\t\t * The channel may still be running") == 2:
     print("  already patched; nothing to do")
     raise SystemExit(0)
 
@@ -252,7 +301,18 @@ if TX_QUIESCED in src:
                      "the shared bit clock and strands full-duplex RX in STOPPING forever. "
                      "Restore drivers/i2s/i2s_esp32.c and re-run.")
 
+# This script must never be applied on top of scripts/patch_zephyr_dma_park.sh. That one is
+# a MEASUREMENT tool -- it proves the park bit is the wrong observable -- and its changes
+# must not reach a diff anybody reviews.
+if "dma_esp32_wait_park" in io.open(
+        path.replace("i2s/i2s_esp32.c", "dma/dma_esp32_gdma.c"),
+        encoding="utf-8", newline="\n").read():
+    raise SystemExit("  drivers/dma/dma_esp32_gdma.c carries the park-measurement patch. That "
+                     "is an experiment, not a fix, and it must not be in a reviewed tree. "
+                     "Restore it and re-run.")
+
 for name, old, want in (("rx quiesce", RX_Q_OLD, 1),
+                        ("tx quiesce", TX_Q_OLD, 1),
                         ("stop_transfer", STOP_OLD, 2),
                         ("tx_callback", TX_CB_OLD, 1),
                         ("rx_callback", RX_CB_OLD, 1)):
@@ -260,10 +320,11 @@ for name, old, want in (("rx quiesce", RX_Q_OLD, 1),
         raise SystemExit("  the %s anchor matched %d times, expected %d. The driver has "
                          "changed; re-derive the patch." % (name, src.count(old), want))
 
-# PENDING_OLD is a SUBSTRING of STOP_OLD, so the stop-transfer rewrite has to land
-# first or the second anchor stops matching. Getting this order wrong silently patches
-# only one of the two directions.
+# Order matters twice over. RX_Q/TX_Q introduce the `err` local that STOP_NEW tests, and
+# PENDING_OLD only exists once STOP_NEW has been written, so the stop-transfer rewrite has
+# to land before it.
 src = src.replace(RX_Q_OLD, RX_Q_NEW)
+src = src.replace(TX_Q_OLD, TX_Q_NEW)
 src = src.replace(STOP_OLD, STOP_NEW)
 src = src.replace(PENDING_OLD, PENDING_NEW)
 src = src.replace(TX_CB_OLD, TX_CB_NEW)
@@ -271,8 +332,9 @@ src = src.replace(RX_CB_OLD, RX_CB_NEW)
 
 io.open(path, "w", encoding="utf-8", newline="\n").write(src)
 print("  patched drivers/i2s/i2s_esp32.c")
-print("    rx_stop_transfer: stop the I2S RX UNIT before dma_stop() -- the RX DMA writes")
-print("                      to the block, and a late burst lands on the free list")
+print("    rx_stop_transfer: stop the I2S RX UNIT before dma_stop() -- the producer, then")
+print("                      the consumer, which is the order ESP-IDF's own driver uses")
+print("    both:             free the in-flight block ONLY if dma_stop() succeeded")
 print("    tx_stop_transfer: unchanged. The TX DMA only reads, and the TX unit is the")
 print("                      source of the shared bit clock.")
 print("    both:             clear dma_pending, and THEN return the in-flight block")

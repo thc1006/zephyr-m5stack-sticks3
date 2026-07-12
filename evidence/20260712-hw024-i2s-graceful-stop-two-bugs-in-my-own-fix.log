@@ -1,3 +1,17 @@
+PARTIALLY SUPERSEDED BY HW-027 -- READ THIS FIRST
+------------------------------------------------
+The two bugs below are real and the measurements stand. But this file's mutation table also
+said, of the GDMA channel reset, "and neither is a channel reset". THAT IS FALSE. The build
+it was based on never had the reset in it: I "verified" the patch with
+`grep -c gdma_ll_rx_reset_channel`, got 2, and did not know that the PRISTINE driver already
+contains two -- in dma_esp32_config_rx() and dma_esp32_reload(). The count proved nothing.
+
+Re-run with the resets counted INSIDE dma_esp32_stop(), the channel reset ALONE is sufficient:
+canary 0/8, 100 cycles, with the I2S RX unit left running. See
+evidence/20260713-hw027-dma_stop-returns-before-the-channel-stops.log.
+
+================================================================================
+
 HW-024  ESP32 I2S: the leak fix I published had TWO bugs of its own -- and the harness
         I built to prove it caught them CAUGHT ONLY ONE. A human caught the other, by
         eye. This file is the corrected record.

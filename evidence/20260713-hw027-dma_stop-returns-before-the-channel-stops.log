@@ -1,0 +1,1234 @@
+HW-027  ESP32 GDMA: dma_stop() returns 0 while the channel is still writing into the
+        caller's buffer -- and the obvious barrier does NOT fix it.
+
+        M5Stack StickS3 (ESP32-S3-PICO-1), Zephyr 4.4.0, 2026-07-13.
+        Upstream: issue #113310, PR #113311 (now two commits: dma + i2s).
+
+        Supersedes the mutation table in HW-024. That table said "and neither is a channel
+        reset". It was WRONG, and it was wrong because of how I verified it. See below.
+
+
+THE QUESTION
+------------
+A reviewer's blocking objection to PR #113311 was, in substance:
+
+    "The block is returned to the mem-slab immediately after dma_stop(). On ESP32-S3,
+     dma_esp32_stop() disables the interrupt, writes the GDMA STOP command, and returns.
+     It does not wait for the descriptor FSM to become idle. The hardware and HAL expose
+     INLINK_PARK separately, and the driver already uses that bit to implement
+     get_status().busy. This patch's safety depends on a timing assumption that nothing
+     documents."
+
+That is correct, and it is the sharpest thing anyone said about this patch. The fix that
+had stopped the crash -- stopping the I2S RX unit before dma_stop() -- prevents the writes
+empirically, but nothing says it MUST.
+
+The reviewer's proposed remedy was a bounded wait on the descriptor FSM's PARK bit.
+
+
+RESULT 1: THE REVIEWER IS RIGHT ABOUT THE PROBLEM
+--------------------------------------------------
+dma_esp32_stop(), verbatim:
+
+    static int dma_esp32_stop(const struct device *dev, uint32_t channel)
+    {
+            ...
+            gdma_ll_rx_enable_interrupt(..., false);
+            gdma_ll_rx_stop(data->hal.dev, dma_channel->channel_id);
+            return 0;
+    }
+
+and sixty lines below it, in the SAME driver:
+
+    static int dma_esp32_get_status(...)
+    {
+            status->busy = !gdma_ll_rx_is_desc_fsm_idle(data->hal.dev, ch);
+
+The driver knows how to observe whether the channel is busy. stop() does not look.
+
+
+RESULT 2: THE PROPOSED REMEDY DOES NOT WORK
+--------------------------------------------
+A bounded wait on INLINK_PARK was added to dma_esp32_stop(), instrumented to count its
+own spins.
+
+    dma_stop() calls                              890
+    ...that returned with the FSM still running     0
+    worst-case spins waiting for PARK               0
+
+The FSM had ALWAYS already parked. Not once did the wait actually wait.
+
+And with the I2S RX unit left running, the DMA wrote into the freed block anyway:
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 1 came back written to
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 1 came back written to
+    ...
+    ** CPU 0 EXCCAUSE 28 (load prohibited)          <- cycle 5
+
+So INLINK_PARK observes the DESCRIPTOR FSM -- "nothing left to fetch" -- and says nothing
+about bytes still in flight. It is the wrong observable. A wait on it is a fix that fixes
+nothing while looking like a proof, and shipping it would have told a reviewer the patch
+depends on a barrier semantics that does not exist.
+
+Corroboration, from the hardware itself: the ESP32-P4's AXI DMA has an ABORT bit ("stop
+the undergoing transfer immediately") and an "is reset available" status, both DISTINCT
+from stop and from park. The S3's AHB GDMA has neither. Espressif had to add a separate
+abort and a separate reset-ready signal on a later part, alongside an existing park bit.
+
+
+RESULT 3: WHAT DOES WORK -- AND THE VERIFICATION BUG THAT HID IT
+-----------------------------------------------------------------
+gdma_ll_rx_reset_channel() is documented as "Reset DMA RX channel FSM and FIFO pointer".
+The FIFO is exactly the state the park bit cannot see.
+
+I ran that experiment, reported that it did NOT work, and wrote it into HW-024. That
+report was false. I "verified" that the reset had been applied with
+
+    grep -c 'gdma_ll_rx_reset_channel' dma_esp32_gdma.c   ->  2
+
+and concluded the patch was in. But the PRISTINE driver already contains two: one in
+dma_esp32_config_rx() and one in dma_esp32_reload(). The count proved nothing, the patch
+had in fact failed to apply, and the "channel reset does not help either" run was a build
+with no channel reset in it.
+
+Re-run, verifying the resets INSIDE dma_esp32_stop() (pristine: 0):
+
+    in dma_esp32_stop(): 0     <- pristine
+    in dma_esp32_stop(): 2     <- patched, aborts the build if not
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+    *** I2S SLAB STRESS PASSED ***
+
+WITH THE I2S RX UNIT LEFT RUNNING. The channel reset alone is sufficient.
+
+
+THE MUTATION MATRIX, RE-MEASURED
+---------------------------------
+Every build had its mutation VERIFIED PRESENT IN THE SOURCE before it was flashed, because
+a name grep is not a verification and this file exists partly to say so.
+
+    build                                   canary    slab          STOP/DRAIN tail  verdict
+    ------------------------------------------------------------------------------------------
+    stock upstream                          1/8 dirty LEAKS 8,7,6.. drains           FAILED
+    dma_stop() + wait for PARK              1/8 dirty --            --               FAILED (crash)
+    I2S peripheral stop only                0/8       flat          drains           PASSED
+    DMA channel reset only                  0/8       flat          drains           PASSED
+    I2S fix + i2s_hal_tx_stop()             0/8       flat          0 of 27          FAILED
+    I2S fix, RX hand-off removed            0/8       rx=9 of 8     drains           FAILED
+    BOTH (what ships)                       0/8       flat 8/8      35 of 35         PASSED
+
+Rows 3 and 4 are the point: EITHER barrier alone is sufficient. They are independent. But
+only one of them has a register behind it. Stopping the producer prevents the writes; the
+channel reset makes them impossible.
+
+
+WHAT SHIPS, AND WHY
+-------------------
+PR #113311 is now two commits.
+
+  drivers: dma: esp32: reset the channel in dma_stop()
+      The contract fix. Zephyr's DMA API says dma_stop() "stops the DMA transfer and
+      disables the channel", so a caller that gets 0 back may reuse the buffer -- and this
+      makes that true. It costs a restarted transfer nothing: dma_esp32_start() re-arms the
+      descriptor address and the interrupt, the descriptor list is in RAM, and the driver
+      ALREADY resets the channel to arm a transfer in config_*() and reload(). This applies
+      the same primitive where it disarms one. Every ESP32 DMA client that frees a buffer
+      after dma_stop() has this exposure; I2S is just the one that was caught.
+
+  drivers: i2s: esp32: return the DMA's in-flight mem-slab block
+      The leak, the ownership hand-off, the err check, and the peripheral-stop ordering.
+      The RX unit is stopped before the DMA because that is the order ESP-IDF's own I2S
+      driver uses and because leaving it clocking into a FIFO nobody reads is wrong on its
+      own terms -- NOT because the memory safety rests on it. It rests on the reset.
+
+The park wait ships nowhere. scripts/repro_dma_park_is_not_a_barrier.sh reproduces the
+negative result and says so in its name.
+
+
+AND THE CALIBRATION THAT KEPT ME OUT OF A HOLE
+-----------------------------------------------
+I was going to argue "ESP-IDF's own I2S teardown does peripheral-stop then gdma_stop,
+therefore that sequence is sufficient". It is not a safe argument. esp-idf#18640 is OPEN:
+after i2s_channel_disable() -- exactly that sequence -- the GDMA channel is still dirty
+enough to corrupt a subsequent DIFFERENT consumer of the same physical channel (hardware
+AES/SHA). Espressif's own maintainer, in that thread: "gdma_reset won't reset registers.
+It only reset the FIFO and FSM."
+
+So the PR cites ESP-IDF's ORDERING, which is narrow and defensible, and rests the memory
+safety on the reset, which is measured. It does not claim to fix #18640, which is a
+different failure mode.
+
+================================================================================
+1. dma_stop() + a bounded wait on INLINK_PARK, I2S RX unit left running.
+   890 stops, the FSM always already idle, and the DMA writing anyway.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+
+=== I2S stress: 100 cycles, TX starved every 5, graceful STOP every 3 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- one of the two places the leak fix could
+
+       double-free.
+
+STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches
+
+       I2S_STATE_STOPPING -- DROP goes straight to READY -- and that is
+
+       where the RX callback hands its block to the queue while still
+
+       pointing at it. A DROP-only stress cannot see that path at all.
+
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 1 came back written to
+
+    c1.canary  => the DMA is STILL WRITING into memory the driver gave back to the slab. Run scripts/patch_zephyr_i2s_le
+
+[39;120Heak.sh
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 1 came back written to
+
+    c2.canary  => the DMA is STILL WRITING into memory the driver gave back to the slab. Run scripts/patch_zephyr_i2s_le
+
+[39;120Heak.sh
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stopped   tx=7 rx=7
+
+[38;5;9m--- 1 messages dropped ---
+[m
+    c3.tail-read tx=7 rx=7
+
+    c3.tail-done tx=7 rx=8
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=7 rx=8
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+[00:00:01.399,000] [38;5;9m<err> os:  ** FATAL EXCEPTION[K
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  ** CPU 0 EXCCAUSE 28 (load prohibited)
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  **  PC 0x403776e6 VADDR 0[K
+[m
+[38;5;9mxtensa-esp32-elf-addr2line -fiaC -e \\wsl.localhost\Ubuntu\home\thc1006\zephyrproject-m5sticks3\build-park\zephyr\zephyr[m
+
+[38;5;9m[39;120Hr.elf 0x403776e6: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??[m
+
+[00:00:01.399,000] [38;5;9m<err> os:  **  PS 0x60120
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  **    (INTLEVEL:0 EXCM: 0 UM:1 RING:0 WOE:1 OWB:1 CALLINC:2)[K
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  **  A0 0x82008441  SP 0x3fc98d80  A2 0x3fc92ce8  A3 0x3fc9c150
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  **  A4 0  A5 0  A6 0  A7 0[K
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  **  A8 0xfffffffe  A9 0x3fc98d50 A10 0 A11 0x60123[K
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  ** A12 0x3fc92ce8 A13 0x3fc9c158 A14 0 A15 0
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  ** LBEG 0x40056f5c LEND 0x40056f72 LCOUNT 0xffffffff[K
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  ** SAR 0x1[K
+[m
+[00:00:01.399,000] [38;5;9m<err> os:  **  THREADPTR 0x270[K
+[m
+[00:00:01.399,000] [38;5;9m<err> os: >>> ZEPHYR FATAL ERROR 0: CPU exception on CPU 0
+[m
+[00:00:01.399,000] [38;5;9m<err> os: Current thread: 0x3fc9bdc0 (unknown)[K
+[m
+[00:00:01.474,000] [38;5;9m<err> os: Halting system[K
+[m
+
+[monitor captured 6001 chars; last 87.0s silent]
+
+================================================================================
+2. dma_stop() + CHANNEL RESET (FSM + FIFO), I2S RX unit left running.
+   Verified present inside dma_esp32_stop() before the build (pristine: 0, patched: 2).
+   Canary clean, 100 cycles.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+
+=== I2S stress: 100 cycles; TX starved every 5, STOP every 3, DRAIN every 7
+
+slab  : free blocks per direction, read BEFORE each cycle. It must stay
+
+        at 8. Falling means the driver is losing the DMA's in-flight
+
+        block on every DROP; rising above 8 means a block was freed
+
+        twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its tx_disable
+
+        path -- one of the places the leak fix could double-free.
+
+STOP  : and DRAIN. BOTH reach I2S_STATE_STOPPING (the driver falls through
+
+        from one case to the other); DROP goes straight to READY under
+
+        irq_lock and never gets there at all. STOPPING is where the RX
+
+        callback hands its block to the queue while still pointing at it,
+
+        so a DROP-only stress cannot see that path.
+
+DRAIN : not a duplicate of STOP. STOP sets tx_stop_without_draining, so TX
+
+        stops after its in-flight block; DRAIN does not, so TX keeps pulling
+
+        blocks off its queue and re-arming DMA until it is empty -- and every
+
+        one of those restarts overlaps an RX ownership hand-off.
+
+tail  : a STOP or DRAIN that drains NOTHING is a FAILURE, not a note. The
+
+        STOPPING branch always queues its final block before it stops, so an
+
+        empty tail read means it never ran. The slab census cannot see that:
+
+        this test printed 'drained 0' for 27 cycles and then printed PASSED.
+
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stop      tx=6 rx=7
+
+    c3.stopped   tx=7 rx=7
+
+    c3.tail-read tx=7 rx=7
+
+    c3.tail-done tx=7 rx=8
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=7 rx=8
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+  stress   6: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress   7: slab tx=8 rx=8   graceful DRAIN + tail read
+
+             DRAIN drained 5 tail blocks
+
+  stress   8: slab tx=8 rx=8
+
+  stress   9: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress  10: slab tx=8 rx=8   TX starved on purpose
+
+  stress  12: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  14: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  15: slab tx=8 rx=8   TX starved on purpose
+
+  stress  18: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  20: slab tx=8 rx=8   TX starved on purpose
+
+  stress  21: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  24: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  25: slab tx=8 rx=8   TX starved on purpose
+
+  stress  27: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  28: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  30: slab tx=8 rx=8   TX starved on purpose
+
+  stress  33: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  35: slab tx=8 rx=8   TX starved on purpose
+
+  stress  36: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  39: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  40: slab tx=8 rx=8   TX starved on purpose
+
+  stress  42: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  45: slab tx=8 rx=8   TX starved on purpose
+
+  stress  48: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  49: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  50: slab tx=8 rx=8   TX starved on purpose
+
+  stress  51: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  54: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  55: slab tx=8 rx=8   TX starved on purpose
+
+  stress  56: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  57: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  60: slab tx=8 rx=8   TX starved on purpose
+
+  stress  63: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  65: slab tx=8 rx=8   TX starved on purpose
+
+  stress  66: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  69: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  70: slab tx=8 rx=8   TX starved on purpose
+
+  stress  72: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  75: slab tx=8 rx=8   TX starved on purpose
+
+  stress  77: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  78: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  80: slab tx=8 rx=8   TX starved on purpose
+
+  stress  81: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  84: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  85: slab tx=8 rx=8   TX starved on purpose
+
+  stress  87: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  90: slab tx=8 rx=8   TX starved on purpose
+
+  stress  91: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  93: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  95: slab tx=8 rx=8   TX starved on purpose
+
+  stress  96: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  98: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  99: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress 100: slab tx=8 rx=8   TX starved on purpose
+
+
+  final census: tx=8 rx=8 of 8
+
+
+=== GDMA descriptor-FSM park, measured ===
+
+  dma_stop() calls              890
+
+  ...that returned with the FSM still running   0
+
+  worst-case spins waiting for PARK             0
+
+  park timeouts                                 0
+
+  => the FSM had ALWAYS already parked. The wait costs nothing here,
+
+     and this fix is about the API contract, not a reproduced failure.
+
+     dma_stop() still must not claim success it has not observed.
+
+
+
+=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, 23 ended with
+
+    a graceful I2S_TRIGGER_STOP and 12 with an I2S_TRIGGER_DRAIN instead of a
+
+    DROP. BOTH reach I2S_STATE_STOPPING, by different routes through TX, and
+
+    all 35 of them drained a tail block (0 came back empty). The slab held
+
+    8/8 free the whole way and the canary was clean. No leak; no block freed
+
+    twice on the tx_disable path or on the STOPPING queue hand-off; and no
+
+    stream stranded in STOPPING by a bit clock that stopped with TX. ===
+
+
+*** I2S SLAB STRESS PASSED ***
+
+alive uptime_ms=28488 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.589017 0.067039 9.076695]
+
+alive uptime_ms=29538 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.621340 0.039505 9.027014]
+
+alive uptime_ms=30548 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.563877 0.046089 9.162889]
+
+alive uptime_ms=31559 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.565075 0.096968 9.185634]
+
+alive uptime_ms=32570 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.537540 0.047286 9.189824]
+
+alive uptime_ms=33580 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.595602 0.033519 9.095849]
+
+alive uptime_ms=34591 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.566870 0.059258 9.164685]
+
+alive uptime_ms=35601 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.594404 0.045491 9.093455]
+
+alive uptime_ms=36612 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.572257 0.057462 9.110215]
+
+alive uptime_ms=37623 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.544723 0.044294 9.179649]
+
+alive uptime_ms=38633 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.575250 0.070631 9.134158]
+
+alive uptime_ms=39644 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.564476 0.050878 9.127573]
+
+alive uptime_ms=40654 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.527963 0.039505 9.220950]
+
+alive uptime_ms=41665 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.517189 0.047286 9.235316]
+
+alive uptime_ms=42676 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.577645 0.048484 9.131165]
+
+alive uptime_ms=43686 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.615953 0.059856 9.040781]
+
+alive uptime_ms=44697 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.538738 0.034716 9.188627]
+
+alive uptime_ms=45707 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.566870 0.074821 9.074899]
+
+alive uptime_ms=46718 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.604580 0.012569 9.051555]
+
+alive uptime_ms=47729 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.580039 0.073025 9.102433]
+
+alive uptime_ms=48739 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.500429 0.028132 9.232921]
+
+alive uptime_ms=49750 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.559687 0.049681 9.158100]
+
+alive uptime_ms=50760 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.593806 0.088588 9.080885]
+
+alive uptime_ms=51771 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.590813 0.068236 9.083878]
+
+alive uptime_ms=52782 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.610566 0.053871 9.041379]
+
+alive uptime_ms=53792 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.601587 0.034716 9.082082]
+
+alive uptime_ms=54803 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.577046 0.041301 9.146129]
+
+alive uptime_ms=55813 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.562680 0.051476 9.122186]
+
+alive uptime_ms=56824 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.596200 0.052075 9.119792]
+
+alive uptime_ms=57835 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.614157 0.043695 9.055745]
+
+alive uptime_ms=58845 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.554300 0.066441 9.174860]
+
+alive uptime_ms=59856 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.566870 0.055666 9.092258]
+
+alive uptime_ms=60866 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.582433 0.063448 9.112011]
+
+alive uptime_ms=61877 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[3.549512 0.076616 9.208979]
+
+alive uptime_ms=62888 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.535745 0.065842 9.194014]
+
+alive uptime_ms=63898 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.551906 0.047885 9.197007]
+
+alive uptime_ms=64909 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.554899 0.056864 9.195810]
+
+alive uptime_ms=65919 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.555497 0.057462 9.169473]
+
+alive uptime_ms=66930 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.594404 0.061054 9.049161]
+
+alive uptime_ms=67941 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.521978 0.065243 9.198803]
+
+alive uptime_ms=68951 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.559687 0.036512 9.133559]
+
+alive uptime_ms=69962 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.612361 0.046089 9.015641]
+
+alive uptime_ms=70972 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.551307 0.066441 9.180846]
+
+alive uptime_ms=71983 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.529160 0.078412 9.226337]
+
+alive uptime_ms=72994 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.571060 0.048484 9.114405]
+
+alive uptime_ms=74004 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.616551 0.059856 9.033598]
+
+alive uptime_ms=75015 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.595003 0.037111 9.084476]
+
+alive uptime_ms=76025 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.595602 0.073025 9.023422]
+
+alive uptime_ms=77036 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.600390 0.066441 9.078491]
+
+alive uptime_ms=78047 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.580039 0.058659 9.122785]
+
+alive uptime_ms=79057 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.514196 0.077215 9.239506]
+
+alive uptime_ms=80068 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.553103 0.050878 9.162290]
+
+alive uptime_ms=81078 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.587820 0.044294 9.100638]
+
+alive uptime_ms=82089 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.557293 0.057462 9.171867]
+
+alive uptime_ms=83100 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.566870 0.057462 9.118595]
+
+alive uptime_ms=84110 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.559687 0.061054 9.137150]
+
+alive uptime_ms=85121 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.507612 0.057462 9.220950]
+
+alive uptime_ms=86131 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.558490 0.063448 9.143735]
+
+alive uptime_ms=87142 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.563279 0.058659 9.159297]
+
+alive uptime_ms=88153 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.515992 0.068835 9.225140]
+
+alive uptime_ms=89163 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.520182 0.072426 9.250280]
+
+alive uptime_ms=90174 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.608770 0.061652 9.074899]
+
+alive uptime_ms=91184 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5152 imu=1 accel=[3.573455 0.067638 9.119792]
+
+alive uptime_ms=92195 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.526766 0.057462 9.211972]
+
+alive uptime_ms=93206 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5150 imu=1 accel=[3.580039 0.067039 9.088666]
+
+alive uptime_ms=94216 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.593207 0.034716 9.102433]
+
+alive uptime_ms=95227 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.572257 0.058061 9.110215]
+
+alive uptime_ms=96237 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.544125 0.056265 9.210176]
+
+alive uptime_ms=97248 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.562680 0.086792 9.069512]
+
+alive uptime_ms=98259 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5168 imu=1 accel=[3.632114 0.056265 9.030605]
+
+alive uptime_ms=99269 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.547118 0.044892 9.165283]
+
+alive uptime_ms=100280 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.575250 0.067039 9.114405]
+
+alive uptime_ms=101291 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.553103 0.016161 9.146728]
+
+alive uptime_ms=102301 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.581834 0.077813 9.099441]
+
+alive uptime_ms=103312 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5152 imu=1 accel=[3.574053 0.061652 9.139545]
+
+alive uptime_ms=104323 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.572856 0.034716 9.101236]
+
+alive uptime_ms=105334 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.543526 0.049681 9.147925]
+
+alive uptime_ms=106345 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.557892 0.083201 9.143136]
+
+alive uptime_ms=107355 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.547716 0.037709 9.158100]
+
+alive uptime_ms=108366 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.506415 0.055666 9.205986]
+
+alive uptime_ms=109377 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.548315 0.028731 9.172466]
+
+alive uptime_ms=110388 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.553103 0.076616 9.144932]
+
+alive uptime_ms=111399 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.563877 0.064645 9.125179]
+
+alive uptime_ms=112409 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.516591 0.038906 9.191620]
+
+alive uptime_ms=113420 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.542329 0.042498 9.137749]
+
+alive uptime_ms=114431 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5160 imu=1 accel=[3.545322 0.082602 9.144932]
+
+alive uptime_ms=115442 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5160 imu=1 accel=[3.532153 0.059258 9.149122]
+
+alive uptime_ms=116453 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.510605 0.056265 9.204190]
+
+alive uptime_ms=117463 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.574652 0.049082 9.095849]
+
+alive uptime_ms=118474 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.493845 0.050279 9.221549]
+
+alive uptime_ms=119485 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.553103 0.071828 9.137749]
+
+
+[monitor captured 19288 chars; last 0.0s silent]
+
+================================================================================
+3. WHAT SHIPS: both commits. 100 cycles, 20 TX-starved, 23 STOP + 12 DRAIN, all 35
+   draining a tail block, slab flat at 8/8, canary 0/8.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+
+=== I2S stress: 100 cycles; TX starved every 5, STOP every 3, DRAIN every 7
+
+slab  : free blocks per direction, read BEFORE each cycle. It must stay
+
+        at 8. Falling means the driver is losing the DMA's in-flight
+
+        block on every DROP; rising above 8 means a block was freed
+
+        twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its tx_disable
+
+        path -- one of the places the leak fix could double-free.
+
+STOP  : and DRAIN. BOTH reach I2S_STATE_STOPPING (the driver falls through
+
+        from one case to the other); DROP goes straight to READY under
+
+        irq_lock and never gets there at all. STOPPING is where the RX
+
+        callback hands its block to the queue while still pointing at it,
+
+        so a DROP-only stress cannot see that path.
+
+DRAIN : not a duplicate of STOP. STOP sets tx_stop_without_draining, so TX
+
+        stops after its in-flight block; DRAIN does not, so TX keeps pulling
+
+        blocks off its queue and re-arming DMA until it is empty -- and every
+
+        one of those restarts overlaps an RX ownership hand-off.
+
+tail  : a STOP or DRAIN that drains NOTHING is a FAILURE, not a note. The
+
+        STOPPING branch always queues its final block before it stops, so an
+
+        empty tail read means it never ran. The slab census cannot see that:
+
+        this test printed 'drained 0' for 27 cycles and then printed PASSED.
+
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stop      tx=6 rx=7
+
+    c3.stopped   tx=7 rx=7
+
+    c3.tail-read tx=7 rx=7
+
+    c3.tail-done tx=7 rx=8
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=7 rx=8
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+  stress   6: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress   7: slab tx=8 rx=8   graceful DRAIN + tail read
+
+             DRAIN drained 5 tail blocks
+
+  stress   8: slab tx=8 rx=8
+
+  stress   9: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress  10: slab tx=8 rx=8   TX starved on purpose
+
+  stress  12: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  14: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  15: slab tx=8 rx=8   TX starved on purpose
+
+  stress  18: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  20: slab tx=8 rx=8   TX starved on purpose
+
+  stress  21: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  24: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  25: slab tx=8 rx=8   TX starved on purpose
+
+  stress  27: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  28: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  30: slab tx=8 rx=8   TX starved on purpose
+
+  stress  33: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  35: slab tx=8 rx=8   TX starved on purpose
+
+  stress  36: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  39: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  40: slab tx=8 rx=8   TX starved on purpose
+
+  stress  42: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  45: slab tx=8 rx=8   TX starved on purpose
+
+  stress  48: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  49: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  50: slab tx=8 rx=8   TX starved on purpose
+
+  stress  51: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  54: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  55: slab tx=8 rx=8   TX starved on purpose
+
+  stress  56: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  57: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  60: slab tx=8 rx=8   TX starved on purpose
+
+  stress  63: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  65: slab tx=8 rx=8   TX starved on purpose
+
+  stress  66: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  69: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  70: slab tx=8 rx=8   TX starved on purpose
+
+  stress  72: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  75: slab tx=8 rx=8   TX starved on purpose
+
+  stress  77: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  78: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  80: slab tx=8 rx=8   TX starved on purpose
+
+  stress  81: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  84: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  85: slab tx=8 rx=8   TX starved on purpose
+
+  stress  87: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  90: slab tx=8 rx=8   TX starved on purpose
+
+  stress  91: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  93: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  95: slab tx=8 rx=8   TX starved on purpose
+
+  stress  96: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  98: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  99: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress 100: slab tx=8 rx=8   TX starved on purpose
+
+
+  final census: tx=8 rx=8 of 8
+
+
+=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, 23 ended with
+
+    a graceful I2S_TRIGGER_STOP and 12 with an I2S_TRIGGER_DRAIN instead of a
+
+    DROP. BOTH reach I2S_STATE_STOPPING, by different routes through TX, and
+
+    all 35 of them drained a tail block (0 came back empty). The slab held
+
+    8/8 free the whole way and the canary was clean. No leak; no block freed
+
+    twice on the tx_disable path or on the STOPPING queue hand-off; and no
+
+    stream stranded in STOPPING by a bit clock that stopped with TX. ===
+
+
+*** I2S SLAB STRESS PASSED ***
+
+alive uptime_ms=28491 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.594404 0.027534 9.104828]
+
+alive uptime_ms=29542 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.605777 0.054469 9.037189]
+
+alive uptime_ms=30552 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.581834 0.071828 9.090462]
+
+alive uptime_ms=31563 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.521379 0.072426 9.234119]
+
+alive uptime_ms=32573 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.539336 0.034716 9.171269]
+
+alive uptime_ms=33584 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.608172 0.022745 9.083878]
+
+alive uptime_ms=34595 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.614756 0.065243 9.030605]
+
+alive uptime_ms=35605 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.518985 0.050878 9.229330]
+
+alive uptime_ms=36616 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.518985 0.057462 9.210774]
+
+alive uptime_ms=37626 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.550110 0.076018 9.158100]
+
+alive uptime_ms=38637 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.602784 0.059258 9.083878]
+
+alive uptime_ms=39648 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.549512 0.038906 9.171269]
+
+alive uptime_ms=40658 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5150 imu=1 accel=[3.497436 0.050878 9.261054]
+
+alive uptime_ms=41669 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.544723 0.068835 9.141939]
+
+alive uptime_ms=42679 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.600989 0.024541 9.097645]
+
+alive uptime_ms=43690 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.596200 0.027534 9.069512]
+
+alive uptime_ms=44701 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.534548 0.048484 9.200000]
+
+alive uptime_ms=45711 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.562680 0.102355 9.115602]
+
+alive uptime_ms=46722 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.536942 0.056864 9.181445]
+
+alive uptime_ms=47732 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.562082 0.063448 9.156903]
+
+alive uptime_ms=48743 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.571659 0.063448 9.095251]
+
+alive uptime_ms=49754 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.548913 0.080208 9.157502]
+
+alive uptime_ms=50764 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.597996 0.056864 9.071906]
+
+alive uptime_ms=51775 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.556695 0.036512 9.195810]
+
+alive uptime_ms=52785 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.521379 0.070032 9.172466]
+
+alive uptime_ms=53796 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.550709 0.078412 9.174262]
+
+alive uptime_ms=54807 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.609967 0.102953 9.040781]
+
+alive uptime_ms=55817 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.563877 0.059258 9.109616]
+
+alive uptime_ms=56828 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.556695 0.053871 9.180247]
+
+alive uptime_ms=57838 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[3.515992 0.021548 9.238309]
+
+alive uptime_ms=58849 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.602784 0.062849 9.079089]
+
+alive uptime_ms=59860 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.575250 0.068835 9.105426]
+
+alive uptime_ms=60870 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.548315 0.071229 9.174262]
+
+alive uptime_ms=61881 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.524372 0.071828 9.214366]
+
+alive uptime_ms=62891 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.572856 0.080806 9.065322]
+
+alive uptime_ms=63902 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.591412 0.050878 9.089864]
+
+alive uptime_ms=64913 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.545322 0.038308 9.223943]
+
+alive uptime_ms=65923 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.532752 0.093975 9.171269]
+
+alive uptime_ms=66934 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.572257 0.076018 9.114405]
+
+alive uptime_ms=67944 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.621939 0.081405 9.020430]
+
+alive uptime_ms=68955 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.547118 0.034716 9.189226]
+
+alive uptime_ms=69966 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.537540 0.064046 9.167677]
+
+alive uptime_ms=70976 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.557293 0.059856 9.199402]
+
+alive uptime_ms=71987 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.597996 0.062251 9.086272]
+
+alive uptime_ms=72997 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.556695 0.028731 9.173065]
+
+alive uptime_ms=74008 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.511802 0.087391 9.235316]
+
+alive uptime_ms=75019 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.517189 0.054469 9.210176]
+
+alive uptime_ms=76029 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.572856 0.055068 9.092258]
+
+alive uptime_ms=77040 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.496239 0.037709 9.289785]
+
+alive uptime_ms=78050 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.519583 0.082602 9.211972]
+
+alive uptime_ms=79061 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.592609 0.062251 9.080286]
+
+alive uptime_ms=80072 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.575849 0.052075 9.120391]
+
+alive uptime_ms=81082 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.524970 0.058659 9.202394]
+
+alive uptime_ms=82093 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5154 imu=1 accel=[3.502823 0.066441 9.274821]
+
+alive uptime_ms=83103 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.563279 0.057462 9.155107]
+
+alive uptime_ms=84114 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.575849 0.080208 9.110215]
+
+alive uptime_ms=85125 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5150 imu=1 accel=[3.566272 0.080208 9.110813]
+
+alive uptime_ms=86135 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.526168 0.053272 9.222746]
+
+alive uptime_ms=87146 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.573455 0.085595 9.128770]
+
+alive uptime_ms=88156 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.592010 0.073623 9.086871]
+
+alive uptime_ms=89167 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.592010 0.064645 9.086871]
+
+alive uptime_ms=90178 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.551307 0.017358 9.190423]
+
+alive uptime_ms=91188 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.549512 0.057462 9.162889]
+
+alive uptime_ms=92199 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.526766 0.055666 9.226337]
+
+alive uptime_ms=93209 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[3.568067 0.064046 9.095849]
+
+alive uptime_ms=94220 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.553103 0.044892 9.158699]
+
+alive uptime_ms=95231 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.559687 0.037111 9.176656]
+
+alive uptime_ms=96241 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5152 imu=1 accel=[3.529160 0.024541 9.209577]
+
+alive uptime_ms=97252 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.611164 0.088588 9.050957]
+
+alive uptime_ms=98262 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[3.585426 0.049082 9.116799]
+
+alive uptime_ms=99273 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.580039 0.036512 9.120989]
+
+alive uptime_ms=100284 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.527365 0.050878 9.211972]
+
+alive uptime_ms=101294 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.583032 0.062251 9.092258]
+
+alive uptime_ms=102305 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.570462 0.035914 9.150319]
+
+alive uptime_ms=103316 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[3.592609 0.056265 9.065322]
+
+alive uptime_ms=104327 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.529759 0.028731 9.186832]
+
+alive uptime_ms=105338 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5154 imu=1 accel=[3.565075 0.053272 9.102433]
+
+alive uptime_ms=106348 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.584827 0.061652 9.085075]
+
+alive uptime_ms=107359 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.618347 0.036512 9.037788]
+
+alive uptime_ms=108370 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5154 imu=1 accel=[3.549512 0.046089 9.165283]
+
+alive uptime_ms=109381 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.534548 0.054469 9.173663]
+
+alive uptime_ms=110392 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.596799 0.044892 9.079089]
+
+alive uptime_ms=111402 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.651867 0.055068 8.985114]
+
+alive uptime_ms=112413 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5158 imu=1 accel=[3.600989 0.025738 9.067118]
+
+alive uptime_ms=113424 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.551307 0.043096 9.177853]
+
+alive uptime_ms=114435 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.575250 0.037111 9.109018]
+
+alive uptime_ms=115446 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.597397 0.040104 9.093455]
+
+alive uptime_ms=116456 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.602186 0.060455 9.073702]
+
+alive uptime_ms=117467 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.550110 0.040702 9.196409]
+
+alive uptime_ms=118478 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5162 imu=1 accel=[3.548913 0.043096 9.206584]
+
+alive uptime_ms=119489 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.577645 0.064046 9.100039]
+
+alive uptime_ms=120500 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5156 imu=1 accel=[3.570462 0.035315 9.171867]
+
+alive uptime_ms=121510 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.545920 0.039505 9.180846]
+
+alive uptime_ms=122521 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[3.581834 0.064645 9.123383]
+
+alive uptime_ms=123532 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.554300 0.058659 9.156305]
+
+alive uptime_ms=124543 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[3.551906 0.025738 9.165283]
+
+alive uptime_ms=125554 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[3.588419 0.058061 9.125778]
+
+alive uptime_ms=126564 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5160 imu=1 accel=[3.536343 0.034118 9.192817]
+
+
+[monitor captured 19645 chars; last 0.5s silent]

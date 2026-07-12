@@ -106,6 +106,34 @@ config APP_I2S_STRESS_CYCLES
 	depends on APP_I2S_STRESS
 	default 100
 
+config APP_I2S_DMA_PARK_STATS
+	bool "Report how often dma_stop() returned while the GDMA was still running"
+	depends on APP_I2S_STRESS
+	default n
+	help
+	  Print the counters exported by a dma_esp32_gdma.c patched with
+	  scripts/patch_zephyr_dma_park.sh, and fail the stress if the descriptor
+	  FSM ever refuses to park.
+
+	  This exists to answer one question with a number instead of an argument.
+	  dma_esp32_stop() writes the GDMA STOP bit and returns 0 without ever
+	  reading the descriptor FSM's PARK bit -- the bit its own get_status()
+	  uses to answer "busy". So every caller that frees or reuses a buffer on
+	  the strength of a successful dma_stop(), which is what the Zephyr DMA API
+	  entitles it to do, is relying on a timing property that nothing documents.
+
+	  That is a defect in the contract whatever the silicon does. But whether
+	  the FSM is EVER still running when dma_stop() returns is a question of
+	  fact, and a fix for a race nobody has observed should say so rather than
+	  imply it caught something. So the wait counts its own spins:
+
+	    busy_stops = 0   the FSM had always already parked. The wait costs
+	                     nothing, and the fix is about the contract only.
+	    busy_stops > 0   the window is real and measured.
+
+	  Needs the DMA patch applied; without it the counters do not exist and the
+	  build will not link.
+
 config APP_AUDIO_REC_SECONDS
 	int "Record->playback clip length (seconds)"
 	depends on APP_AUDIO
