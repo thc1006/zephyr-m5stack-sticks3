@@ -253,6 +253,19 @@ int main(void)
 		printk("*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***\n");
 	}
 #endif
+#ifdef CONFIG_APP_I2S_STRESS
+	/*
+	 * The I2S mem-slab leak, made visible, and the tx_disable path the fix for it
+	 * has to be safe on. Same banner discipline as the sweep: the verdict is a line
+	 * a log parser can act on, because the UI comes up and reports the device alive
+	 * either way.
+	 */
+	if (audio_i2s_stress() < 0) {
+		printk("*** I2S SLAB STRESS FAILED ***\n");
+	} else {
+		printk("*** I2S SLAB STRESS PASSED ***\n");
+	}
+#endif
 #endif
 #ifdef CONFIG_APP_BLE
 	(void)ble_init();

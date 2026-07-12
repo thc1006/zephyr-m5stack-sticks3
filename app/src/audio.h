@@ -120,6 +120,25 @@ uint32_t audio_rec_len_ms(void);
 int audio_rate_sweep(void);
 #endif
 
+#ifdef CONFIG_APP_I2S_STRESS
+/*
+ * Hammer I2S START/DROP, taking a census of the TX and RX memory slabs before each
+ * cycle and deliberately starving TX on some of them.
+ *
+ * Zephyr's ESP32 I2S driver loses the DMA's in-flight slab block on every DROP, and
+ * i2s_buf_write() allocates with K_FOREVER -- so an exhausted slab is not an error,
+ * it is a silent, unkillable block. The census makes the leak visible; the guard
+ * makes this REPORT on an unpatched tree rather than hang in it. The starved cycles
+ * drive the driver down its tx_disable path, which is the one place the fix for the
+ * leak could free the same block twice; a free count above the slab's block count is
+ * how that would show.
+ *
+ * Returns 0 only if every cycle ran and the census never moved. Blocks for a few
+ * seconds; call it once, from main.
+ */
+int audio_i2s_stress(void);
+#endif
+
 #endif /* CONFIG_APP_AUDIO */
 
 #endif /* M5STICKS3_AUDIO_H */

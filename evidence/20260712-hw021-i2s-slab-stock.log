@@ -1,0 +1,218 @@
+# HW-021a - the ESP32 I2S mem-slab leak, on STOCK Zephyr. 2026-07-12, COM35.
+#
+# 100 reconfigure/START/DROP cycles with a census of the TX and RX slabs before each.
+# The slab drains by EXACTLY ONE BLOCK PER DIRECTION PER CYCLE and is empty by the 8th.
+# It does not fail: i2s_buf_write() allocates with K_FOREVER, so an exhausted slab is a
+# silent unkillable block. The guard in the test is what turns that into a report.
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x29 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x403773aa
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90190,len:0x2cec
+
+load:0x40374000,len:0xc17c
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 89622a935d6ef40263cea072f69f8abcf2bb78b5825fc211c3ea91c91be01b8e
+
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037a924
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Jul 12 2026 19:52:29
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0cdc8h ( 52680)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=043cch ( 17356)
+
+I (boot): libc heap size 146 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+
+=== I2S START/DROP stress: 100 cycles, TX starved every 5 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- the one place the leak fix could double-free.
+
+
+  stress   1: slab tx=8 rx=8
+
+  stress   2: slab tx=7 rx=7
+
+  stress   3: slab tx=6 rx=6
+
+  stress   4: slab tx=5 rx=5
+
+  stress   5: slab tx=4 rx=4   TX starved on purpose
+
+  stress   6: slab tx=4 rx=3
+
+  stress   7: slab tx=3 rx=2
+
+
+*** STRESS: SLAB EXHAUSTED at cycle 8: tx=2 rx=1 of 8.
+
+    The driver leaks one block per direction per START/DROP.
+
+    Starting anyway would block FOREVER inside i2s_buf_write(),
+
+    which allocates with K_FOREVER -- no error, no log line.
+
+    Fix: scripts/patch_zephyr_i2s_leak.sh ***
+
+
+
+  final census: tx=2 rx=1 of 8
+
+
+*** STRESS FAILED: the slab leaked out after 8 cycle(s).
+
+    This is the unpatched Zephyr ESP32 I2S driver. ***
+
+
+*** I2S SLAB STRESS FAILED ***
+
+alive uptime_ms=1329 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5158 imu=1 accel=[3.906259 0.043695 9.012648]
+
+alive uptime_ms=2379 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5172 imu=1 accel=[3.882915 0.077813 9.003071]
+
+alive uptime_ms=3390 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.867352 0.050878 9.030605]
+
+alive uptime_ms=4400 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5164 imu=1 accel=[3.908054 0.047286 8.991698]
+
+alive uptime_ms=5410 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.902667 0.040104 8.953988]
+
+alive uptime_ms=6421 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5160 imu=1 accel=[3.894287 0.044294 9.001874]
+
+alive uptime_ms=7431 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.902667 0.043096 8.974938]
+
+alive uptime_ms=8442 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5164 imu=1 accel=[3.896083 0.068835 8.992895]
+
+alive uptime_ms=9452 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.904463 0.035315 9.005465]
+
+alive uptime_ms=10462 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5166 imu=1 accel=[3.883513 0.059856 9.019232]
+
+alive uptime_ms=11473 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5166 imu=1 accel=[3.872739 0.044892 9.000677]
+
+alive uptime_ms=12484 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5168 imu=1 accel=[3.898477 0.041899 9.016240]
+
+alive uptime_ms=13494 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5162 imu=1 accel=[3.900273 0.065243 8.986311]
+
+alive uptime_ms=14505 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5162 imu=1 accel=[3.897280 0.035315 8.988705]
+
+alive uptime_ms=15515 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5166 imu=1 accel=[3.937384 0.039505 8.972544]
+
+alive uptime_ms=16526 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5162 imu=1 accel=[3.882915 0.050878 9.025817]
+
+alive uptime_ms=17537 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5166 imu=1 accel=[3.892492 0.045491 8.988107]
+
+alive uptime_ms=18547 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.897879 0.064645 8.982121]
+
+alive uptime_ms=19558 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5166 imu=1 accel=[3.898477 0.058659 8.979128]
+
+alive uptime_ms=20568 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5162 imu=1 accel=[3.882915 0.038906 9.013845]
+
+alive uptime_ms=21579 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5160 imu=1 accel=[3.924814 0.053272 8.964164]
+
+alive uptime_ms=22590 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5160 imu=1 accel=[3.885309 0.061054 9.018634]
+
+alive uptime_ms=23600 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5164 imu=1 accel=[3.911646 0.052674 9.007261]
+
+alive uptime_ms=24611 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5160 imu=1 accel=[3.891893 0.053272 8.981523]
+
+alive uptime_ms=25621 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5166 imu=1 accel=[3.877527 0.017358 9.030605]
+
+alive uptime_ms=26632 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5162 imu=1 accel=[3.899674 0.062849 8.991698]
+
+alive uptime_ms=27643 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5164 imu=1 accel=[3.907456 0.049681 8.983318]
+
+alive uptime_ms=28653 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.897280 0.037111 8.978530]
+
+alive uptime_ms=29664 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5164 imu=1 accel=[3.881119 0.049082 8.992297]
+
+alive uptime_ms=30674 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.918829 0.047286 8.945608]
+
+alive uptime_ms=31685 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5160 imu=1 accel=[3.879922 0.063448 9.037788]
+
+alive uptime_ms=32696 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.891295 0.044892 8.990501]
+
+alive uptime_ms=33706 page=0 KEY1=1 KEY2=1 bat=4164 soc=100 vin=5160 imu=1 accel=[3.883513 0.043695 9.010254]
+
+alive uptime_ms=34717 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5162 imu=1 accel=[3.878126 0.067039 9.022225]
+
+alive uptime_ms=35727 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5164 imu=1 accel=[3.915237 0.040104 8.984515]
+
+alive uptime_ms=36738 page=0 KEY1=1 KEY2=1 bat=4166 soc=100 vin=5160 imu=1 accel=[3.899674 0.057462 9.016240]
+
+alive uptime_ms=37749 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5164 imu=1 accel=[3.899674 0.052674 8.985114]
+
+alive uptime_ms=38759 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5162 imu=1 accel=[3.888302 0.061054 9.011451]
+
+[monitor captured 7343 chars; last 0.0s silent]

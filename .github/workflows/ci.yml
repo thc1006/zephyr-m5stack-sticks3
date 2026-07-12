@@ -59,6 +59,9 @@ jobs:
           # defaults to n. Without this entry the compiler never sees it, and a
           # green CI would say nothing about ~250 lines of new code.
           - { name: audio-rate-sweep, overlay: "overlay-audio.conf;overlay-audio-rate-sweep.conf", dtc: "", blob: false }
+          # Same reason: the I2S slab stress lives behind a Kconfig that defaults to n,
+          # so without an entry here nothing ever compiles it.
+          - { name: i2s-stress, overlay: "overlay-audio.conf;overlay-i2s-stress.conf", dtc: "", blob: false }
           - { name: ir, overlay: "overlay-ir.conf", dtc: "", blob: false }
           - { name: psram, overlay: "overlay-psram.conf", dtc: "", blob: false }
           - { name: ble, overlay: "overlay-ble.conf", dtc: "", blob: true }

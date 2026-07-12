@@ -63,6 +63,40 @@ config APP_AUDIO_RATE_SWEEP
 	  It is a bring-up and validation aid, not part of the demo: leave it off
 	  for normal builds.
 
+config APP_I2S_STRESS
+	bool "I2S START/DROP stress test at boot (mem-slab leak validation)"
+	depends on APP_AUDIO
+	default n
+	help
+	  Run a one-shot I2S stress test right after audio_init(): reconfigure,
+	  START and DROP the full-duplex stream many times over, taking a census of
+	  the TX and RX memory slabs before each cycle, and deliberately underrunning
+	  TX on some of them.
+
+	  This exists because Zephyr's ESP32 I2S driver leaks one slab block per
+	  direction on every START/DROP: i2s_esp32_{rx,tx}_stop_transfer() drop the
+	  block the DMA is working on without returning it to the slab. It does not
+	  present as an error -- i2s_buf_write() allocates with K_FOREVER, so an
+	  exhausted slab is an unkillable block with no log line -- so the census is
+	  what makes it visible, and the guard is what keeps this test from hanging
+	  on an unpatched tree instead of reporting.
+
+	  The deliberate underruns are the point of the "deliberately" part. They
+	  drive the driver down its tx_disable path, where the TX DMA callback has
+	  already freed the block. That is the one path where returning the in-flight
+	  block in stop_transfer() could become a DOUBLE free, and the census would
+	  show it: a free count above the slab's block count means the free list has
+	  been corrupted.
+
+	  Run it against a patched tree (expect a full, flat census) and against an
+	  unpatched one (expect the leak, reported rather than hung). Validation aid;
+	  leave it off for normal builds.
+
+config APP_I2S_STRESS_CYCLES
+	int "How many START/DROP cycles the stress test runs"
+	depends on APP_I2S_STRESS
+	default 100
+
 config APP_AUDIO_REC_SECONDS
 	int "Record->playback clip length (seconds)"
 	depends on APP_AUDIO

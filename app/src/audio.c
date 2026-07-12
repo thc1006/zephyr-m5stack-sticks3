@@ -1739,4 +1739,335 @@ int audio_rate_sweep(void)
 
 #endif /* CONFIG_APP_AUDIO_RATE_SWEEP */
 
+#ifdef CONFIG_APP_I2S_STRESS
+
+/*
+ * I2S START/DROP stress: the census that makes the mem-slab leak visible, and the
+ * deliberate underrun that drives the driver down the one path where the fix for it
+ * could be a double free.
+ *
+ * Zephyr's ESP32 I2S driver loses one slab block per direction on every START/DROP:
+ * i2s_esp32_{rx,tx}_stop_transfer() set stream->data->mem_block -- the block the DMA
+ * is working on -- to NULL without returning it to the slab, and DROP calls exactly
+ * those. It cannot present as an error, because i2s_buf_write() allocates with
+ * K_FOREVER: an exhausted slab is an unkillable block with no error, no fault and no
+ * log line. So the census is what makes it visible, and the guard below is what makes
+ * this test REPORT on an unpatched tree instead of hanging in it.
+ *
+ * The fix returns the in-flight block in stop_transfer(). The hazard is that the TX
+ * DMA callback ALREADY freed that block a few lines earlier and (before the fix) did
+ * not clear the pointer -- so on the tx_disable path, freeing it again would be a
+ * second free of the same block. That path is reached when the TX queue runs dry.
+ * Every STRESS_UNDERRUN_EVERY cycles this test stops feeding TX and lets it, on
+ * purpose. A double free puts a cycle in the slab's free list, and the census sees
+ * it: a free count ABOVE the slab's block count is impossible unless the list is
+ * corrupt.
+ */
+
+/*
+ * Name each step, with the slab census beside it.
+ *
+ * The crash this test found lives in an ISR -- the RX DMA callback -- and an ISR that
+ * dies prints nothing. The last marker the THREAD wrote is the only thing that says
+ * where it was. And a use-after-free does not move the free COUNT, only the free LIST,
+ * so the count alone cannot see it; what the count can do is show the step at which it
+ * still looked sane.
+ */
+#define STRESS_CYCLES         ((unsigned int)CONFIG_APP_I2S_STRESS_CYCLES)
+#define STRESS_BLOCKS         4U   /* full-duplex blocks on a normal cycle */
+#define STRESS_UNDERRUN_EVERY 5U   /* starve TX on every Nth cycle */
+#define STRESS_UNDERRUN_MS    200  /* long enough for 8 blocks of TX to drain */
+
+static int16_t stress_rx[BLOCK_FRAMES * AUDIO_CHANNELS];
+
+/*
+ * Name each step, with the slab census beside it.
+ *
+ * The crash this test found lives in an ISR -- the RX DMA callback -- and an ISR that
+ * dies prints nothing. The last marker the THREAD wrote is the only record of where it
+ * was. And note what the census can and cannot see: a use-after-free does not move the
+ * free COUNT, only the free LIST, so the count cannot detect it; what it can do is show
+ * the last step at which the accounting still looked sane.
+ */
+static void stress_step(unsigned int cycle, const char *what)
+{
+	if (cycle > 3U) {
+		return;
+	}
+
+	printk("    c%u.%-9s tx=%u rx=%u\n", cycle, what, k_mem_slab_num_free_get(&tx_slab),
+	       k_mem_slab_num_free_get(&rx_slab));
+}
+
+#define STRESS_STEP(c, s) stress_step((unsigned int)(c), (s))
+
+static void stress_reset(void)
+{
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+}
+
+/* One full-duplex block: keep TX fed, take one RX block. */
+static int stress_io(void)
+{
+	size_t sz = sizeof(stress_rx);
+	int ret;
+
+	ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return i2s_buf_read(i2s_dev, stress_rx, &sz);
+}
+
+int audio_i2s_stress(void)
+{
+	unsigned int exhausted_at = 0U;
+	unsigned int corrupt_at = 0U;
+	unsigned int underruns = 0U;
+	unsigned int canary_bad = 0U;
+	unsigned int done = 0U;
+	int ret;
+
+	if (!ready) {
+		printk("STRESS skipped: audio not ready\n");
+		return -ENODEV;
+	}
+
+	/* Park the capture thread; it only touches I2S while `ready` is set. */
+	ready = false;
+	k_msleep(100);
+
+	printk("\n=== I2S START/DROP stress: %u cycles, TX starved every %u ===\n",
+	       STRESS_CYCLES, STRESS_UNDERRUN_EVERY);
+	printk("slab : free blocks per direction, read BEFORE each cycle. It must stay\n");
+	printk("       at %u. Falling means the driver is losing the DMA's in-flight\n",
+	       (unsigned int)BLOCK_COUNT);
+	printk("       block on every DROP; rising above %u means a block was freed\n",
+	       (unsigned int)BLOCK_COUNT);
+	printk("       twice and the free list has a cycle in it.\n");
+	printk("starve: TX is left to run dry, which drives the driver down its\n");
+	printk("       tx_disable path -- the one place the leak fix could double-free.\n\n");
+
+	for (unsigned int i = 1U; i <= STRESS_CYCLES; i++) {
+		bool starve = (i % STRESS_UNDERRUN_EVERY) == 0U;
+		uint32_t tx = k_mem_slab_num_free_get(&tx_slab);
+		uint32_t rx = k_mem_slab_num_free_get(&rx_slab);
+
+		if (tx > BLOCK_COUNT || rx > BLOCK_COUNT) {
+			printk("\n*** STRESS: SLAB CORRUPT at cycle %u: tx=%u rx=%u of %u.\n"
+			       "    More free blocks than exist. The free list has a cycle:\n"
+			       "    some block was returned to the slab twice. ***\n\n",
+			       i, tx, rx, (unsigned int)BLOCK_COUNT);
+			corrupt_at = i;
+			break;
+		}
+
+		if (tx < 2U || rx < 2U) {
+			printk("\n*** STRESS: SLAB EXHAUSTED at cycle %u: tx=%u rx=%u of %u.\n"
+			       "    The driver leaks one block per direction per START/DROP.\n"
+			       "    Starting anyway would block FOREVER inside i2s_buf_write(),\n"
+			       "    which allocates with K_FOREVER -- no error, no log line.\n"
+			       "    Fix: scripts/patch_zephyr_i2s_leak.sh ***\n\n",
+			       i, tx, rx, (unsigned int)BLOCK_COUNT);
+			exhausted_at = i;
+			break;
+		}
+
+		if (i <= 10U || (i % 10U) == 0U || starve) {
+			printk("  stress %3u: slab tx=%u rx=%u%s\n", i, tx, rx,
+			       starve ? "   TX starved on purpose" : "");
+		}
+
+		STRESS_STEP(i, "reset");
+		stress_reset();
+
+		STRESS_STEP(i, "configure");
+		ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
+		if (ret < 0) {
+			printk("*** STRESS: configure failed at cycle %u (%d) ***\n", i, ret);
+			goto restore;
+		}
+
+		STRESS_STEP(i, "prequeue");
+		for (int b = 0; b < 2; b++) {
+			ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+			if (ret < 0) {
+				printk("*** STRESS: prequeue failed at cycle %u (%d) ***\n", i,
+				       ret);
+				goto restore;
+			}
+		}
+
+		STRESS_STEP(i, "start");
+		ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
+		if (ret < 0) {
+			printk("*** STRESS: START failed at cycle %u (%d) ***\n", i, ret);
+			goto restore;
+		}
+
+		if (starve) {
+			/*
+			 * Feed TX nothing and drain RX nothing. TX runs its two pre-queued
+			 * blocks out and finds the queue empty, which takes the driver to
+			 * tx_disable; RX fills its queue with nobody reading, which takes it
+			 * to rx_disable. Both stop paths run with a block in flight. That is
+			 * the case this whole test exists for, and an error here is the
+			 * DRIVER reporting the underrun, not a failure of the test.
+			 */
+			k_msleep(STRESS_UNDERRUN_MS);
+			underruns++;
+		} else {
+			STRESS_STEP(i, "io");
+			for (uint32_t b = 0U; b < STRESS_BLOCKS; b++) {
+				ret = stress_io();
+				if (ret < 0) {
+					printk("*** STRESS: i/o failed at cycle %u block %u "
+					       "(%d) ***\n",
+					       i, b, ret);
+					goto restore;
+				}
+			}
+		}
+
+		STRESS_STEP(i, "drop");
+		stress_reset();
+		STRESS_STEP(i, "dropped");
+
+		/*
+		 * IS THE DMA STILL WRITING INTO A BLOCK WE HAVE HANDED BACK?
+		 *
+		 * The hypothesis this test exists to settle. On the GDMA path,
+		 * i2s_esp32_rx_stop_transfer() calls dma_stop() and nothing else -- it does
+		 * not stop the I2S link, does not clear dma_pending, and does not wait for
+		 * the channel to go quiet. If the DMA writes even one more burst after
+		 * that, then returning the in-flight block to the slab (which the leak fix
+		 * does) hands the hardware a buffer that is on the free list, and the audio
+		 * lands on top of the free-list next pointer.
+		 *
+		 * So: take every block the slab has, stamp it, give them all back, wait,
+		 * take them again, and see whether anything wrote to them in between.
+		 * Nothing legitimate should. The DMA is stopped. That is the claim.
+		 */
+		/*
+		 * The canary. It is what settled WHY the obvious fix for the leak does not
+		 * work, and it is cheap, so it stays.
+		 *
+		 * Take every block the slab has, stamp it, hand them all back, wait, take
+		 * them again. Nothing legitimate should have written to them: the I2S is
+		 * DROPped and the capture thread is parked. If any come back changed, the
+		 * DMA is still writing into memory the driver has already returned to the
+		 * slab -- which is exactly what happens when *_stop_transfer() frees the
+		 * in-flight block without stopping the I2S unit first (measured: 1 of 8,
+		 * every cycle; with the unit stopped, 0 of 8).
+		 *
+		 * Skip the first word of each block: k_mem_slab_free() stores the free-list
+		 * next pointer THERE, in the block itself. Checking from offset 0 reported
+		 * all eight clobbered on the first run, which was the test lying to me, not
+		 * a finding.
+		 */
+		if (i <= 2U) {
+			void *blk[BLOCK_COUNT];
+			unsigned int n = 0U;
+			unsigned int clobbered = 0U;
+
+			while (n < BLOCK_COUNT &&
+			       k_mem_slab_alloc(&rx_slab, &blk[n], K_NO_WAIT) == 0) {
+				memset(blk[n], 0x5A, BLOCK_SIZE);
+				n++;
+			}
+			for (unsigned int b = 0U; b < n; b++) {
+				k_mem_slab_free(&rx_slab, blk[b]);
+			}
+
+			k_msleep(50);
+
+			for (unsigned int b = 0U; b < n; b++) {
+				if (k_mem_slab_alloc(&rx_slab, &blk[b], K_NO_WAIT) != 0) {
+					break;
+				}
+			}
+			for (unsigned int b = 0U; b < n; b++) {
+				const uint8_t *p = blk[b];
+
+				for (size_t k = sizeof(void *); k < BLOCK_SIZE; k++) {
+					if (p[k] != 0x5AU) {
+						clobbered++;
+						break;
+					}
+				}
+			}
+			for (unsigned int b = 0U; b < n; b++) {
+				k_mem_slab_free(&rx_slab, blk[b]);
+			}
+
+			printk("    c%u.canary  stamped %u free rx blocks, waited 50 ms, "
+			       "%u came back written to\n",
+			       i, n, clobbered);
+			if (clobbered != 0U) {
+				printk("    c%u.canary  => the DMA is STILL WRITING into memory "
+				       "the driver gave back to the slab. Run "
+				       "scripts/patch_zephyr_i2s_leak.sh\n",
+				       i);
+				canary_bad += clobbered;
+			}
+		}
+
+		done = i;
+	}
+
+restore:
+	stress_reset();
+
+	printk("\n  final census: tx=%u rx=%u of %u\n", k_mem_slab_num_free_get(&tx_slab),
+	       k_mem_slab_num_free_get(&rx_slab), (unsigned int)BLOCK_COUNT);
+
+	ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
+	if (ret < 0) {
+		printk("\n*** STRESS FAILED: could not restore audio (%d) ***\n\n", ret);
+		return ret;
+	}
+	ready = true;
+
+	if (canary_bad != 0U) {
+		printk("\n*** STRESS FAILED: the DMA wrote into %u block(s) that the driver "
+		       "had\n    already returned to the slab. Freeing the in-flight block "
+		       "without\n    stopping the I2S unit first is not safe. ***\n\n",
+		       canary_bad);
+		return -EIO;
+	}
+
+	if (corrupt_at != 0U) {
+		printk("\n*** STRESS FAILED: the slab free list was corrupted at cycle %u.\n"
+		       "    A block was freed twice. ***\n\n",
+		       corrupt_at);
+		return -EIO;
+	}
+
+	if (exhausted_at != 0U) {
+		printk("\n*** STRESS FAILED: the slab leaked out after %u cycle(s).\n"
+		       "    This is the unpatched Zephyr ESP32 I2S driver. ***\n\n",
+		       exhausted_at);
+		return -ENOMEM;
+	}
+
+	if (done != STRESS_CYCLES) {
+		printk("\n*** STRESS FAILED: stopped after %u of %u cycles ***\n\n", done,
+		       STRESS_CYCLES);
+		return -EIO;
+	}
+
+	printk("\n=== STRESS PASSED: %u cycles, %u of them with TX starved on purpose,\n"
+	       "    and the slab held %u/%u free the whole way. No leak, and no block\n"
+	       "    freed twice on the tx_disable path. ===\n\n",
+	       STRESS_CYCLES, underruns, (unsigned int)BLOCK_COUNT,
+	       (unsigned int)BLOCK_COUNT);
+
+	return 0;
+}
+
+#endif /* CONFIG_APP_I2S_STRESS */
+
 #endif /* CONFIG_APP_AUDIO */
