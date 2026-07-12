@@ -1793,15 +1793,28 @@ int audio_rate_sweep(void)
  *
  * WHY THE OBVIOUS FIX IS WRONG. Just handing the block back crashes within two cycles:
  * k_mem_slab_alloc walks a free list whose next pointer has been overwritten with
- * captured audio. On the SOC_GDMA_SUPPORTED path, *_stop_transfer() calls dma_stop()
- * and NOTHING ELSE -- it never stops the I2S unit feeding the DMA, unlike the
- * non-GDMA branch three lines below it. So the block is still being written when it
- * lands back on the free list. THE LEAK WAS MASKING THAT: the block was never
- * returned, so the stray writes went somewhere nobody would ever look.
+ * captured audio. THE LEAK WAS MASKING A USE-AFTER-FREE: the block was never returned,
+ * so the stray writes went somewhere nobody would ever look.
  *
- * The canary below is what measures it: stamp every free RX block, hand them back,
- * wait, take them again. One comes back written to, every cycle. With the I2S unit
- * actually stopped, none do.
+ * AND THE ROOT CAUSE IS NOT IN I2S AT ALL. dma_stop() returns 0 while the GDMA channel
+ * is still writing. GDMA_INLINK_STOP_CHn is (R/W/SC) -- a self-clearing command strobe
+ * with NO acknowledge -- while GDMA_INLINK_PARK_CHn is (RO) status. dma_esp32_stop()
+ * writes the first and returns. "I asked" and "it happened" are different bits.
+ *
+ * Waiting for the FSM to park does NOT fix it, which is worth knowing because it is the
+ * first thing anyone reaches for: measured over 890 stops, the FSM was ALREADY IDLE
+ * every single time and the DMA wrote into the freed block anyway. What fixes it is
+ * resetting the channel (GDMA_IN_RST_CHn: "RX FSM and RX FIFO pointer" -- the FIFO is
+ * precisely the state the park bit cannot see). Stopping the I2S unit first also stops
+ * the writes, and the fix does both, but only the reset has a register behind it; the
+ * unit stop is a timing argument. So the fix is TWO patches, and they are independent:
+ *
+ *     scripts/patch_zephyr_dma_quiesce.sh   reset the channel in dma_esp32_stop()
+ *     scripts/patch_zephyr_i2s_leak.sh      return the block; stop the unit first
+ *
+ * The canary below is what measures all of it: stamp every free RX block, hand them
+ * back, wait, take them again. One comes back written to, every cycle. With EITHER
+ * barrier in place, none do.
  *
  * AND THE DELIBERATE UNDERRUN. Starving TX drives the driver down its tx_disable
  * path, where the TX DMA callback has already freed the block -- the one place where
