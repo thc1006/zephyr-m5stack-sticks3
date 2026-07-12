@@ -1804,6 +1804,32 @@ int audio_rate_sweep(void)
 #define STRESS_UNDERRUN_EVERY 5U   /* starve TX on every Nth cycle */
 #define STRESS_UNDERRUN_MS    200  /* long enough for 8 blocks of TX to drain */
 
+/*
+ * A GRACEFUL STOP, on every Nth cycle. DROP can never reach this path.
+ *
+ * I2S_TRIGGER_STOP is the ONLY trigger that puts the ESP32 driver into
+ * I2S_STATE_STOPPING; DROP goes straight to READY under irq_lock and the state is never
+ * observed. So a stress that only ever DROPs -- which is what this one was -- leaves the
+ * driver's entire graceful-stop path untested, and that is exactly where the leak fix
+ * put a double free:
+ *
+ *   the RX callback k_msgq_put()s its block, so the QUEUE owns it, but mem_block goes on
+ *   pointing at it. Six lines later the STOPPING branch does `goto rx_disable`, which
+ *   lands in rx_stop_transfer(), which now returns the in-flight block to the slab --
+ *   and that block is the one the queue is holding. The i2s_buf_read() below then gets a
+ *   block that is already on the free list and frees it a second time.
+ *
+ * The slab census at the top of the next cycle is what catches it: rx climbs ABOVE
+ * BLOCK_COUNT, because one block is on the free list twice.
+ *
+ * Timing. After STOP, TX has to finish its in-flight DMA block before the RX callback's
+ * STOPPING branch will fire (it waits on !tx.transferring). One block at 16 kHz is 16 ms,
+ * so the window opens some tens of ms in; 150 ms is not tight. An earlier attempt at this
+ * used 50 ms and never reached STOPPING at all, which looked exactly like a pass.
+ */
+#define STRESS_STOP_EVERY 3U   /* graceful STOP instead of DROP on every Nth cycle */
+#define STRESS_STOP_MS    150  /* TX must drain before the RX STOPPING branch fires */
+
 static int16_t stress_rx[BLOCK_FRAMES * AUDIO_CHANNELS];
 
 /*
@@ -1853,6 +1879,7 @@ int audio_i2s_stress(void)
 	unsigned int exhausted_at = 0U;
 	unsigned int corrupt_at = 0U;
 	unsigned int underruns = 0U;
+	unsigned int stops = 0U;
 	unsigned int canary_bad = 0U;
 	unsigned int done = 0U;
 	int ret;
@@ -1866,8 +1893,8 @@ int audio_i2s_stress(void)
 	ready = false;
 	k_msleep(100);
 
-	printk("\n=== I2S START/DROP stress: %u cycles, TX starved every %u ===\n",
-	       STRESS_CYCLES, STRESS_UNDERRUN_EVERY);
+	printk("\n=== I2S stress: %u cycles, TX starved every %u, graceful STOP every %u ===\n",
+	       STRESS_CYCLES, STRESS_UNDERRUN_EVERY, STRESS_STOP_EVERY);
 	printk("slab : free blocks per direction, read BEFORE each cycle. It must stay\n");
 	printk("       at %u. Falling means the driver is losing the DMA's in-flight\n",
 	       (unsigned int)BLOCK_COUNT);
@@ -1875,10 +1902,16 @@ int audio_i2s_stress(void)
 	       (unsigned int)BLOCK_COUNT);
 	printk("       twice and the free list has a cycle in it.\n");
 	printk("starve: TX is left to run dry, which drives the driver down its\n");
-	printk("       tx_disable path -- the one place the leak fix could double-free.\n\n");
+	printk("       tx_disable path -- one of the two places the leak fix could\n");
+	printk("       double-free.\n");
+	printk("STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches\n");
+	printk("       I2S_STATE_STOPPING -- DROP goes straight to READY -- and that is\n");
+	printk("       where the RX callback hands its block to the queue while still\n");
+	printk("       pointing at it. A DROP-only stress cannot see that path at all.\n\n");
 
 	for (unsigned int i = 1U; i <= STRESS_CYCLES; i++) {
 		bool starve = (i % STRESS_UNDERRUN_EVERY) == 0U;
+		bool graceful = !starve && (i % STRESS_STOP_EVERY) == 0U;
 		uint32_t tx = k_mem_slab_num_free_get(&tx_slab);
 		uint32_t rx = k_mem_slab_num_free_get(&rx_slab);
 
@@ -1902,9 +1935,11 @@ int audio_i2s_stress(void)
 			break;
 		}
 
-		if (i <= 10U || (i % 10U) == 0U || starve) {
+		if (i <= 10U || (i % 10U) == 0U || starve || graceful) {
 			printk("  stress %3u: slab tx=%u rx=%u%s\n", i, tx, rx,
-			       starve ? "   TX starved on purpose" : "");
+			       starve	 ? "   TX starved on purpose"
+			       : graceful ? "   graceful STOP + tail read"
+					  : "");
 		}
 
 		STRESS_STEP(i, "reset");
@@ -1956,6 +1991,54 @@ int audio_i2s_stress(void)
 					goto restore;
 				}
 			}
+		}
+
+		if (graceful) {
+			unsigned int tail = 0U;
+
+			/*
+			 * The one path DROP cannot reach. STOP is the only trigger that puts
+			 * the driver into I2S_STATE_STOPPING, and the RX callback's STOPPING
+			 * branch is where the leak fix hands the same block to the queue and
+			 * to the slab.
+			 */
+			STRESS_STEP(i, "stop");
+			ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_STOP);
+			if (ret < 0) {
+				printk("*** STRESS: STOP failed at cycle %u (%d) ***\n", i, ret);
+				goto restore;
+			}
+
+			/* The STOPPING branch waits for TX to finish its in-flight block. */
+			k_msleep(STRESS_STOP_MS);
+			STRESS_STEP(i, "stopped");
+
+			/*
+			 * Drain the tail. THIS is the read that frees the queue's block -- so
+			 * if rx_stop_transfer() has already freed it, this is the second free,
+			 * and the census at the top of the next cycle sees rx above
+			 * BLOCK_COUNT.
+			 *
+			 * The loop ends on an error, which after a STOP means the queue is
+			 * empty and is the expected outcome, not a failure. It is bounded
+			 * anyway: a queue that never empties would otherwise spin here.
+			 */
+			STRESS_STEP(i, "tail-read");
+			for (unsigned int b = 0U; b < BLOCK_COUNT + 1U; b++) {
+				size_t sz = sizeof(stress_rx);
+
+				if (i2s_buf_read(i2s_dev, stress_rx, &sz) < 0) {
+					break;
+				}
+				tail++;
+			}
+			STRESS_STEP(i, "tail-done");
+
+			if (i <= 10U || (i % 10U) == 0U) {
+				printk("             STOP drained %u tail block%s\n", tail,
+				       (tail == 1U) ? "" : "s");
+			}
+			stops++;
 		}
 
 		STRESS_STEP(i, "drop");
@@ -2085,10 +2168,11 @@ restore:
 		return -EIO;
 	}
 
-	printk("\n=== STRESS PASSED: %u cycles, %u of them with TX starved on purpose,\n"
-	       "    and the slab held %u/%u free the whole way. No leak, and no block\n"
-	       "    freed twice on the tx_disable path. ===\n\n",
-	       STRESS_CYCLES, underruns, (unsigned int)BLOCK_COUNT,
+	printk("\n=== STRESS PASSED: %u cycles -- %u with TX starved on purpose, %u ended\n"
+	       "    with a graceful STOP and a tail read instead of a DROP -- and the slab\n"
+	       "    held %u/%u free the whole way. No leak, and no block freed twice on\n"
+	       "    either the tx_disable path or the STOPPING queue hand-off. ===\n\n",
+	       STRESS_CYCLES, underruns, stops, (unsigned int)BLOCK_COUNT,
 	       (unsigned int)BLOCK_COUNT);
 
 	return 0;
