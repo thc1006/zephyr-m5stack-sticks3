@@ -76,15 +76,25 @@
 # block the DMA still owns and wrong for one the RX callback has already handed to the
 # receive queue, because mem_block goes on pointing at it. The STOPPING branch six lines
 # below that k_msgq_put() does `goto rx_disable`, which lands in rx_stop_transfer(),
-# which frees the block the queue is holding; i2s_read() then returns a block that is
-# already back on the free list and frees it again. The leak had been covering for this
-# one too. The stress test below could not see it because it only ever used DROP, which
-# never reaches I2S_STATE_STOPPING.
+# which frees the block the queue is holding. i2s_read() then hands that block to its
+# caller with it already back on the free list, and the caller frees it a SECOND time.
+# (i2s_read() itself does NOT free: it transfers ownership. i2s_buf_read() frees on the
+# caller's behalf; an application calling i2s_read() directly owns the block and must
+# free it itself.) The leak had been covering for this one too, and the stress could not
+# see it because it only ever used DROP, which never reaches I2S_STATE_STOPPING.
 #
-# Verified on hardware (evidence/20260712-hw021-i2s-slab-quiesce-PASS.log): 100
-# reconfigure/START/DROP cycles, 20 of them with TX deliberately starved to drive the
-# driver down its tx_disable path, the slab flat at 8/8 free the whole way, and the
-# canary clean -- 0 of 8 blocks touched after being handed back.
+# Verified on hardware (evidence/20260712-hw024-*): 100 reconfigure/START/DROP cycles,
+# 20 of them with TX deliberately starved to drive the driver down its tx_disable path,
+# and 27 of them ending in a graceful I2S_TRIGGER_STOP with a tail read instead of a
+# DROP. Slab flat at 8/8 free the whole way, all 27 STOPs drained their tail block, and
+# the canary clean -- 0 of 8 blocks touched after being handed back.
+#
+# The harness fails on stock (the slab drains), on the i2s_hal_tx_stop variant (27 of 27
+# STOPs drain nothing, with the slab still flat), and with part 4 removed (the slab
+# climbs to 9 free blocks out of 8). It did NOT fail on the tx_stop variant until
+# 2026-07-13: it printed "STOP drained 0 tail blocks" and then printed STRESS PASSED,
+# because nothing asserted on that number. A test that prints the evidence and does not
+# check it is not a test.
 #
 # Present in Zephyr v4.4.0 and on main as of 2026-07-12. Idempotent.
 #
@@ -171,7 +181,9 @@ TX_CB_NEW = """	k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->me
 # put in the receive queue -- because mem_block still points at it. Six lines below the
 # k_msgq_put(), the STOPPING branch does `goto rx_disable`, which lands in
 # rx_stop_transfer(), which now frees the block the queue is holding. i2s_read() then
-# hands the caller a block that is back on the free list, and frees it a second time.
+# hands that block to its caller with the block already back on the free list, and the
+# caller frees it a second time -- i2s_buf_read() does this for you; an application
+# calling i2s_read() directly owns the block and must free it itself.
 #
 # So part 3 turned a leak into a double free on the graceful-stop path. The leak had
 # been covering for this too. Ownership has to be handed over explicitly: the pointer
@@ -204,10 +216,12 @@ RX_CB_NEW = """	err = k_msgq_put(&stream->data->queue, &item, K_NO_WAIT);
 	}
 
 	/*
-	 * The queue owns the block now and i2s_read() will free it, so the driver must
-	 * stop pointing at it. Every path out of this callback that stops the stream ends
-	 * in i2s_esp32_rx_stop_transfer(), which frees whatever mem_block still holds --
-	 * and on the STOPPING branch immediately below, that would be this block, freed a
+	 * The receive queue owns the block now, and i2s_read() will hand it on to the
+	 * application -- which frees it, either directly or inside i2s_buf_read(). Either
+	 * way it has stopped being the driver's to release, so the driver must stop
+	 * pointing at it. Every path out of this callback that stops the stream ends in
+	 * i2s_esp32_rx_stop_transfer(), which frees whatever mem_block still holds -- and
+	 * on the STOPPING branch immediately below, that would be this block, freed a
 	 * second time while the queue is still holding it.
 	 */
 	stream->data->mem_block = NULL;
