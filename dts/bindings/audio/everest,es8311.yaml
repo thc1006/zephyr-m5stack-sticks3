@@ -37,8 +37,23 @@ properties:
     type: phandle-array
     description: |
       GPIO connected to the codec reset pin (active low), when a discrete reset
-      line is wired. Without it the driver relies on the software reset in
-      register 0x00.
+      line is wired. The driver asserts it, settles, and releases it at init.
+
+      This driver does NOT issue the register-0x00 software reset. It is worth
+      saying why, because the reference drivers do and a reader will expect it.
+      Adding the reference sequence (assert the reset bits, wait, release, start
+      the clock state machine) was measured on an ES8311 on real hardware and it
+      leaves the ADC deaf: the capture noise floor collapses to zero at 8 kHz and
+      the microphone hears nothing below roughly 22 kHz, while every register the
+      driver writes reads back exactly as intended. Initialising the two system
+      registers the reset does not leave usable (0x0B, 0x0C), as both reference
+      drivers do, does not change it. The root cause is not established, so the
+      reset is not shipped: a driver that silently halves its own capture
+      bandwidth is worse than one that does not reset the part.
+
+      The practical consequence is that configure() must not rely on reset
+      defaults, and it does not: every route programs both directions in full,
+      including powering down the converter it does not use.
 
   enable-gpios:
     type: phandle-array
