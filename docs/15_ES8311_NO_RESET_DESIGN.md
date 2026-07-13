@@ -132,7 +132,7 @@ Five of them are not housekeeping. They are correctness:
 | **`0x18` `ALC_EN`** | The datasheet, under the ADC volume register itself: *"When ALC is on, `ADC_VOLUME` = MAXGAIN"*. A stuck ALC bit silently turns `0x17` -- which the driver writes and exposes as `AUDIO_PROPERTY_INPUT_VOLUME` -- from a **volume** into a **servo-loop ceiling**. |
 | **`0x34` `DRC_EN`** | The exact mirror image, for the DAC volume (`0x32`). |
 | **`0x44` bit 7 `ADC2DAC_SEL`** | Routes the ADC into the DAC. It is a **playback** control living in a register whose other field is about the ADC -- so it was only ever written on the capture path. A chip handed over with bit 7 set **plays its own microphone instead of the caller's audio**, through a route that just powered that microphone down. Silently: `configure()` returns 0 and every register the driver checks reads back as intended. |
-| **`0xFA` bit 0 `INI_REG`** | **A LEVEL, not a pulse.** While it is set, the register file is *held* at its defaults: every write is silently discarded, every read returns `0x00`, and `configure()` still returns 0. The vendor Linux driver **sets this bit at shutdown on purpose**, to hold the file down across a reboot -- so a driver that never clears it can be handed a chip it cannot possibly recover. It is now **the first register write the driver makes.** |
+| **`0xFA` bit 0 `INI_REG`** | **A LEVEL, not a pulse.** While it is set, the register file is *held* at its defaults: every write is silently discarded, every read returns `0x00`, and `configure()` still returns 0. The vendor Linux driver **sets this bit at shutdown on purpose**, to hold the file down across a reboot -- so a driver that never clears it can be handed a chip it cannot possibly recover. It is now the first register write the driver makes -- **and an adversarial review proved that is not enough.** `init()` read the chip id BEFORE writing anything, and a held part answers `0x00` to that read, so the identity check failed, `init()` returned `-ENODEV`, and the one write that recovers the chip was never reached. The driver documented the hazard exactly and then gated the cure behind a check the hazard defeats. **`es8311_check_id()` now treats a chip id of `0x0000` as a symptom rather than an identity**: it releases `0xFA` and re-reads, and anything that still fails to identify itself is rejected exactly as before. |
 | **`es8311_init()` wrote zero registers** | With no reset pin, a warm reboot does not reach the codec, but the SoC's I2S peripheral *does* reset and the bit clock stops -- and this codec takes its master clock from that bit clock. A DAC that was powered and unmuted when the reboot hit has its modulator **frozen on its last sample**: a DC level sitting on the amplifier until the application gets around to `configure()`. `init()` now releases the register file and quiesces the part. |
 
 `0xFA` was found the hard way: by setting it and forgetting to clear it. The next boot came
@@ -154,6 +154,28 @@ The fourth is a **tripwire**: it leaves a witness in a register the driver never
 (`0x36`, unused) and fails if anything ever asserts `0x00[4:0]`. Deviating from every
 reference implementation is exactly the kind of thing a future contributor helpfully undoes,
 and the cost of that is invisible to any test that is not specifically looking for it.
+
+---
+
+## The test that could not see the bug it was named after
+
+`test_ini_reg_is_released_before_anything_else` existed, passed, and proved nothing about
+the thing it is named after.
+
+**The emulator did not model INI_REG.** It was a plain 256-byte register store, so a "held"
+part could not exist in it. The test could only assert that the first entry in the write log
+was `0xFA` -- which was true, and which did not stop `init()` from bailing out on the chip-id
+read before ever getting there.
+
+**A test cannot catch a bug in a state its model cannot express.** The emulator now models
+`0xFA` bit 0 as a level: while set, every write to any other register is discarded and every
+read returns `0x00`, and the only way out is a write to `0xFA` itself.
+
+The same review found that the emulator **wiped its whole register array** when the low five
+bits of `0x00` were asserted -- implementing a register-file reset that
+[this very document](#2-register-0x00-does-not-reset-the-register-file) says the silicon does
+not perform. The tripwire test depended on that fiction. It now checks the **write log**
+instead: what the driver wrote, not what an imaginary chip did in response.
 
 ---
 
