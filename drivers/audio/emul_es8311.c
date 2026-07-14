@@ -33,6 +33,8 @@ LOG_MODULE_REGISTER(emul_es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
 
 #define ES8311_REG_RESET    0x00U
 #define ES8311_RESET_BITS   0x1FU /* the digital/CMG/master/ADC/DAC resets */
+#define ES8311_REG_INI      0xFAU
+#define ES8311_INI_HOLD     0x01U /* INI_REG: a LEVEL, not a pulse */
 #define ES8311_REG_CHIP_ID1 0xFDU
 #define ES8311_REG_CHIP_ID2 0xFEU
 #define ES8311_CHIP_ID1     0x83U
@@ -50,8 +52,34 @@ struct es8311_emul_data {
 	 * middle, where the hardware is half reprogrammed.
 	 */
 	int fail_at;
-	/* Ordered log of written register addresses. */
+	/*
+	 * Fault injection by DIRECTION. set_fail() and fail_at() break a transfer whatever
+	 * it is; this breaks only reads, and lets every write through.
+	 *
+	 * That is not a contrived split. A read on this bus is a write-then-read with a
+	 * repeated start, and a controller or a device can fail that while a plain
+	 * two-byte register write still works. It matters because it is exactly the
+	 * failure that turns a read-modify-write mute into no mute at all: the read
+	 * fails, the write is never attempted, and the DAC stays as loud as it was.
+	 */
+	bool fail_reads;
+	/*
+	 * Fault injection by TARGET. Breaking transfer number N is precise but brittle:
+	 * it counts reads as well as writes, so inserting one register read anywhere
+	 * upstream silently re-aims the fault at a different write. This says what it
+	 * means -- break the write to THIS register -- and keeps saying it.
+	 *
+	 * Negative when disarmed. 0x00 is a real register, so it cannot be the sentinel.
+	 */
+	int fail_write_reg;
+	/*
+	 * Ordered log of writes. The addresses are what most tests care about, but the
+	 * values matter for one thing in particular: proving the driver never asserts the
+	 * reset bits in 0x00. That has to be checked against what the driver WROTE, not
+	 * against a register-file reset the real part does not perform.
+	 */
 	uint8_t wlog[ES8311_EMUL_WLOG_LEN];
+	uint8_t wval[ES8311_EMUL_WLOG_LEN];
 	int wcount;
 	/*
 	 * Concurrency hook. When armed, the transfer blocks just before it applies
@@ -67,7 +95,78 @@ struct es8311_emul_data {
 	bool pause_armed;
 };
 
+/*
+ * Is the part currently holding its register file down? Derived from the register itself
+ * rather than a separate flag, so that a driver clearing 0xFA releases it exactly the way
+ * the silicon does, and a driver that sets it bricks itself exactly the way ours once did.
+ */
+static inline bool es8311_emul_held(const struct es8311_emul_data *data)
+{
+	return (data->regs[ES8311_REG_INI] & ES8311_INI_HOLD) != 0U;
+}
+
+static int es8311_emul_init(const struct emul *target, const struct device *parent);
+
 /* Test backend hooks (declared extern in the test). */
+
+/*
+ * Seed the part into the state a previous firmware can leave it in: INI_REG asserted, the
+ * register file held at its defaults, every read returning 0x00. The vendor Linux driver
+ * does this deliberately at shutdown. A driver that probes such a chip reads 0x00 for both
+ * chip-id registers, and if it treats that as "not an ES8311" and gives up, the chip is
+ * unrecoverable.
+ */
+void emul_es8311_set_ini_hold(const struct emul *target, bool hold)
+{
+	struct es8311_emul_data *data = target->data;
+
+	if (hold) {
+		data->regs[ES8311_REG_INI] |= ES8311_INI_HOLD;
+	} else {
+		data->regs[ES8311_REG_INI] &= (uint8_t)~ES8311_INI_HOLD;
+	}
+}
+
+/*
+ * Break every READ and let every WRITE through, until disarmed.
+ *
+ * The off switch has to work on a bus that is only half working. A driver that mutes with a
+ * read-modify-write cannot: it reads first, the read fails, and it returns without ever
+ * attempting the write it was asked to make.
+ */
+void emul_es8311_fail_reads(const struct emul *target, bool fail)
+{
+	struct es8311_emul_data *data = target->data;
+
+	data->fail_reads = fail;
+}
+
+/*
+ * Break every write to `reg`, and only to `reg`. Pass a negative value to disarm.
+ *
+ * This exists so that a test about "what happens when the serial-port mute fails" can say
+ * exactly that, instead of encoding it as "break the fourth transfer" and quietly meaning
+ * something else the next time a register read is added upstream of it.
+ */
+void emul_es8311_fail_write_to(const struct emul *target, int reg)
+{
+	struct es8311_emul_data *data = target->data;
+
+	data->fail_write_reg = reg;
+}
+
+/* The value written at write-log index `idx`, or -1 if there is no such write. */
+int emul_es8311_wval_at(const struct emul *target, int idx)
+{
+	struct es8311_emul_data *data = target->data;
+
+	if (idx < 0 || idx >= data->wcount || idx >= ES8311_EMUL_WLOG_LEN) {
+		return -1;
+	}
+
+	return (int)data->wval[idx];
+}
+
 void emul_es8311_set_fail(const struct emul *target, int n)
 {
 	struct es8311_emul_data *data = target->data;
@@ -194,30 +293,50 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 		}
 
 		/*
-		 * Model the register-file reset. The low five bits of register 0x00 are
-		 * the digital, clock-manager, master, ADC and DAC resets; asserting them
-		 * clears the writable register file on the real part, and the chip-id
-		 * registers survive it. CSM_ON (bit 7) is a different bit in the same
-		 * register and resets nothing.
+		 * There is deliberately NO register-file reset modelled here.
 		 *
-		 * Without this the emulator cannot tell a real reset from a CSM_ON write,
-		 * and a test claiming to check that init() resets the chip would be
-		 * checking nothing at all.
+		 * An earlier version of this emulator wiped the whole register array when
+		 * the low five bits of 0x00 were asserted. That is not what the part does.
+		 * RST_DIG is documented as "reset digital except control port block", and
+		 * the control port block is where the registers live, so no value of 0x00
+		 * resets the register file. Modelling a reset the silicon does not perform
+		 * would make every test that relies on it a test of a chip that does not
+		 * exist -- and this is the first codec emulator in the tree, so whatever it
+		 * models will be copied.
+		 *
+		 * A driver that asserts those bits is still a defect, and it is still
+		 * caught: the write log records the value as well as the address, so a test
+		 * can assert on what the driver WROTE.
 		 */
-		if (m->buf[0] == ES8311_REG_RESET && (m->buf[1] & ES8311_RESET_BITS) != 0U) {
-			uint8_t id1 = data->regs[ES8311_REG_CHIP_ID1];
-			uint8_t id2 = data->regs[ES8311_REG_CHIP_ID2];
+		if (data->wcount < ES8311_EMUL_WLOG_LEN) {
+			data->wlog[data->wcount] = m->buf[0];
+			data->wval[data->wcount] = m->buf[1];
+		}
+		data->wcount++;
 
-			memset(data->regs, 0, sizeof(data->regs));
-			data->regs[ES8311_REG_CHIP_ID1] = id1;
-			data->regs[ES8311_REG_CHIP_ID2] = id2;
+		/*
+		 * INI_REG (0xFA bit 0) is a LEVEL, not a pulse. While it is set, the part
+		 * holds the register file down: every write to any OTHER register is
+		 * silently discarded and every read returns 0x00, while the I2C transfer
+		 * itself still ACKs. The one register that remains writable is 0xFA itself,
+		 * which is the only way out -- and a driver that never writes it can be
+		 * handed a chip it cannot recover.
+		 *
+		 * The write is logged above either way, because the log is a record of what
+		 * the driver attempted, not of what the chip accepted.
+		 */
+		if (data->fail_write_reg >= 0 && m->buf[0] == (uint8_t)data->fail_write_reg) {
+			LOG_DBG("W reg=0x%02x FAILED (injected)", m->buf[0]);
+			return -EIO;
+		}
+
+		if (es8311_emul_held(data) && m->buf[0] != ES8311_REG_INI) {
+			LOG_DBG("W reg=0x%02x val=0x%02x DISCARDED (INI_REG held)", m->buf[0],
+				m->buf[1]);
+			return 0;
 		}
 
 		data->regs[m->buf[0]] = m->buf[1];
-		if (data->wcount < ES8311_EMUL_WLOG_LEN) {
-			data->wlog[data->wcount] = m->buf[0];
-		}
-		data->wcount++;
 		LOG_DBG("W reg=0x%02x val=0x%02x", m->buf[0], m->buf[1]);
 		return 0;
 	}
@@ -231,9 +350,14 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 		if ((w->flags & I2C_MSG_READ) || w->len != 1 || !(r->flags & I2C_MSG_READ)) {
 			return -EIO;
 		}
+		if (data->fail_reads) {
+			return -EIO;
+		}
+
 		reg = w->buf[0];
 		for (uint32_t i = 0; i < r->len; i++) {
-			r->buf[i] = data->regs[(uint8_t)(reg + i)];
+			/* Held: every read returns 0x00, chip-id registers included. */
+			r->buf[i] = es8311_emul_held(data) ? 0x00U : data->regs[(uint8_t)(reg + i)];
 		}
 		return 0;
 	}
@@ -245,6 +369,22 @@ static const struct i2c_emul_api es8311_emul_api = {
 	.transfer = es8311_emul_transfer,
 };
 
+/*
+ * Put the emulated part back exactly as it comes up: a zeroed register file with the chip
+ * identity in it, every fault hook disarmed, an empty write log.
+ *
+ * A test suite whose fixture does not do this is one long test with many entry points. An
+ * armed fault hook, a seeded dirty register or a spoofed chip id left behind by one case
+ * silently becomes the starting state of the next, and the next one can pass BECAUSE of it.
+ *
+ * It cannot reach the DRIVER's cached properties -- those live in struct es8311_data. The
+ * fixture resets those separately, through the codec API.
+ */
+void emul_es8311_reset(const struct emul *target)
+{
+	(void)es8311_emul_init(target, NULL);
+}
+
 static int es8311_emul_init(const struct emul *target, const struct device *parent)
 {
 	struct es8311_emul_data *data = target->data;
@@ -253,8 +393,12 @@ static int es8311_emul_init(const struct emul *target, const struct device *pare
 
 	memset(data->regs, 0, sizeof(data->regs));
 	data->fail_remaining = 0;
-	data->fail_at = -1; /* NOT 0: 0 means "fail transfer 0" */
+	data->fail_at = -1;        /* NOT 0: 0 means "fail transfer 0" */
+	data->fail_write_reg = -1; /* NOT 0: 0x00 is a real register */
+	data->fail_reads = false;
+	data->pause_armed = false;
 	data->wcount = 0;
+	memset(data->wval, 0, sizeof(data->wval));
 
 	/* Chip identity registers. */
 	data->regs[ES8311_REG_CHIP_ID1] = ES8311_CHIP_ID1;

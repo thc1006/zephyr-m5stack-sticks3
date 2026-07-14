@@ -3,6 +3,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/*
+ * Five emulated parts on one bus.
+ *
+ * A real ES8311 answers at 0x18 or 0x19 and nowhere else: the CE pin picks between the two,
+ * and the binding says so. These are emulator slots rather than a claim about a board, and
+ * they are on the same footing as the arbitrary addresses every other codec gets in
+ * tests/drivers/build_all/audio/i2c_devices.overlay.
+ *
+ * Splitting them across three emulated buses so that each could sit at 0x18 or 0x19 does NOT
+ * work, and the reason is worth writing down: emul_init_for_bus() resolves each child with
+ * emul_get_binding(elp->dev->name), and a Zephyr device's name is DT_NODE_FULL_NAME -- the
+ * node's own name, not its path. Three buses each carrying an "es8311@18" therefore produce
+ * three devices with the SAME name, every bus looks up and re-registers the FIRST emulator of
+ * that name, and the one struct i2c_emul gets appended to three different slists. The lists
+ * corrupt each other, and lookups start missing parts that the boot log says it registered.
+ */
 &i2c0 {
 	status = "okay";
 
@@ -10,5 +26,47 @@
 		compatible = "everest,es8311";
 		reg = <0x18>;
 		status = "okay";
+	};
+
+	/*
+	 * Every test that watches init() run gets an instance that has never been initialised,
+	 * so it can put the emulated part into a state a previous firmware can leave it in
+	 * BEFORE the driver ever probes it. device_init() returns -EALREADY on an
+	 * already-initialised device, so the boot-time instance above cannot serve for this --
+	 * and reaching into codec->state->initialized to fake a re-probe is worse: that is
+	 * Zephyr's internal device state, it is not a test contract, and a test that writes it
+	 * is one refactor away from testing nothing.
+	 */
+
+	/* A part held by INI_REG: its register file pinned at the defaults, every read 0x00. */
+	codec_held: es8311@19 {
+		compatible = "everest,es8311";
+		reg = <0x19>;
+		status = "okay";
+		zephyr,deferred-init;
+	};
+
+	/* A part on a bus that fails one of init()'s safety writes. */
+	codec_quiesce: es8311@1a {
+		compatible = "everest,es8311";
+		reg = <0x1a>;
+		status = "okay";
+		zephyr,deferred-init;
+	};
+
+	/* A part that is not an ES8311, and says so twice. */
+	codec_foreign: es8311@1b {
+		compatible = "everest,es8311";
+		reg = <0x1b>;
+		status = "okay";
+		zephyr,deferred-init;
+	};
+
+	/* A part warm-rebooted out of a capture route: PGA powered, MIC1 still on the mux. */
+	codec_warm: es8311@1c {
+		compatible = "everest,es8311";
+		reg = <0x1c>;
+		status = "okay";
+		zephyr,deferred-init;
 	};
 };

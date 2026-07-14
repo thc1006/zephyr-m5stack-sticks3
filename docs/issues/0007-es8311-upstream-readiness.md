@@ -73,14 +73,29 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **33/33**. The
-  four added in HW-023 seed a DIRTY register file before `configure()`, which is the one
-  input the first twenty-nine never varied: they all started from an all-zero emulator, so
-  they could not see any defect that only appears on a chip the driver did not reset. Three
-  of the four fail on the driver as it stood.
-      (was 11), covering every supported rate, the rejected rates and word sizes,
-      the MCLK validation, the input volume/mute round trip, volume clamping and
-      I2C error propagation.
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **42/42** (was 11,
+  then 29, then 33). Coverage is 92% of lines and 67% of branches (`gcovr`); every other
+  codec in `drivers/audio` is at zero.
+
+  The growth is not padding. Each round of adversarial review found a defect the suite
+  structurally could not see, and the fix for each is a test that **fails on the driver as
+  it stood** (verified by reverting the fix, not by reasoning about it):
+
+  - Four seed a **dirty** register file before `configure()` — the one input the first
+    twenty-nine never varied. They all started from an all-zero emulator, so they could not
+    see any defect that only appears on a chip the driver did not reset.
+  - One recovers a part whose register file is **held by `INI_REG`**. The emulator could not
+    model that state at all, so the test named after the property could only assert that
+    `0xFA` was the first write — which was true, and did not stop `init()` from bailing out
+    on the chip-id read before it got there.
+  - Two prove the **mute still fires on a bus whose reads fail** but whose writes land.
+  - One asserts the **write order**: the last three writes of a `configure()` are the two
+    serial ports and the DAC mute, so nothing that can fail happens after the part is
+    allowed to make a sound.
+  - One walks an I2C failure across **every transfer** of a `configure()` and reads the
+    registers back before calling anything else: a failed `configure()` must leave the DAC
+    muted and powered down and the microphone off the mux, because the `audio_codec` API has
+    no `stop_input()` and there would otherwise be no way to switch a live microphone off.
 - [x] **Builds against upstream main, zero warnings** — through
       `tests/drivers/build_all/audio`: `CONFIG_AUDIO_CODEC_ES8311=y`, `es8311.c.obj`
       on disk, and the device instance in the ELF symbol table.

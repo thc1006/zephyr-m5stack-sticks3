@@ -37,44 +37,69 @@ description: |
   use. That reset does not do what its name suggests: RST_DIG is documented as
   "reset digital except control port block", and the control port block is where
   the registers live, so no value of 0x00 resets the register file. What it does
-  do is clear CSM_ON, which powers the analog down. Measured on an ES8311 on real
-  hardware, the ADC then returns a noise floor of exactly zero for about six
-  seconds, and afterwards works normally and indefinitely. No datasheet or
-  reference driver specifies any settling time -- mainline Linux's es8311.c says
-  so in as many words -- so nothing can be waited out from a table.
+  do is clear CSM_ON, which powers the analog down -- and measured on hardware,
+  the ADC then returns a noise floor of exactly zero for about six seconds, at
+  every sample rate. A reset is only ever a shortcut to a known register state,
+  and this driver reaches that state the long way instead, by programming every
+  register its behaviour depends on. On a settled part that costs nothing
+  measurable.
 
-  A reset is only ever a shortcut to a known register state, and this driver
-  reaches the same state the long way, by programming every register its
-  behaviour depends on. That costs nothing: measured on a settled part, the
-  capture noise floor was 103 counts before those writes and 109 after, with no
-  settling transient at all.
+  The consequence is that the codec inherits its register file from whatever ran
+  last, so the driver normalises the registers it depends on rather than trusting
+  any of them. In particular 0xFA bit 0 (INI_REG) is a LEVEL, not a pulse: while
+  it is set the part holds its register file at the defaults, answers 0x00 to
+  every read, and discards every write except a write to 0xFA itself. The vendor
+  Linux driver asserts it at shutdown deliberately, so a part can be handed over
+  in that state, and this driver releases it before it does anything else.
 
-  A COLD POWER-ON DOES NOT COST THE SIX SECONDS, and that is what makes the reset
-  a bad trade rather than a wash. Measured on a physically unplugged and replugged
-  board: the ADC is alive at the earliest moment it can be sampled, 2.2 s after
-  power-on, with an elevated noise floor that decays to its settled value within
-  about seven seconds. At that same 2.2 s mark after a register reset, the floor
-  is zero. So the reset does not merely bring a cold start forward; it puts the
-  part somewhere a cold start never goes. What that is has not been established.
+  Board policy this driver compiles in
+  ------------------------------------
 
-  Cutting the codec's analog supply reproduces the deaf six seconds, with no reset
-  involved at all. So does the reset. A full power-cycle of the board does not.
-  Whatever the mechanism is, it appears to be a partial power-down rather than the
-  discharge itself.
+  Four analog choices are compiled in rather than exposed. They are the ones both
+  Espressif reference drivers make, but they are board policy, not the only legal
+  configuration of the chip -- mainline Linux exposes each of them as a separate
+  control:
+
+    output path      headphone (0x13)
+    capture input    MIC1, differential (0x14 LINSEL)
+    PGA gain         30 dB, the maximum (0x14)
+    ADC scale        +24 dB (0x16)
+
+  A board that drives a line output, or clips at 30 dB of PGA gain, or wants a
+  different ADC scale, needs those to become devicetree properties or codec
+  properties. That work is deliberately not in this first version, and it is
+  written down here so that "supports the ES8311" is not read as "drives every
+  board that has one".
+
+  And one thing that is not a gain choice at all: 0x14 bit 6 selects a DIGITAL
+  microphone on MIC1P instead of the analog front end. This driver does not
+  support that path. It is not a variation on the analog input, it is a different
+  input, and a board wired for it will not work with this driver at all.
+
+  (There is no such thing as a single-ended analog microphone on this part. The
+  analog mux, 0x14 bit 4, has exactly two states: disabled, or the differential
+  MIC1P-MIC1N pair. Mainline Linux models it the same way -- "Disabled" /
+  "MIC1P-MIC1N" -- with the DMIC path as a separate control.)
 
 compatible: "everest,es8311"
 
 include: [i2c-device.yaml]
 
-properties:
-  enable-gpios:
-    type: phandle-array
-    description: |
-      GPIO that gates power to the codec, when a board puts a switch on its
-      supply. It is driven active before the codec is probed. This is a
-      board-level power switch, not a codec pin; the ES8311 has no enable input.
-
-      Measured on one board: cutting the codec's analog supply and restoring it
-      leaves the ADC deaf for several seconds, the same way the register-0x00
-      reset does -- and unlike a full cold power-on, which does not. See the
-      settling note above before wiring this.
+# Power
+#
+# This binding defines no power properties of its own, and honours none of the ones it
+# inherits. supply-gpios and vin-supply both arrive via i2c-device.yaml from power.yaml,
+# and this driver reads NEITHER: a board whose codec sits behind a switch or a regulator
+# must bring that rail up itself. Every other audio codec in the tree takes the same
+# position, and it is written down here rather than left to be discovered.
+#
+# It is deliberately all-or-nothing. power.yaml specifies an ORDER between the two when a
+# board has both -- enable the regulator, then assert the GPIO -- and honouring one half
+# of that would leave the contract undefined for any board that sets both. Doing it
+# properly means implementing both, plus the ordering, plus a shutdown path, against a
+# board that actually has the hardware. That is a follow-up, not a first version.
+#
+# One warning for whoever writes it: gating this codec's supply at runtime is not free.
+# Measured on hardware, cutting its analog supply and restoring it leaves the ADC deaf for
+# several seconds -- the same as the register-0x00 reset above, and unlike a full cold
+# power-on, which does not do it.

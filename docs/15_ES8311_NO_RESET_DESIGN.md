@@ -147,13 +147,14 @@ All 29 of the original ztests started from an **all-zero emulator register file*
 exactly the state the driver would like to find it in. **The suite structurally could not
 observe the one defect class its own design premise creates.**
 
-There are 33 now. Four of them seed a **dirty** register file first, and **three of the four
-fail on the driver as it stood** (verified by stashing the fix).
+There are **42 now**. Several seed a **dirty** register file first, and they fail on the driver
+as it stood (verified by stashing the fix, not by reasoning about it).
 
-The fourth is a **tripwire**: it leaves a witness in a register the driver never writes
-(`0x36`, unused) and fails if anything ever asserts `0x00[4:0]`. Deviating from every
-reference implementation is exactly the kind of thing a future contributor helpfully undoes,
-and the cost of that is invisible to any test that is not specifically looking for it.
+One of them is a **tripwire**: it scans the emulator's write log and fails if the driver ever
+asserts `0x00[4:0]`. Deviating from every reference implementation is exactly the kind of thing
+a future contributor helpfully undoes, and the cost of that is invisible to any test that is
+not specifically looking for it. It checks what the driver **wrote**, not a wiped register
+file -- because, per section 2 above, the silicon does not wipe one.
 
 ---
 
@@ -176,6 +177,32 @@ bits of `0x00` were asserted -- implementing a register-file reset that
 [this very document](#2-register-0x00-does-not-reset-the-register-file) says the silicon does
 not perform. The tripwire test depended on that fiction. It now checks the **write log**
 instead: what the driver wrote, not what an imaginary chip did in response.
+
+---
+
+## The two fail-open bugs a later review found, and what they have in common
+
+Both were **the driver being safe in what it says and unsafe in what it does**, and neither was
+visible in the register values a test reads at the end of a `configure()`.
+
+**The unmute came too early.** `configure()` wrote the final, un-muted serial ports right after
+the clock tree, and un-muted the DAC in the middle of the playback branch -- with fifteen writes
+still to come, one of which is `0x44`. And `0x44` bit 7 is `ADC2DAC_SEL`, the bit that decides
+whether the speaker is playing the caller's audio or its own microphone. **So the fix for the
+stale-`0x44` hazard spent its own window re-creating the hazard**, with a live speaker on a
+stale mux. The last three writes of a `configure()` are now the two serial ports and the DAC
+mute, in that order, and nothing that can fail happens after them. Only the write *order* can
+show this; the end state cannot.
+
+**A failed `configure()` forgot a converter instead of stopping one.** It clears its route cache
+before touching the chip, which is right -- a half-reprogrammed part is not described by the old
+route. But on its own that is a fail-open. Take a live capture route whose reconfigure fails on
+its first write: the ADC is still powered, the PGA is live, MIC1 is still on the mux -- and the
+cache now says there is no capture, so `apply_properties()` will not touch the ADC and
+`stop_output()` only reaches the DAC. **The `audio_codec` API has no `stop_input()`. The
+microphone was left running with no call in the API able to switch it off.** `init()` and every
+error path out of `configure()` now run the same best-effort quiesce, and a test walks the
+failure across every transfer and reads the registers back *before* calling anything else.
 
 ---
 
