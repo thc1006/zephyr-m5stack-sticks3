@@ -80,4 +80,16 @@
 		status = "okay";
 		zephyr,deferred-init;
 	};
+
+	/*
+	 * A part whose 0xFA write fails. Once the chip id has read back, INI_REG is PROVEN
+	 * clear, so that write is housekeeping -- and housekeeping does not get to veto the
+	 * safety quiesce.
+	 */
+	codec_ini: es8311@1e {
+		compatible = "everest,es8311";
+		reg = <0x1e>;
+		status = "okay";
+		zephyr,deferred-init;
+	};
 };

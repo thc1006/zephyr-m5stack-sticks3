@@ -441,9 +441,12 @@ static int es8311_write_known_state(const struct device *dev)
  * moment to walk away from a live speaker. The first error is kept and returned; the part is
  * left as safe as the bus allowed, rather than as safe as its first hiccup allowed.
  *
- * Releasing 0xFA is NOT part of this. It is a precondition, not a safety write: while the
- * register file is held, none of these can land at all, so attempting them would be theatre.
- * Both callers do it first, and separately.
+ * Releasing 0xFA is not part of this, and the two callers treat a failure of it differently,
+ * on purpose. In configure() it is a genuine precondition: if the register file is held, none
+ * of these can land at all, so attempting them would be theatre. In init() it is NOT -- by
+ * then es8311_check_id() has read 0x8311 back, and a held part answers 0x00 to every read, so
+ * INI_REG is already proven clear and the write is housekeeping. init() quiesces even when it
+ * fails. See both call sites.
  */
 static int es8311_quiesce(const struct device *dev)
 {
@@ -945,9 +948,14 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 * COMMIT.
 	 *
 	 * These are the only three writes in this function that let anything move: the DAC's
-	 * serial port, the ADC's serial port, and the DAC mute. Every write that can fail has
+	 * serial port, the ADC's serial port, and the DAC mute. Every CONFIGURATION write has
 	 * already happened, so if control reaches here the part is fully programmed and the
 	 * only thing left to do is open it.
+	 *
+	 * It is not an atomic commit -- these three are I2C writes and can fail like any other.
+	 * What it is, is a boundary: no configuration write happens after the first of them, and
+	 * if any of them fails the error path below quiesces the part immediately. So the part is
+	 * either fully open or fully silent, and never half-opened onto a half-programmed chip.
 	 *
 	 * They used to be scattered through the sequence -- the serial ports right after the
 	 * clock tree, the DAC unmute in the middle of the playback branch -- and that was
@@ -1123,35 +1131,38 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 }
 
 /*
- * A MUTE IS NOT ALLOWED TO FAIL BECAUSE A VOLUME DID.
+ * THE PROPERTY TRANSACTION, AND THE THREE WAYS IT USED TO GET THIS WRONG.
  *
- * This used to run straight down: DAC volume, DAC mute, ADC volume, ADC mute, with a
- * `goto end` on each error. Which meant a caller doing the one thing the API gives it for
- * silencing a speaker --
+ * This is the OTHER off switch: set_property(OUTPUT_MUTE, true) then apply_properties() is
+ * what the audio_codec API documents for silencing a speaker. stop_output() is the direct
+ * one. There is no reason for the two to disagree, and they used to.
  *
- *     set_property(OUTPUT_MUTE, true); apply_properties();
+ * It ran straight down -- DAC volume, DAC mute, ADC volume, ADC mute -- with a `goto end` on
+ * each error. So a failed write to the DAC VOLUME, a register with no safety role whatever,
+ * returned before the mute was ever attempted: the speaker went on playing and the caller got
+ * an error for a mute that never happened. And because the playback block came first, a
+ * failure there skipped the capture block whole, so a DAC volume glitch left the MICROPHONE
+ * open too.
  *
- * -- lost the mute entirely if the DAC VOLUME write, an unrelated and entirely unsafety
- * register, happened to fail first. The speaker went on playing and the caller got an error
- * for a mute that was never attempted. And because the playback block came first, a failure
- * there skipped the capture block whole: a DAC volume glitch left the MICROPHONE open too.
+ * Ordering the mutes first fixed that and introduced two more, which is worth writing down
+ * because they are the same mistake wearing a different hat:
  *
- * That is the same fail-open that stop_output() and configure() were already fixed for. This
- * is just the other off switch, and there is no reason for the two to disagree.
+ *   - a mute that FAILED, followed by a volume write that SUCCEEDED, can turn the still-live
+ *     path UP. Set OUTPUT_VOLUME to +32 dB and OUTPUT_MUTE to true in one go, lose the mute
+ *     write, and the speaker you asked to silence is now at full scale.
+ *   - a failure in one direction did not stop the UNMUTE in the other. Lose the microphone's
+ *     mute, keep the speaker's unmute, and the call has left the microphone open AND opened
+ *     the speaker, on a board where the two are centimetres apart, while returning an error.
  *
- * So the writes are ordered by what they cost if they are skipped, in three phases:
+ * The rule that settles all three, and it is the same one configure()'s commit block follows:
  *
- *   1. every requested MUTE, and none of them skipped because an earlier one failed
- *   2. the volumes
- *   3. every requested UNMUTE, last, and only in a direction whose volume actually landed
+ *   A MUTE MAY NEVER BE CANCELLED, SKIPPED OR UNDONE BY A WRITE THAT IS NOT A MUTE.
+ *   AN UNMUTE MAY ONLY HAPPEN ONCE EVERYTHING THAT CAN FAIL HAS ALREADY SUCCEEDED.
+ *   A FAILURE MAY LEAVE THINGS UNCHANGED. IT MAY NOT MAKE THEM WORSE.
  *
- * Phase 3's condition is the point of phase 2's bookkeeping: unmuting into a volume register
- * whose write just failed is unmuting into an unknown level, which on the DAC side is a
- * speaker at whatever gain the last firmware chose. Same rule as configure()'s commit block:
- * nothing that lets sound out may run before something that can fail.
- *
- * The first error is what the caller gets back, and every safety write is attempted whatever
- * it is.
+ * So: every requested mute first, none of them skipped because another failed; then the
+ * volumes, but not on a direction we were asked to silence and could not; then the unmutes,
+ * and only if the whole call is clean. The first error is returned.
  *
  * The lock is held across all of it, not merely across the read of the cached state. Taking a
  * snapshot and then releasing would let stop_output() run in between: it would cache "muted",
@@ -1167,18 +1178,20 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 static int es8311_apply_properties(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
-	bool dac_volume_ok = false;
-	bool adc_volume_ok = false;
+	bool dac_silenced = true;
+	bool adc_silenced = true;
+	bool clean;
 	int first_err = 0;
 	int ret;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/* 1. The mutes. Nothing below may prevent these from being attempted. */
+	/* 1. Every requested mute. None of them is skipped because another one failed. */
 	if (data->playback && data->dac_mute) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
 		if (ret < 0) {
 			LOG_ERR("Failed to mute the DAC (%d)", ret);
+			dac_silenced = false;
 			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
@@ -1189,31 +1202,60 @@ static int es8311_apply_properties(const struct device *dev)
 				       ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
 		if (ret < 0) {
 			LOG_ERR("Failed to mute the microphone (%d)", ret);
+			adc_silenced = false;
 			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
 
-	/* 2. The volumes. A failure here disarms that direction's unmute below. */
-	if (data->playback) {
+	/*
+	 * 2. The volumes -- but NOT on a direction the caller asked to silence and this
+	 *    function could not.
+	 *
+	 * A volume register is a GAIN. On a path that is still live because its mute write
+	 * just failed, writing the cached volume can make it LOUDER: a caller that sets
+	 * OUTPUT_VOLUME to +32 dB and OUTPUT_MUTE to true in one go, and whose mute write
+	 * fails, would otherwise get a speaker that is not muted and is now at full scale.
+	 * The rule for a failed safety write is not "carry on", it is DO NOT MAKE IT WORSE.
+	 *
+	 * That does mean a caller asking to be both quieter and muted gets neither, if the
+	 * mute fails. Leaving a direction exactly as it was is a defensible failure; turning
+	 * it up is not. And this driver does not attenuate as a consolation prize either --
+	 * writing a level the caller never asked for is not this function's decision to make.
+	 * The caller has stop_output(), which is ungated, writes the mute register directly,
+	 * and is always attempted.
+	 */
+	if (data->playback && dac_silenced) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_VOLUME, data->dac_volume_code);
-		dac_volume_ok = (ret == 0);
 		if (ret < 0) {
 			LOG_ERR("Failed to set DAC volume 0x%02x (%d)", data->dac_volume_code, ret);
 			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
 
-	if (data->capture) {
+	if (data->capture && adc_silenced) {
 		ret = es8311_reg_write(dev, ES8311_REG_ADC_VOLUME, data->adc_volume_code);
-		adc_volume_ok = (ret == 0);
 		if (ret < 0) {
 			LOG_ERR("Failed to set ADC volume 0x%02x (%d)", data->adc_volume_code, ret);
 			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
 
-	/* 3. The unmutes, last of all, and the DAC last of those: it has the speaker on it. */
-	if (data->capture && !data->adc_mute && adc_volume_ok) {
+	/*
+	 * 3. The unmutes, last of all -- and ONLY if nothing above failed, in EITHER direction.
+	 *
+	 * Not merely "only if this direction's own volume landed". A half-applied transaction
+	 * is not a licence to perform its dangerous half: if the microphone's mute failed and
+	 * the speaker's unmute is still carried out, the call has left the microphone open AND
+	 * opened the speaker, on a board where the two are centimetres apart, while returning
+	 * an error that says none of it can be trusted. Failing to make something safe must
+	 * not be followed by making something else live.
+	 *
+	 * So a single error anywhere in this call disarms every unmute in it. The properties
+	 * stay cached, the caller gets the error, and a retry that succeeds applies them all.
+	 */
+	clean = (first_err == 0);
+
+	if (clean && data->capture && !data->adc_mute) {
 		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT);
 		if (ret < 0) {
 			LOG_ERR("Failed to unmute the microphone (%d)", ret);
@@ -1221,7 +1263,8 @@ static int es8311_apply_properties(const struct device *dev)
 		}
 	}
 
-	if (data->playback && !data->dac_mute && dac_volume_ok) {
+	/* The DAC last of the two: it is the one with a speaker on it. */
+	if (clean && data->playback && !data->dac_mute) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
 		if (ret < 0) {
 			LOG_ERR("Failed to unmute the DAC (%d)", ret);
@@ -1344,6 +1387,7 @@ static int es8311_init(const struct device *dev)
 {
 	const struct es8311_config *cfg = dev->config;
 	struct es8311_data *data = dev->data;
+	int first_err = 0;
 	int ret;
 
 	if (!i2c_is_ready_dt(&cfg->bus)) {
@@ -1404,26 +1448,47 @@ static int es8311_init(const struct device *dev)
 	 * with no software in control of it. Neither needs a hostile prior firmware; this
 	 * driver's own previous boot is enough.
 	 *
-	 * So: release the register file (see 0xFA), then put the part somewhere safe -- see
-	 * es8311_quiesce() -- and leave it there until a configure() asks for something.
+	 * So: normalise 0xFA, then put the part somewhere safe -- see es8311_quiesce() -- and
+	 * leave it there until a configure() asks for something.
+	 *
+	 * THIS WRITE DOES NOT GET A VETO OVER THE QUIESCE, and that is a correction. It used to
+	 * `return` on failure, on the grounds that 0xFA is a precondition rather than a safety
+	 * write: while INI_REG holds the register file down, nothing else can land, so
+	 * attempting the quiesce would be theatre.
+	 *
+	 * That argument is sound in configure(), and it is FALSE here. es8311_check_id() has
+	 * just read 0x8311 back, and a part whose register file is held answers 0x00 to every
+	 * read -- so by the time control reaches this line, INI_REG is PROVEN clear. What is
+	 * left is normalising the register's other bits, which is housekeeping. Letting a
+	 * transient failure of a housekeeping write abandon the DAC mute, the DAC power-down,
+	 * the ADC power-down and the microphone disconnect is the same fail-open this driver
+	 * exists to close, wearing a precondition's clothes.
+	 *
+	 * It is attempted, its error is kept, and the quiesce runs regardless.
 	 */
 	ret = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
 	if (ret < 0) {
-		LOG_ERR("Failed to release the register file (%d)", ret);
-		return ret;
+		LOG_ERR("Failed to normalise 0xFA (%d). Quiescing anyway: INI_REG is already "
+			"known to be clear, because the chip id read back.",
+			ret);
+		first_err = ret;
 	}
 
 	ret = es8311_quiesce(dev);
-	if (ret < 0) {
+	if (first_err == 0) {
+		first_err = ret;
+	}
+
+	if (first_err < 0) {
 		/*
 		 * The device is still refused: a part that could not be fully quiesced is not
 		 * one this driver can promise anything about. But every safety write was
-		 * attempted first, so it is left as safe as the bus allowed.
+		 * attempted, so it is left as safe as the bus allowed.
 		 */
-		LOG_ERR("Failed to quiesce the codec (%d). The remaining safety writes were "
-			"still attempted.",
-			ret);
-		return ret;
+		LOG_ERR("Failed to quiesce the codec (%d). Every safety write was still "
+			"attempted.",
+			first_err);
+		return first_err;
 	}
 
 	return 0;

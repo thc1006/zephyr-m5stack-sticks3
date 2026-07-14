@@ -46,6 +46,11 @@ static const struct i2c_dt_spec es_warm = I2C_DT_SPEC_GET(WARM_NODE);
 static const struct device *const codec_mute = DEVICE_DT_GET(MUTE_NODE);
 static const struct emul *const emul_mute = EMUL_DT_GET(MUTE_NODE);
 
+#define INI_NODE DT_NODELABEL(codec_ini)
+static const struct device *const codec_ini = DEVICE_DT_GET(INI_NODE);
+static const struct i2c_dt_spec es_ini = I2C_DT_SPEC_GET(INI_NODE);
+static const struct emul *const emul_ini = EMUL_DT_GET(INI_NODE);
+
 /* Emulator test backend (defined in emul_es8311.c). */
 extern void emul_es8311_set_fail(const struct emul *target, int n);
 extern void emul_es8311_fail_at(const struct emul *target, int idx);
@@ -1716,13 +1721,22 @@ ZTEST(es8311, test_configure_opens_the_part_last_of_all)
  * part afterwards, and answers yes -- for the speaker. This asks what configure() itself left
  * behind, which for the microphone is the only question there is.
  */
+/*
+ * The walk is bounded so that a driver change which stops failing can never spin here. The
+ * bound is not the oracle, though: if configure() ever grows past it, the loop would end
+ * quietly having covered only a prefix, and a test called "every transfer" would go on saying
+ * so. So the walk must be seen to run PAST the end of the sequence -- that is what
+ * reached_the_end is for.
+ */
+#define FAULT_WALK_BOUND 64
+
 static void walk_every_failure_into(audio_route_t target, const char *name)
 {
 	struct audio_codec_cfg cfg;
+	bool reached_the_end = false;
 	int covered = 0;
 
-	/* Bounded so a driver change that stops failing can never spin here. */
-	for (int n = 0; n < 64; n++) {
+	for (int n = 0; n < FAULT_WALK_BOUND; n++) {
 		int ret;
 
 		/* Come from a live full-duplex route: a playing speaker and an open mic. */
@@ -1741,6 +1755,7 @@ static void walk_every_failure_into(audio_route_t target, const char *name)
 
 		if (ret == 0) {
 			/* The injection never fired: n is past the end of the sequence. */
+			reached_the_end = true;
 			break;
 		}
 
@@ -1770,6 +1785,12 @@ static void walk_every_failure_into(audio_route_t target, const char *name)
 			      "-> %s: configure() failed at transfer %d and left the ADC port open",
 			      name, n);
 	}
+
+	zassert_true(reached_the_end,
+		     "-> %s: the walk hit its bound of %d transfers without ever getting past the "
+		     "end of the sequence. It covered a PREFIX, not every transfer, and a test "
+		     "that says otherwise is lying. Raise FAULT_WALK_BOUND.",
+		     name, FAULT_WALK_BOUND);
 
 	zassert_true(covered > 1,
 		     "-> %s: the fault injection must have reached more than the first transfer "
@@ -1941,6 +1962,162 @@ ZTEST(es8311, test_init_writes_nothing_to_a_part_it_cannot_identify)
 		      "chosen for their effect on an ES8311.",
 		      emul_es8311_write_count(emul_mute));
 	zassert_false(device_is_ready(codec_mute), "it must not be left ready");
+}
+
+/*
+ * A FAILURE MAY LEAVE THINGS UNCHANGED. IT MAY NOT MAKE THEM WORSE.
+ *
+ * These three are the second-order version of the fail-open above, and they were introduced BY
+ * the fix for it: putting the mutes first stopped a volume failure from cancelling a mute, and
+ * left two ways for a FAILED mute to be followed by something that makes the danger bigger.
+ */
+
+/*
+ * A volume register is a GAIN. If the mute write failed, the path is still live -- and writing
+ * the cached volume to it can turn it UP. Ask for +32 dB and a mute in one call, lose the mute
+ * write, and the speaker you asked to silence ends up at full scale.
+ */
+ZTEST(es8311, test_a_failed_output_mute_does_not_turn_the_speaker_up)
+{
+	audio_property_value_t mute = {.mute = true};
+	audio_property_value_t loud = {.vol = 32};
+
+	audio_codec_start_output(codec);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE), ES8311_DAC_MUTE_OFF,
+		      "precondition: the speaker is live");
+
+	/* The DAC volume register, as the hardware currently stands: 0 dB. */
+	reg_put(ES8311_REG_DAC_VOLUME, 0xBFU);
+
+	/* One call: turn it up, and mute it. */
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_VOLUME, AUDIO_CHANNEL_ALL,
+					    loud),
+		   "set OUTPUT_VOLUME(+32 dB) failed");
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    mute),
+		   "set OUTPUT_MUTE(true) failed");
+
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	zassert_true(audio_codec_apply_properties(codec) < 0, "apply must report the failed mute");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_DAC_VOLUME), 0xBFU,
+		      "the mute FAILED, so the speaker is still playing -- and the volume was "
+		      "written anyway, so it is now playing at 0x%02x instead of 0xBF. The one "
+		      "thing a failed mute must never be followed by is more gain.",
+		      reg_get(ES8311_REG_DAC_VOLUME));
+}
+
+/* The same for the microphone: a failed input mute must not be followed by more PGA gain. */
+ZTEST(es8311, test_a_failed_input_mute_does_not_turn_the_microphone_up)
+{
+	audio_property_value_t mute = {.mute = true};
+	audio_property_value_t loud = {.vol = 32};
+
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT), ES8311_SDP_I2S_16BIT,
+		      "precondition: the microphone is open");
+
+	reg_put(ES8311_REG_ADC_VOLUME, 0xBFU);
+
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_VOLUME, AUDIO_CHANNEL_ALL,
+					    loud),
+		   "set INPUT_VOLUME(+32 dB) failed");
+	zassert_ok(
+		audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, mute),
+		"set INPUT_MUTE(true) failed");
+
+	/* The microphone's mute IS a write to 0x0A, so breaking that register breaks the mute. */
+	emul_es8311_fail_write_to(emul, ES8311_REG_SDP_OUT);
+	zassert_true(audio_codec_apply_properties(codec) < 0, "apply must report the failed mute");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_ADC_VOLUME), 0xBFU,
+		      "the microphone mute FAILED, so it is still open -- and its gain was turned "
+		      "up to 0x%02x anyway",
+		      reg_get(ES8311_REG_ADC_VOLUME));
+}
+
+/*
+ * And a failure in one direction must not be followed by OPENING the other.
+ *
+ * Lose the microphone's mute, carry out the speaker's unmute, and the call has left the
+ * microphone open AND put a speaker live next to it -- on this board they are centimetres
+ * apart -- while returning an error that says none of it can be trusted. Failing to make one
+ * thing safe is not a licence to make another thing loud.
+ */
+ZTEST(es8311, test_a_failed_mute_blocks_the_unmute_in_the_other_direction)
+{
+	audio_property_value_t mute = {.mute = true};
+	audio_property_value_t unmute = {.mute = false};
+
+	/* Speaker muted, microphone open. */
+	audio_codec_stop_output(codec);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE), ES8311_DAC_MUTE_ON,
+		      "precondition: the speaker is muted");
+
+	/* Now: silence the microphone, and open the speaker. */
+	zassert_ok(
+		audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, mute),
+		"set INPUT_MUTE(true) failed");
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    unmute),
+		   "set OUTPUT_MUTE(false) failed");
+
+	emul_es8311_fail_write_to(emul, ES8311_REG_SDP_OUT);
+	zassert_true(audio_codec_apply_properties(codec) < 0, "apply must report the failed mute");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE), ES8311_DAC_MUTE_ON,
+		      "the microphone's mute failed and the speaker was opened anyway: a live mic "
+		      "and a live speaker, from a call that returned an error");
+}
+
+/*
+ * HOUSEKEEPING DOES NOT GET A VETO OVER SAFETY.
+ *
+ * init() writes 0xFA before it quiesces, and it used to `return` if that write failed. The
+ * justification was that 0xFA is a precondition rather than a safety write: while INI_REG
+ * holds the register file down, nothing else can land.
+ *
+ * That is true in configure(). It is FALSE in init(), because es8311_check_id() has already
+ * read 0x8311 back -- and a part whose register file is held answers 0x00 to every read. So by
+ * the time init() writes 0xFA, INI_REG is PROVEN clear and the write is housekeeping on the
+ * register's other bits. Letting it abandon the DAC mute, the DAC power-down, the ADC
+ * power-down and the microphone disconnect is the same fail-open in a precondition's clothes.
+ */
+ZTEST(es8311, test_init_quiesces_even_when_the_register_file_write_fails)
+{
+	uint8_t reg = 0U;
+
+	zassert_false(device_is_ready(codec_ini), "the deferred instance must not be up yet");
+
+	/* A warm reboot: the part comes up playing, and listening. */
+	zassert_ok(i2c_reg_write_byte_dt(&es_ini, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF),
+		   "seed failed");
+	zassert_ok(i2c_reg_write_byte_dt(&es_ini, ES8311_REG_SYSTEM_12, 0x00U), "seed failed");
+	zassert_ok(i2c_reg_write_byte_dt(&es_ini, ES8311_REG_SYSTEM_0E, 0x02U), "seed failed");
+	zassert_ok(i2c_reg_write_byte_dt(&es_ini, ES8311_REG_ADC_PGA, 0x1AU), "seed failed");
+
+	/* The chip id still reads fine. Only the 0xFA write dies. */
+	emul_es8311_fail_write_to(emul_ini, ES8311_REG_INI);
+
+	zassert_true(device_init(codec_ini) < 0, "init() must still report the failure it hit");
+
+	emul_es8311_fail_write_to(emul_ini, -1);
+
+	zassert_ok(i2c_reg_read_byte_dt(&es_ini, ES8311_REG_DAC_MUTE, &reg), "read failed");
+	zassert_equal(reg, ES8311_DAC_MUTE_ON,
+		      "the DAC was left UNMUTED: a failed housekeeping write to 0xFA threw away "
+		      "the whole safety quiesce, on a part whose INI_REG was already known clear");
+
+	zassert_ok(i2c_reg_read_byte_dt(&es_ini, ES8311_REG_SYSTEM_12, &reg), "read failed");
+	zassert_equal(reg, 0x02U, "the DAC was left POWERED");
+
+	zassert_ok(i2c_reg_read_byte_dt(&es_ini, ES8311_REG_SYSTEM_0E, &reg), "read failed");
+	zassert_equal(reg, 0x62U, "the ADC was left POWERED, on a live microphone");
+
+	zassert_ok(i2c_reg_read_byte_dt(&es_ini, ES8311_REG_ADC_PGA, &reg), "read failed");
+	zassert_equal(reg, ES8311_ADC_MIC_OFF, "MIC1 was left connected to the PGA");
 }
 
 ZTEST_SUITE(es8311, NULL, NULL, es8311_before, NULL, NULL);
