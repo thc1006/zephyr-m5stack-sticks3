@@ -55,19 +55,28 @@ description: |
   Board policy this driver compiles in
   ------------------------------------
 
-  Four analog choices are compiled in rather than exposed. They are the ones both
-  Espressif reference drivers make, but they are board policy, not the only legal
-  configuration of the chip -- mainline Linux exposes each of them as a separate
-  control:
+  Five choices are compiled in rather than exposed. They are the ones both Espressif
+  reference drivers make, but they are board policy, not the only legal configuration
+  of the chip -- mainline Linux exposes each of them as a separate control:
 
     output path      headphone (0x13)
     capture input    MIC1, differential (0x14 LINSEL)
     PGA gain         30 dB, the maximum (0x14)
     ADC scale        +24 dB (0x16)
+    mono DAC source  the LEFT I2S slot (0x09 bit 7, SDP_IN_SEL)
+
+  The last one is easy to miss and it is the one most likely to be met as silence.
+  The ES8311 has a single DAC, and 0x09 bit 7 chooses which half of the stereo I2S
+  frame it takes: 0 is the left slot (the reset default), 1 is the right. Linux
+  exposes it as a control called "Mono DAC Source", Left or Right. This driver
+  writes 0x09 whole, so the bit is always clear: THE DAC ALWAYS PLAYS THE LEFT SLOT.
+  An application that places its mono samples in the right slot will hear nothing
+  and will find nothing wrong with any register it reads back. Right-slot playback
+  needs a devicetree property, and there is not one in this version.
 
   A board that drives a line output, or clips at 30 dB of PGA gain, or wants a
   different ADC scale, needs those to become devicetree properties or codec
-  properties. That work is deliberately not in this first version, and it is
+  properties too. That work is deliberately not in this first version, and it is
   written down here so that "supports the ES8311" is not read as "drives every
   board that has one".
 
@@ -81,25 +90,46 @@ description: |
   MIC1P-MIC1N pair. Mainline Linux models it the same way -- "Disabled" /
   "MIC1P-MIC1N" -- with the DMIC path as a separate control.)
 
+  Power management: the application owns it
+  -----------------------------------------
+
+  This codec derives its whole internal clock tree from the I2S bit clock. When BCLK
+  stops, the clock tree stops -- and a DAC that is powered and unmuted at that moment
+  has its modulator frozen on its last sample, which is a DC level sitting on the
+  amplifier. That is why init() quiesces the part, why configure() mutes before it
+  reclocks, and why I2S_OPT_BIT_CLK_GATED is refused.
+
+  It is also what a system suspend does, or runtime power management on the I2S
+  controller, and this driver implements NO power-management actions: it registers no
+  PM control callback and does nothing on suspend or resume. The application must stop
+  or mute the codec before it suspends or power-manages the I2S controller. Mainline
+  Linux's es8311 has suspend/resume and bias-level handling; that is the shape of the
+  follow-up, and it is not in this version.
+
 compatible: "everest,es8311"
 
-include: [i2c-device.yaml]
-
-# Power
+# The power properties are BLOCKED, not merely unimplemented.
 #
-# This binding defines no power properties of its own, and honours none of the ones it
-# inherits. supply-gpios and vin-supply both arrive via i2c-device.yaml from power.yaml,
-# and this driver reads NEITHER: a board whose codec sits behind a switch or a regulator
-# must bring that rail up itself. Every other audio codec in the tree takes the same
-# position, and it is written down here rather than left to be discovered.
+# supply-gpios and vin-supply arrive here from power.yaml, via i2c-device.yaml, and this
+# driver reads neither: a board whose codec sits behind a switch or a regulator must bring
+# that rail up itself. Saying so in a comment is not enough. A board could write
+# supply-gpios on an es8311 node, have it validate, and then watch the driver probe an
+# unpowered codec and reject it -- with the devicetree looking entirely correct. Blocking
+# the properties turns that into a build error naming the property, which is what a
+# contract is for.
 #
 # It is deliberately all-or-nothing. power.yaml specifies an ORDER between the two when a
-# board has both -- enable the regulator, then assert the GPIO -- and honouring one half
-# of that would leave the contract undefined for any board that sets both. Doing it
-# properly means implementing both, plus the ordering, plus a shutdown path, against a
-# board that actually has the hardware. That is a follow-up, not a first version.
+# board has both -- enable the regulator, then assert the GPIO -- so honouring one half
+# would leave that contract undefined for any board that sets both. Doing it properly means
+# both properties, the ordering, and a shutdown path, against a board with the hardware to
+# exercise it. That is a follow-up, and it lifts this blocklist.
 #
 # One warning for whoever writes it: gating this codec's supply at runtime is not free.
 # Measured on hardware, cutting its analog supply and restoring it leaves the ADC deaf for
 # several seconds -- the same as the register-0x00 reset above, and unlike a full cold
 # power-on, which does not do it.
+include:
+  - name: i2c-device.yaml
+    property-blocklist:
+      - supply-gpios
+      - vin-supply

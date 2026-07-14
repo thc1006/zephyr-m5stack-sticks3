@@ -73,9 +73,9 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **42/42** (was 11,
-  then 29, then 33). Coverage is 92% of lines and 67% of branches (`gcovr`); every other
-  codec in `drivers/audio` is at zero.
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **47/47** (was 11,
+  then 29, then 33, then 42). Coverage is 95% of lines and 70% of branches (`gcovr`); every
+  other codec in `drivers/audio` is at zero.
 
   The growth is not padding. Each round of adversarial review found a defect the suite
   structurally could not see, and the fix for each is a test that **fails on the driver as
@@ -92,10 +92,20 @@ Two things to watch while the PR is open:
   - One asserts the **write order**: the last three writes of a `configure()` are the two
     serial ports and the DAC mute, so nothing that can fail happens after the part is
     allowed to make a sound.
-  - One walks an I2C failure across **every transfer** of a `configure()` and reads the
-    registers back before calling anything else: a failed `configure()` must leave the DAC
-    muted and powered down and the microphone off the mux, because the `audio_codec` API has
-    no `stop_input()` and there would otherwise be no way to switch a live microphone off.
+  - One walks an I2C failure across **every transfer** of a `configure()`, into **all three
+    target routes**, and reads the registers back before calling anything else: a failed
+    `configure()` must leave the DAC muted and powered down and the microphone off the mux,
+    because the `audio_codec` API has no `stop_input()` and there would otherwise be no way
+    to switch a live microphone off.
+  - **Four break a write to a named register and ask whether a mute survives it.** A failed
+    *volume* write must not cancel the mute the caller asked for; a failure in one direction
+    must not suppress the safety mute in the other; and an *unmute* must not outrun a volume
+    write that never landed. All four fail on the old straight-line `apply_properties()`,
+    which gave up on the first error — so a DAC volume glitch used to leave both the speaker
+    playing and the microphone open, with an error returned for a mute never attempted.
+  - One proves `init()` writes **nothing at all** to a part whose identity it could not read.
+    That pins a policy rather than a mechanism: a device you cannot identify is a device you
+    do not write six ES8311-specific registers into, whatever the devicetree claims it is.
 - [x] **Builds against upstream main, zero warnings** — through
       `tests/drivers/build_all/audio`: `CONFIG_AUDIO_CODEC_ES8311=y`, `es8311.c.obj`
       on disk, and the device instance in the ELF symbol table.

@@ -217,9 +217,25 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_LRCK_DIV_L      0xFFU /* 0x08: DIV_LRCK[7:0], so LRCK = MCLK / 256 */
 
 /*
- * 0x09 and 0x0A, the serial data ports feeding the DAC and coming out of the
- * ADC: word length in bits [4:2] (0b011 selects 16-bit), I2S format in bits
- * [1:0], and a mute bit at bit 6.
+ * 0x09 and 0x0A, the serial data ports feeding the DAC and coming out of the ADC: word
+ * length in bits [4:2] (0b011 selects 16-bit), I2S format in bits [1:0], and a mute bit at
+ * bit 6. Both are written whole, never read-modify-written.
+ *
+ * THE TWO REGISTERS ARE NOT SYMMETRIC AT BIT 7, and that bit is a board policy.
+ *
+ * 0x09 bit 7 is SDP_IN_SEL: which half of the stereo I2S frame the mono DAC takes its data
+ * from. 0 is the left slot and is the reset default; 1 is the right. Mainline Linux exposes
+ * it as a control called "Mono DAC Source", with the values Left and Right. Writing 0x09
+ * whole, as this driver does, leaves it clear -- so THE DAC ALWAYS PLAYS THE LEFT SLOT, and
+ * an application that puts its mono samples in the right one hears nothing. That is stated
+ * in the binding.
+ *
+ * Clearing it is deliberate, not incidental. On a part that is never reset, a previous
+ * firmware that selected the right slot would otherwise still have it selected.
+ *
+ * 0x0A has no bit 7 at all: the datasheet's SDP_OUT table starts at bit 6, and neither Linux
+ * nor the Espressif drivers name anything above it. Writing it clear is writing the reset
+ * value of an undocumented bit, which is the most that can be said for it.
  */
 #define ES8311_SDP_I2S_16BIT 0x0CU
 #define ES8311_SDP_MUTE      0x40U
@@ -1106,67 +1122,116 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 	return ret;
 }
 
+/*
+ * A MUTE IS NOT ALLOWED TO FAIL BECAUSE A VOLUME DID.
+ *
+ * This used to run straight down: DAC volume, DAC mute, ADC volume, ADC mute, with a
+ * `goto end` on each error. Which meant a caller doing the one thing the API gives it for
+ * silencing a speaker --
+ *
+ *     set_property(OUTPUT_MUTE, true); apply_properties();
+ *
+ * -- lost the mute entirely if the DAC VOLUME write, an unrelated and entirely unsafety
+ * register, happened to fail first. The speaker went on playing and the caller got an error
+ * for a mute that was never attempted. And because the playback block came first, a failure
+ * there skipped the capture block whole: a DAC volume glitch left the MICROPHONE open too.
+ *
+ * That is the same fail-open that stop_output() and configure() were already fixed for. This
+ * is just the other off switch, and there is no reason for the two to disagree.
+ *
+ * So the writes are ordered by what they cost if they are skipped, in three phases:
+ *
+ *   1. every requested MUTE, and none of them skipped because an earlier one failed
+ *   2. the volumes
+ *   3. every requested UNMUTE, last, and only in a direction whose volume actually landed
+ *
+ * Phase 3's condition is the point of phase 2's bookkeeping: unmuting into a volume register
+ * whose write just failed is unmuting into an unknown level, which on the DAC side is a
+ * speaker at whatever gain the last firmware chose. Same rule as configure()'s commit block:
+ * nothing that lets sound out may run before something that can fail.
+ *
+ * The first error is what the caller gets back, and every safety write is attempted whatever
+ * it is.
+ *
+ * The lock is held across all of it, not merely across the read of the cached state. Taking a
+ * snapshot and then releasing would let stop_output() run in between: it would cache "muted",
+ * mute the DAC in hardware, and then have that write overwritten by the already-sampled
+ * "unmuted" value from phase 3, leaving the cache saying muted while the speaker is live.
+ *
+ * Only the routed directions are touched. Applying the cached input state on a playback-only
+ * route would clear the serial-port mute configure() set on the microphone; applying the
+ * cached output state on a capture-only route would unmute a DAC that is powered down. The
+ * properties stay cached either way and land at the next configure() that routes them. A
+ * route that carries neither direction leaves nothing to apply, and that is not an error.
+ */
 static int es8311_apply_properties(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
-	/* A route that carries neither direction leaves nothing to apply, and that
-	 * is not an error: the properties stay cached for the next configure().
-	 */
-	int ret = 0;
+	bool dac_volume_ok = false;
+	bool adc_volume_ok = false;
+	int first_err = 0;
+	int ret;
 
-	/*
-	 * The lock is held across the register writes, not merely across the read
-	 * of the cached state. Taking a snapshot and then releasing the lock would
-	 * let stop_output() run in between: it would cache "muted", mute the DAC in
-	 * hardware, and then have that write overwritten by the already-sampled
-	 * "unmuted" value here, leaving the cache saying muted while the speaker is
-	 * live. The codec API asks for the cached properties to be applied as one
-	 * step, and this is a speaker-safety property, not just tidiness.
-	 */
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/*
-	 * Only the routed directions are touched. Applying the cached input state on
-	 * a playback-only route would clear the serial-port mute that configure()
-	 * set on the microphone, and applying the cached output state on a
-	 * capture-only route would unmute a DAC that is powered down. The properties
-	 * stay cached either way and land at the next configure() that routes them.
-	 */
+	/* 1. The mutes. Nothing below may prevent these from being attempted. */
+	if (data->playback && data->dac_mute) {
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+		if (ret < 0) {
+			LOG_ERR("Failed to mute the DAC (%d)", ret);
+			first_err = (first_err == 0) ? ret : first_err;
+		}
+	}
+
+	/* The ADC mutes at its serial data port, not through its volume. */
+	if (data->capture && data->adc_mute) {
+		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT,
+				       ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+		if (ret < 0) {
+			LOG_ERR("Failed to mute the microphone (%d)", ret);
+			first_err = (first_err == 0) ? ret : first_err;
+		}
+	}
+
+	/* 2. The volumes. A failure here disarms that direction's unmute below. */
 	if (data->playback) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_VOLUME, data->dac_volume_code);
+		dac_volume_ok = (ret == 0);
 		if (ret < 0) {
 			LOG_ERR("Failed to set DAC volume 0x%02x (%d)", data->dac_volume_code, ret);
-			goto end;
-		}
-
-		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE,
-				       data->dac_mute ? ES8311_DAC_MUTE_ON : ES8311_DAC_MUTE_OFF);
-		if (ret < 0) {
-			LOG_ERR("Failed to set DAC mute %d (%d)", data->dac_mute, ret);
-			goto end;
+			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
 
 	if (data->capture) {
 		ret = es8311_reg_write(dev, ES8311_REG_ADC_VOLUME, data->adc_volume_code);
+		adc_volume_ok = (ret == 0);
 		if (ret < 0) {
 			LOG_ERR("Failed to set ADC volume 0x%02x (%d)", data->adc_volume_code, ret);
-			goto end;
-		}
-
-		/* The ADC mutes at its serial data port, not through its volume. */
-		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT,
-				       ES8311_SDP_I2S_16BIT |
-					       (data->adc_mute ? ES8311_SDP_MUTE : 0U));
-		if (ret < 0) {
-			LOG_ERR("Failed to set ADC mute %d (%d)", data->adc_mute, ret);
+			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
 
-end:
+	/* 3. The unmutes, last of all, and the DAC last of those: it has the speaker on it. */
+	if (data->capture && !data->adc_mute && adc_volume_ok) {
+		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT);
+		if (ret < 0) {
+			LOG_ERR("Failed to unmute the microphone (%d)", ret);
+			first_err = (first_err == 0) ? ret : first_err;
+		}
+	}
+
+	if (data->playback && !data->dac_mute && dac_volume_ok) {
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+		if (ret < 0) {
+			LOG_ERR("Failed to unmute the DAC (%d)", ret);
+			first_err = (first_err == 0) ? ret : first_err;
+		}
+	}
+
 	k_mutex_unlock(&data->lock);
 
-	return ret;
+	return first_err;
 }
 
 /*
@@ -1295,6 +1360,30 @@ static int es8311_init(const struct device *dev)
 	data->playback = false;
 	data->capture = false;
 
+	/*
+	 * IDENTITY FIRST, AND THAT IS A CHOICE, NOT AN ACCIDENT OF CONTROL FLOW.
+	 *
+	 * If the part cannot be read at all -- a transport error rather than a wrong answer --
+	 * this returns here and the driver writes NOTHING. Not the register-file release, not
+	 * the quiesce.
+	 *
+	 * That is deliberate, and it has a real cost: a bus whose repeated-start READS fail
+	 * while its plain two-byte WRITES still land is exactly the failure this driver models
+	 * elsewhere (it is why stop_output() does not read before it writes), and on such a bus
+	 * a warm reboot out of playback leaves a powered, unmuted DAC that init() could have
+	 * silenced and does not.
+	 *
+	 * The alternative is worse. Quiescing means writing six registers to a part that could
+	 * not be read and therefore could not be identified. The devicetree says it is an
+	 * ES8311; a devicetree that is wrong about that would get six writes into whatever is
+	 * really at this address, chosen for their effect on a different chip. Doing nothing to
+	 * a device you cannot identify is the smaller failure.
+	 *
+	 * So the safety claims in this file are scoped: once the part has said it is an ES8311,
+	 * init() leaves it as safe as the bus allows. Before that, it does not touch it. The one
+	 * exception is the single 0xFA write inside es8311_check_id(), which is bounded to one
+	 * register and is argued for where it is made.
+	 */
 	ret = es8311_check_id(dev);
 	if (ret < 0) {
 		return ret;

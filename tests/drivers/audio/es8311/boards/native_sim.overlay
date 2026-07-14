@@ -69,4 +69,15 @@
 		status = "okay";
 		zephyr,deferred-init;
 	};
+
+	/*
+	 * A part on a bus whose READS fail while its writes still land. init() must refuse it
+	 * and must write NOTHING to it -- see the identity-first note in es8311_init().
+	 */
+	codec_mute: es8311@1d {
+		compatible = "everest,es8311";
+		reg = <0x1d>;
+		status = "okay";
+		zephyr,deferred-init;
+	};
 };
