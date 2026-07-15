@@ -1023,10 +1023,16 @@ end:
 	 * is a worse answer than silence.
 	 */
 	if (ret < 0) {
-		int qerr = es8311_quiesce(dev);
-
-		LOG_ERR("configure() I2C error: %d. The codec has been quiesced%s.", ret,
-			(qerr < 0) ? " as far as the bus allowed" : "");
+		/*
+		 * Attempted, not guaranteed, and the log says so. es8311_quiesce() returning 0
+		 * means every write was ACKed, not that it landed: if this configure() failed on
+		 * its 0xFA release, the part may still be holding its register file down, in which
+		 * case every quiesce write is ACKed and silently discarded. Without a read-back --
+		 * which on that same failing bus may not work either -- "quiesced" cannot be
+		 * claimed, only "quiesce attempted".
+		 */
+		(void)es8311_quiesce(dev);
+		LOG_ERR("configure() I2C error: %d. A best-effort quiesce was attempted.", ret);
 	}
 
 	k_mutex_unlock(&data->lock);
@@ -1174,13 +1180,32 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
  * cached output state on a capture-only route would unmute a DAC that is powered down. The
  * properties stay cached either way and land at the next configure() that routes them. A
  * route that carries neither direction leaves nothing to apply, and that is not an error.
+ *
+ * "As atomic as possible", which is what the API asks for, and no more. A write that returns
+ * an error is treated as not having taken effect; this driver does not read the register back
+ * to find out whether it actually did, because a NAK on the completion of a write that reached
+ * the part is indistinguishable, at this layer, from one that never left the controller. Nor
+ * does it roll back: a compensating write on a bus that just returned an error has no fixpoint
+ * -- it can fail too -- and it is not needed, for the reason below.
+ *
+ * What a failed apply() guarantees is a NEGATIVE, not a positive, and the distinction is the
+ * whole point of the ordering. It does NOT guarantee the part is safe or that the hardware
+ * matches the cache: if the bus drops a requested MUTE, the speaker the caller asked to
+ * silence is still live, cache and hardware now disagree, and no amount of care in THIS
+ * function can change that -- the write was refused. What it guarantees is that apply() never
+ * makes things WORSE than it found them: it never turns up a path whose mute did not land
+ * (phase 2 is gated on the mute), and never opens a path once anything has failed (phase 3 is
+ * gated on the whole call). A path that was live stays no louder; a path that was silent is
+ * not opened behind a failure. The caller is owed the error, retries, and -- because the
+ * off switch it actually depends on for silence is stop_output(), an ungated direct write --
+ * never has to depend on a failed apply() having left the part safe. This one does not
+ * promise that, and says so.
  */
 static int es8311_apply_properties(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
 	bool dac_silenced = true;
 	bool adc_silenced = true;
-	bool clean;
 	int first_err = 0;
 	int ret;
 
@@ -1241,7 +1266,7 @@ static int es8311_apply_properties(const struct device *dev)
 	}
 
 	/*
-	 * 3. The unmutes, last of all -- and ONLY if nothing above failed, in EITHER direction.
+	 * 3. The unmutes, last of all -- and each one only if EVERYTHING above it succeeded.
 	 *
 	 * Not merely "only if this direction's own volume landed". A half-applied transaction
 	 * is not a licence to perform its dangerous half: if the microphone's mute failed and
@@ -1250,25 +1275,31 @@ static int es8311_apply_properties(const struct device *dev)
 	 * an error that says none of it can be trusted. Failing to make something safe must
 	 * not be followed by making something else live.
 	 *
-	 * So a single error anywhere in this call disarms every unmute in it. The properties
+	 * The gate is `first_err == 0`, re-tested at EACH unmute -- NOT a snapshot taken once
+	 * before the block. The microphone unmute below can itself fail, and if it does, its
+	 * error has to stop the speaker unmute too. A snapshot taken before either ran would
+	 * still say "clean" and let the speaker open behind a microphone unmute that just
+	 * failed, which is the exact hazard this ordering exists to prevent. The
+	 * less-dangerous unmute (the microphone) is deliberately first, so that the more
+	 * dangerous one (the speaker) is gated on it.
+	 *
+	 * So a single error anywhere in this call disarms every unmute after it. The properties
 	 * stay cached, the caller gets the error, and a retry that succeeds applies them all.
 	 */
-	clean = (first_err == 0);
-
-	if (clean && data->capture && !data->adc_mute) {
+	if (first_err == 0 && data->capture && !data->adc_mute) {
 		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT);
 		if (ret < 0) {
 			LOG_ERR("Failed to unmute the microphone (%d)", ret);
-			first_err = (first_err == 0) ? ret : first_err;
+			first_err = ret;
 		}
 	}
 
 	/* The DAC last of the two: it is the one with a speaker on it. */
-	if (clean && data->playback && !data->dac_mute) {
+	if (first_err == 0 && data->playback && !data->dac_mute) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
 		if (ret < 0) {
 			LOG_ERR("Failed to unmute the DAC (%d)", ret);
-			first_err = (first_err == 0) ? ret : first_err;
+			first_err = ret;
 		}
 	}
 
@@ -1387,7 +1418,6 @@ static int es8311_init(const struct device *dev)
 {
 	const struct es8311_config *cfg = dev->config;
 	struct es8311_data *data = dev->data;
-	int first_err = 0;
 	int ret;
 
 	if (!i2c_is_ready_dt(&cfg->bus)) {
@@ -1466,32 +1496,39 @@ static int es8311_init(const struct device *dev)
 	 *
 	 * It is attempted, its error is kept, and the quiesce runs regardless.
 	 */
-	ret = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
-	if (ret < 0) {
+	int normalize_err = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
+	int quiesce_err;
+
+	if (normalize_err < 0) {
 		LOG_ERR("Failed to normalise 0xFA (%d). Quiescing anyway: INI_REG is already "
 			"known to be clear, because the chip id read back.",
-			ret);
-		first_err = ret;
+			normalize_err);
 	}
 
-	ret = es8311_quiesce(dev);
-	if (first_err == 0) {
-		first_err = ret;
-	}
-
-	if (first_err < 0) {
-		/*
-		 * The device is still refused: a part that could not be fully quiesced is not
-		 * one this driver can promise anything about. But every safety write was
-		 * attempted, so it is left as safe as the bus allowed.
-		 */
-		LOG_ERR("Failed to quiesce the codec (%d). Every safety write was still "
+	/*
+	 * Runs regardless of the 0xFA result, and its own errors are reported SEPARATELY. The
+	 * two failures are not the same thing and must not be logged as if they were: a failed
+	 * 0xFA normalisation with a fully successful quiesce is a safe part with one dirty
+	 * housekeeping bit, and printing "failed to quiesce" over it would send whoever is
+	 * debugging in exactly the wrong direction.
+	 */
+	quiesce_err = es8311_quiesce(dev);
+	if (quiesce_err < 0) {
+		LOG_ERR("Failed to fully quiesce the codec (%d). Every safety write was still "
 			"attempted.",
-			first_err);
-		return first_err;
+			quiesce_err);
 	}
 
-	return 0;
+	/*
+	 * Either failure refuses the device: a part whose register file could not be normalised
+	 * or fully quiesced is not one this driver can promise anything about. The quiesce error
+	 * is the more informative of the two, so it wins when both fired.
+	 */
+	if (quiesce_err < 0) {
+		return quiesce_err;
+	}
+
+	return normalize_err;
 }
 
 #define ES8311_INST(idx)                                                                           \

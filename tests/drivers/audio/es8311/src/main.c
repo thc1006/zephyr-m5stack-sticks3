@@ -51,21 +51,8 @@ static const struct device *const codec_ini = DEVICE_DT_GET(INI_NODE);
 static const struct i2c_dt_spec es_ini = I2C_DT_SPEC_GET(INI_NODE);
 static const struct emul *const emul_ini = EMUL_DT_GET(INI_NODE);
 
-/* Emulator test backend (defined in emul_es8311.c). */
-extern void emul_es8311_set_fail(const struct emul *target, int n);
-extern void emul_es8311_fail_at(const struct emul *target, int idx);
-extern void emul_es8311_reset_log(const struct emul *target);
-extern int emul_es8311_write_count(const struct emul *target);
-extern int emul_es8311_write_at(const struct emul *target, int idx);
-extern void emul_es8311_set_chip_id(const struct emul *target, uint8_t id1, uint8_t id2);
-extern void emul_es8311_pause_before(const struct emul *target, uint8_t reg);
-extern int emul_es8311_wait_paused(const struct emul *target, k_timeout_t timeout);
-extern void emul_es8311_release(const struct emul *target);
-extern void emul_es8311_set_ini_hold(const struct emul *target, bool hold);
-extern void emul_es8311_fail_reads(const struct emul *target, bool fail);
-extern void emul_es8311_fail_write_to(const struct emul *target, int reg);
-extern void emul_es8311_reset(const struct emul *target);
-extern int emul_es8311_wval_at(const struct emul *target, int idx);
+/* Emulator test backend (defined in drivers/audio/emul_es8311.c). */
+#include <emul_es8311.h>
 
 /*
  * ES8311 register map (the subset the driver touches), named after the fields
@@ -2070,6 +2057,49 @@ ZTEST(es8311, test_a_failed_mute_blocks_the_unmute_in_the_other_direction)
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE), ES8311_DAC_MUTE_ON,
 		      "the microphone's mute failed and the speaker was opened anyway: a live mic "
 		      "and a live speaker, from a call that returned an error");
+}
+
+/*
+ * A FAILED UNMUTE MUST STOP THE NEXT UNMUTE -- AND THE GATE MUST BE LIVE, NOT A SNAPSHOT.
+ *
+ * apply_properties() does the microphone unmute before the speaker unmute, and the speaker
+ * unmute is gated on nothing above it having failed. The bug this catches is subtle: an
+ * earlier version took ONE snapshot of "is everything still clean" before phase 3 and reused
+ * it for both unmutes. So a microphone unmute that FAILED still left the snapshot reading
+ * "clean", and the speaker was opened anyway -- a live speaker next to a microphone whose
+ * unmute just errored, from a call that returned failure. The gate has to be re-read at each
+ * unmute, which is what makes the FIRST unmute's failure disarm the SECOND.
+ *
+ * The neighbour test above covers a PHASE-1 (requested-mute) failure blocking an unmute. This
+ * is the one that covers the first unmute in PHASE 3 failing and taking the second down with
+ * it.
+ */
+ZTEST(es8311, test_a_failed_unmute_stops_the_next_unmute)
+{
+	struct audio_codec_cfg cfg;
+
+	/* Full duplex, both cached unmuted (the fixture leaves them so). */
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure failed");
+
+	/* Force the hardware muted in both directions, so an unmute would be visible. */
+	reg_put(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+	reg_put(ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+
+	/*
+	 * The FIRST unmute apply_properties() performs is the microphone's (SDP_OUT). Break it.
+	 * The speaker unmute (DAC_MUTE, 0x31) is a different register and would succeed if it
+	 * were reached -- so if the DAC ends up unmuted, the first unmute's failure did NOT stop
+	 * the second, which is the bug.
+	 */
+	emul_es8311_fail_write_to(emul, ES8311_REG_SDP_OUT);
+	zassert_true(audio_codec_apply_properties(codec) < 0,
+		     "apply must report the failed microphone unmute");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE), ES8311_DAC_MUTE_ON,
+		      "the microphone unmute failed and the speaker was opened anyway: the "
+		      "clean-enough gate was a stale snapshot, not a live re-check");
 }
 
 /*

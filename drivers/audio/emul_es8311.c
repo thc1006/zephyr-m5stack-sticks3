@@ -27,6 +27,11 @@
 #include <zephyr/drivers/i2c_emul.h>
 #include <zephyr/logging/log.h>
 
+/* The test-backend prototypes, so the definitions below are checked against them. On the
+ * test's include path -- this emulator is only ever compiled by that test.
+ */
+#include <emul_es8311.h>
+
 LOG_MODULE_REGISTER(emul_es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
 
 #define ES8311_EMUL_WLOG_LEN 64
