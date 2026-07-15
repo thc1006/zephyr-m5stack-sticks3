@@ -73,8 +73,8 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **59/59** (was 11,
-  then 29, 33, 42, 47, 51, 52, 54). Coverage is 97.4% of lines and 76.2% of branches (`gcovr`); every
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **60/60** (was 11,
+  then 29, 33, 42, 47, 51, 52, 54, 59). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
   other codec in `drivers/audio` is at zero. The emulator's test hooks are declared in a
   header (`drivers/audio/emul_es8311.h`, beside the emulator so it resolves whatever the
   build's include path is) that both the emulator and the test include, so the two cannot
@@ -104,11 +104,13 @@ Two things to watch while the PR is open:
     across every transfer of all three routes: the speaker is never left live, and on a
     capture-only route the microphone is never stranded open — the payoff of the route-aware
     commit, which the old fixed order could not give.
-  - Three exercise the **output lifecycle split**: a pending `OUTPUT_MUTE` survives a start/stop
+  - Four exercise the **output lifecycle split**: a pending `OUTPUT_MUTE` survives a start/stop
     cycle (`output_mute` and `output_stopped` are independent — `tas2563` is the in-tree
     precedent); an unmute that **lands then errors** (`fail_write_landed()`) is left in place,
-    not rolled back; and the error-path quiesce mutes the **speaker first**, so a half-completed
-    cleanup silences the most dangerous thing before the rest.
+    not rolled back; the error-path quiesce mutes the **speaker first**, so a half-completed
+    cleanup silences the most dangerous thing before the rest; and `apply_properties()`
+    **re-mutes a stopped output whose `stop_output()` mute glitched** on the bus, because a
+    stopped DAC is a muted DAC.
   - **Seven break a write to a named register and ask what a failure is followed by.** Does
     the mute still land? A failed *volume* write must not cancel the mute the caller asked
     for, and a failure in one direction must not suppress the safety mute in the other. And

@@ -1327,11 +1327,14 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
  * level change is smooth. So this driver does not; it writes volume straight to the live
  * converter, ramped, and a caller that does not want a louder speaker does not ask for one.
  *
- * And the caller does not lean on a failed apply() for silence. stop_output() is the off
- * switch: it always ATTEMPTS a direct full-register mute and caches the muted intent. Its API
- * returns void, so it cannot hand an immediate transport failure back to the caller -- it is
- * the best emergency mute available at this layer, not a receipt -- but it does not depend on
- * apply() having succeeded, and apply() does not pretend to stand in for it.
+ * stop_output() is the direct off switch: it sets output_stopped and ATTEMPTS an immediate
+ * full-register mute. Its API returns void, so it cannot hand a transport failure back to the
+ * caller -- it is the best emergency mute available at this layer, not a receipt. apply() BACKS
+ * IT UP rather than stands in for it: because phase 1 re-asserts the DAC mute whenever the output
+ * is stopped, a stop_output() whose mute write glitched on the bus is healed by the next
+ * apply_properties(), so a caller that stops and later applies properties never has to notice the
+ * glitch. stop_output() stays the immediate switch; apply() is the best-effort re-assert behind
+ * it, and neither can promise silence on a bus that has stopped answering.
  */
 static int es8311_apply_properties(const struct device *dev)
 {
@@ -1341,8 +1344,15 @@ static int es8311_apply_properties(const struct device *dev)
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/* 1. Every requested mute. None of them is skipped because another one failed. */
-	if (data->playback && data->output_mute) {
+	/*
+	 * 1. Every mute the state calls for. That is the requested OUTPUT_MUTE, but ALSO a
+	 *    re-assert whenever the output is stopped: the invariant is that a stopped DAC is a
+	 *    muted DAC, and enforcing it here is what lets apply_properties() heal a stop_output()
+	 *    whose own mute write glitched on the bus (stop_output() returns void, so the caller
+	 *    never saw the failure -- but the next apply() re-mutes). None is skipped because
+	 *    another failed.
+	 */
+	if (data->playback && (data->output_mute || data->output_stopped)) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
 		if (ret < 0) {
 			LOG_ERR("Failed to mute the DAC (%d)", ret);

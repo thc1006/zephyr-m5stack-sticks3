@@ -2262,6 +2262,35 @@ ZTEST(es8311, test_pending_output_mute_survives_start_stop)
 }
 
 /*
+ * The lifecycle split, from the FAILURE side. stop_output() returns void, so a caller cannot see
+ * a mute write that glitched on the bus. The invariant "a stopped DAC is a muted DAC" is then
+ * enforced by apply_properties(), which re-asserts the mute whenever the output is stopped -- so a
+ * stop-then-apply heals the glitch. The old folded-flag model got this for free (stop_output()
+ * forged a property mute); the split has to make it explicit, and this pins that it does.
+ */
+ZTEST(es8311, test_apply_re_mutes_a_stopped_output_whose_stop_glitched)
+{
+	/* Output running, DAC live. */
+	audio_codec_start_output(codec);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U, "precondition: DAC live");
+
+	/* stop_output()'s mute write glitches on the bus; its void API hides the failure. */
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	audio_codec_stop_output(codec);
+	emul_es8311_fail_write_to(emul, -1);
+	zassert_equal(
+		reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
+		"the glitched stop_output() left the speaker live -- this is the hazard apply "
+		"has to heal");
+
+	/* A later apply_properties() must re-mute the stopped output. */
+	zassert_ok(audio_codec_apply_properties(codec), "apply_properties failed");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "apply_properties() must re-mute a stopped output whose stop_output() mute "
+		      "glitched: a stopped DAC is a muted DAC");
+}
+
+/*
  * THE ROUTE-AWARE COMMIT, from the capture-only side. A playback route's last write is the DAC
  * mute (the speaker); a capture-only route has no speaker to open, so its last write is the
  * MICROPHONE port, with nothing that can fail after it. The earlier fixed
