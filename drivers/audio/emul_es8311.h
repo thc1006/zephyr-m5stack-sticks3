@@ -41,6 +41,26 @@ void emul_es8311_set_fail(const struct emul *target, int n);
 void emul_es8311_fail_at(const struct emul *target, int idx);
 
 /*
+ * Fail transfer number @p idx (0-based) and EVERY transfer after it, letting the ones before it
+ * through; pass a negative value to disarm. Unlike fail_at(), it does NOT self-disarm -- it is
+ * the bus that stops taking transfers and STAYS stopped, so the driver's own error-path quiesce
+ * fails too. That is the case that separates "fail-closed" from "fail-closed if the cleanup
+ * still works": only the write that is genuinely LAST in a route's commit is safe from being
+ * opened and then stranded by a cleanup that cannot run.
+ */
+void emul_es8311_fail_from(const struct emul *target, int idx);
+
+/*
+ * Fail every write to register @p reg, but ONLY AFTER applying it to the register file: the byte
+ * reaches the part and the transfer still returns -EIO. Pass a negative value to disarm. Models
+ * a NAK on the COMPLETION of a write that already landed -- indistinguishable at the driver from
+ * a write that never left the controller, which is exactly the case the apply_properties()
+ * narrow-negative reasons about (a failing unmute MIGHT have opened the path; the driver neither
+ * reads back nor rolls back).
+ */
+void emul_es8311_fail_write_landed(const struct emul *target, int reg);
+
+/*
  * Fail every write to register @p reg, and only to @p reg; pass a negative value to disarm.
  * Says what it means -- "break the write to THIS register" -- and keeps saying it when a read
  * added upstream would have re-aimed a by-index fault at a different write.

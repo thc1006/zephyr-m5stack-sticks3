@@ -271,7 +271,7 @@ LOG_MODULE_REGISTER(es8311);
  * soft ramp (rate 4) with the equaliser bypassed. The ramp is the point: the ADC volume is
  * already ramped at the same rate (0x15 = 0x40), and without this the DAC volume was the odd
  * one out -- every 0x32 change, and the level restored at unmute, landed as a hard step that
- * zippers. The vendor esp-adf sequence sets 0x48 for the same reason; a driver that writes
+ * zippers. The Espressif reference sets 0x48 for the same reason; a driver that writes
  * volume straight to a live DAC (as apply_properties() does) relies on this ramp to make it
  * smooth. bit 3 keeps the equaliser bypassed, as before.
  */
@@ -371,8 +371,27 @@ struct es8311_data {
 	struct k_mutex lock;
 	uint8_t dac_volume_code; /* cached 0x32 */
 	uint8_t adc_volume_code; /* cached 0x17 */
-	bool dac_mute;
+	/*
+	 * output_mute is the AUDIO_PROPERTY_OUTPUT_MUTE the caller last requested;
+	 * output_stopped is the start_output()/stop_output() lifecycle. They are
+	 * SEPARATE (see the lifecycle comment above es8311_start_output): the DAC is
+	 * audible only when the output has NOT been stopped AND the caller has not
+	 * muted it -- unmuted exactly when playback && !output_mute && !output_stopped.
+	 *
+	 * output_stopped defaults false, so a first configure() opens a playback
+	 * route exactly as before: the configure-driven i2s_codec sample, which
+	 * never calls start_output(), still gets sound. What the split buys is that
+	 * a pending OUTPUT_MUTE now survives a start/stop cycle -- start_output() no
+	 * longer clears it and stop_output() no longer forges it -- and that
+	 * stop_output() leaves a sticky "stopped" state a later configure() will not
+	 * quietly re-open.
+	 *
+	 * adc_mute is AUDIO_PROPERTY_INPUT_MUTE; the ADC has no start/stop op in the
+	 * audio_codec API, so it has no lifecycle flag.
+	 */
+	bool output_mute;
 	bool adc_mute;
+	bool output_stopped;
 	/*
 	 * The route the last configure() programmed. Everything that touches a
 	 * converter has to respect it: unmuting a serial port or a DAC that the
@@ -447,7 +466,11 @@ static int es8311_write_known_state(const struct device *dev)
  * mute, the DAC power-down, the ADC power-down and the microphone disconnect -- and it would
  * skip them precisely when the bus is already misbehaving, which is the worst possible
  * moment to walk away from a live speaker. The first error is kept and returned; the part is
- * left as safe as the bus allowed, rather than as safe as its first hiccup allowed.
+ * left as safe as the bus allowed, rather than as safe as its first hiccup allowed. And the
+ * ORDER is a PRIORITY, because the writes that land on a bus failing partway through are a
+ * PREFIX of the list: the most dangerous thing to leave live -- the speaker -- is muted first,
+ * the microphone next, and the power-downs, which deepen the silence but are not what stops
+ * sound the instant only one write gets through, come last.
  *
  * Releasing 0xFA is not part of this, and the two callers treat a failure of it differently,
  * on purpose. In configure() it is a genuine precondition: if the register file is held, none
@@ -459,9 +482,13 @@ static int es8311_write_known_state(const struct device *dev)
 static int es8311_quiesce(const struct device *dev)
 {
 	static const struct es8311_reg_val quiesce[] = {
-		{ES8311_REG_SDP_IN, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE},
-		{ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE},
+		/* Speaker first, then microphone, then the DAC's own data port (redundant once the
+		 * DAC is muted, but part of the known-silent state), then the power-downs. See the
+		 * PREFIX argument above: this order is what makes a half-completed quiesce safe.
+		 */
 		{ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON},
+		{ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE},
+		{ES8311_REG_SDP_IN, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE},
 		{ES8311_REG_SYSTEM_12, ES8311_DAC_PWR_DOWN},
 		{ES8311_REG_SYSTEM_0E, ES8311_ADC_PWR_DOWN},
 		{ES8311_REG_ADC_PGA, ES8311_ADC_MIC_OFF},
@@ -955,22 +982,32 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	/*
 	 * COMMIT.
 	 *
-	 * These are the only three writes in this function that let anything move: the DAC's
-	 * serial port, the ADC's serial port, and the DAC mute. Every CONFIGURATION write has
-	 * already happened, so if control reaches here the part is fully programmed and the
-	 * only thing left to do is open it.
+	 * These are the last writes in this function -- the only ones that let anything move:
+	 * the DAC's serial port, the ADC's serial port, and, for a playback route, the DAC mute.
+	 * Every CONFIGURATION write has already happened, so if control reaches here the part is
+	 * fully programmed and the only thing left to do is open it.
 	 *
-	 * It is not an atomic commit -- these three are I2C writes and can fail like any other.
-	 * What it is, is a boundary: no configuration write happens after the first of them, and
-	 * if any of them fails the error path below attempts a best-effort quiesce. So the part is
-	 * never half-opened onto a half-programmed chip: it is fully open, or it is programmed and
-	 * then quiesced as far as the bus will allow -- which, on a bus that has stopped taking
-	 * writes, may be no further than the mute that just failed. "Silent" is the intent and the
-	 * best effort, not a guarantee the failing bus cannot break.
+	 * The commit is ROUTE-AWARE, because the write that lets sound out is a different write
+	 * for each route. A playback route's audible opener is the DAC mute -- a speaker is on
+	 * the far side of it -- so it goes LAST, after both serial ports. A capture-only route's
+	 * opener is the microphone's serial port; its DAC was muted and powered down in the
+	 * quiesce-before-reclock and has nothing to open, so the microphone port goes last and no
+	 * DAC-mute write follows it. An earlier FIXED SDP_IN -> SDP_OUT -> DAC_MUTE order wrote
+	 * that DAC mute on every route -- redundant on capture-only, and worse, a failable write
+	 * left standing AFTER the microphone was already open, which a persistent bus failure
+	 * could not then take back.
 	 *
-	 * They used to be scattered through the sequence -- the serial ports right after the
-	 * clock tree, the DAC unmute in the middle of the playback branch -- and that was
-	 * wrong twice over.
+	 * It is not an atomic commit -- these are I2C writes and can fail like any other. What it
+	 * is, is a boundary: no configuration write happens after the first of them, and if any
+	 * of them fails the error path below attempts a best-effort quiesce. So the part is never
+	 * half-opened onto a half-programmed chip: it is fully open, or it is programmed and then
+	 * quiesced as far as the bus will allow -- which, on a bus that has stopped taking writes,
+	 * may be no further than the write that just failed. "Silent" is the intent and the best
+	 * effort, not a guarantee the failing bus cannot break.
+	 *
+	 * The commit used to be scattered through the sequence -- the serial ports right after the
+	 * clock tree, the DAC unmute in the middle of the playback branch -- and that was wrong
+	 * twice over.
 	 *
 	 * It was wrong on the failure path: a bus error in any of the fifteen writes that
 	 * followed left a POWERED, UNMUTED DAC and an OPEN microphone port behind a
@@ -987,24 +1024,45 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 * may come before a write that can fail. A failed configure() then AIMS the part at
 	 * muted rather than live, whatever it failed on -- best-effort, since the same bus may
 	 * refuse the quiesce too.
-	 *
-	 * The DAC mute goes last of the three, because it is the one with a speaker on it.
 	 */
 	ret = es8311_reg_write(dev, ES8311_REG_SDP_IN, sdp_in);
 	if (ret < 0) {
 		goto end;
 	}
 
-	ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
-	if (ret < 0) {
-		goto end;
-	}
+	if (playback) {
+		/*
+		 * The microphone port opens first (muted unless the route also carries
+		 * capture), then the DAC mute LAST -- it is the one write with an
+		 * amplifier on the far side, so nothing that can fail may follow it. The
+		 * DAC opens only for a route that is neither muted nor stopped.
+		 */
+		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
+		if (ret < 0) {
+			goto end;
+		}
 
-	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE,
-			       (playback && !data->dac_mute) ? ES8311_DAC_MUTE_OFF
-							     : ES8311_DAC_MUTE_ON);
-	if (ret < 0) {
-		goto end;
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE,
+				       (!data->output_mute && !data->output_stopped)
+					       ? ES8311_DAC_MUTE_OFF
+					       : ES8311_DAC_MUTE_ON);
+		if (ret < 0) {
+			goto end;
+		}
+	} else {
+		/*
+		 * A capture-only route has nothing to unmute on the DAC: it was muted
+		 * and powered down in the quiesce-before-reclock above and stays that
+		 * way. The only thing to open is the microphone port, so it goes LAST,
+		 * with no write that can fail after it. The earlier fixed
+		 * SDP_IN -> SDP_OUT -> DAC_MUTE order wrote a redundant, failable DAC
+		 * mute here AFTER the microphone was already open -- which a persistent
+		 * bus failure could leave standing while the quiesce also failed.
+		 */
+		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
+		if (ret < 0) {
+			goto end;
+		}
 	}
 
 	data->playback = playback;
@@ -1056,44 +1114,54 @@ end:
  * THE OUTPUT LIFECYCLE MODEL, stated once, because it is a design choice a reviewer should
  * be able to weigh rather than reverse-engineer.
  *
- * start_output() unmutes the DAC; stop_output() mutes it; configure() unmutes it at the end
- * of a playback route. So the DAC mute follows the output lifecycle, and AUDIO_PROPERTY_
- * OUTPUT_MUTE writes the same bit through the same cached flag. The three share one state:
- * "is the DAC currently muted".
+ * Two pieces of state, deliberately SEPARATE:
  *
- * That is deliberate, and it is the more functional of the two options the tree offers.
- * wm8904 and da7212 -- the only other codecs with these ops -- make start_output() and
- * stop_output() empty no-ops and leave OUTPUT_MUTE as the sole mute control; wm8904 also
- * unmutes at the end of configure(), exactly as here. This driver instead gives start/stop a
- * MEANING, because an earlier review asked stop_output() to be a real off switch that works
- * on a half-failing bus -- and an off switch necessarily moves the mute state.
+ *   output_mute    -- the AUDIO_PROPERTY_OUTPUT_MUTE the caller last asked for.
+ *   output_stopped -- the start_output()/stop_output() lifecycle.
  *
- * Keeping a separate "started" flag from OUTPUT_MUTE, so that configure() left the DAC muted
- * and only start_output() opened it, is a cleaner model on paper. It is also incompatible with
- * the tree it has to live in: samples/drivers/i2s/i2s_codec calls audio_codec_configure() and
- * then i2s_trigger(START), and NEVER calls audio_codec_start_output() at all. A codec that
- * waited for start_output() to unmute would be silent under the one sample every codec is
- * expected to work with. So configure() must open the output, exactly as wm8904's does, and a
- * started-vs-muted split is not merely unusual (no in-tree codec has one) but would break the
- * canonical sequence. The cost of the shared state is real and small: start_output() clears a
- * prior OUTPUT_MUTE, stop_output() leaves the cache reading muted. Both are the documented
- * effect of "start/stop the output".
+ * The DAC is audible only when a playback route is configured AND the caller has not muted it
+ * AND the output has not been stopped -- unmuted exactly when
+ * playback && !output_mute && !output_stopped.
+ * start_output() clears output_stopped; stop_output() sets it. Neither touches output_mute, and
+ * OUTPUT_MUTE never touches output_stopped -- so a caller can mute, start and stop in any order
+ * and each control keeps its own meaning. An earlier version folded all three into one "is the
+ * DAC muted" flag, and the bug that hid there was precisely that start_output() then silently
+ * cleared a pending OUTPUT_MUTE and stop_output() silently forged one.
  *
- * The BCLK caveat is the same one wm8904 lives with, and the same the i2s_codec sample builds
- * in: configure() opens the output before i2s_trigger(START) runs the bit clock. This codec's
- * clock IS BCLK, so in that window the DAC is unmuted with no clock. The ACUTE form of that --
- * a DAC frozen on a real, possibly full-scale sample after a warm reboot -- is the case init()
- * quiesces. A freshly configured DAC that has never been clocked sits at its idle bias, not on
- * a loud sample, and the clock arrives microseconds later at START. Sequencing the transport is
- * the application's job here as it is for every codec (wm8904 has a separate free-running MCLK
- * and so does not even see the window); the driver owns only the warm-reboot case, and does.
+ * output_stopped DEFAULTS false, which is what keeps a plain configure() working on its own.
+ * samples/drivers/i2s/i2s_codec calls audio_codec_configure() and then i2s_trigger(START) and
+ * never calls audio_codec_start_output() at all; because nothing has stopped the output, that
+ * first configure() opens a playback route exactly as wm8904's does, and the sample gets sound.
+ * stop_output() is the only thing that makes the state sticky: once an application has
+ * explicitly stopped the output, a later configure() will NOT quietly re-open it -- the
+ * application has to start it again. So the split costs the configure-driven caller nothing and
+ * gives the start/stop-driven caller a mute and a lifecycle that do not overwrite each other.
+ *
+ * The other in-tree codecs bracket both ends of this. wm8904 and da7212 make start_output() and
+ * stop_output() empty no-ops and unmute in configure(); tas2563 keeps a separate `is_started`
+ * flag, unmutes only in start_output(), and REFUSES to unmute from set_property() until the
+ * output has been started. This driver sits between them: it keeps the separate lifecycle flag
+ * that tas2563 proves is a legitimate in-tree model, but defaults it open so the configure-only
+ * caller is still served. The trigger for giving start/stop meaning at all was a review asking
+ * stop_output() to be a real off switch that works on a half-failing bus -- and an off switch
+ * necessarily moves the mute state, which is exactly why that state must be its own.
+ *
+ * The BCLK caveat is the same one wm8904 lives with. configure() (or start_output()) can unmute
+ * the DAC before i2s_trigger(START) has run the bit clock, and this codec's clock IS BCLK, so in
+ * that window the DAC is unmuted with no clock. How long that window is, is the application's
+ * choice and not the driver's: the i2s_codec sample sleeps a full SECOND between configure() and
+ * the first write that starts the clock. A DAC that has never been clocked sits at its idle
+ * bias, so the window is a bias level, not a held sample. The ACUTE form -- a DAC frozen on a
+ * real, possibly full-scale sample after a warm reboot -- is the case init() quiesces. An
+ * application that wants no window at all stops the output and calls start_output() only after
+ * the transport is running; the driver supports that but does not require it.
  *
  * The two ops themselves are NOT symmetric. Unmuting is dangerous and is gated: it puts a
- * speaker back on the output, so it only happens when the current route actually carries
- * playback. Muting is a SAFETY operation and is gated by nothing -- writing the mute bit of a
- * powered-down DAC is harmless, and gating the off switch on a route that a failed configure()
- * cleared would leave a caller reaching for silence with nothing. The one call whose entire
- * job is to make the speaker stop must always try.
+ * speaker back on the output, so it only happens for a route that carries playback and that the
+ * caller has not muted. Muting is a SAFETY operation and is gated by nothing -- writing the mute
+ * bit of a powered-down DAC is harmless, and gating the off switch on a route that a failed
+ * configure() cleared would leave a caller reaching for silence with nothing. The one call whose
+ * entire job is to make the speaker stop must always try.
  */
 static void es8311_start_output(const struct device *dev)
 {
@@ -1101,8 +1169,13 @@ static void es8311_start_output(const struct device *dev)
 	int ret = 0;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
-	data->dac_mute = false;
-	if (data->playback) {
+	data->output_stopped = false;
+	/*
+	 * Unmute only what the caller has not already muted. start_output() runs the
+	 * lifecycle, not the mute property: a pending OUTPUT_MUTE stays pending, and a
+	 * route that carries no playback has nothing to open.
+	 */
+	if (data->playback && !data->output_mute) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
 	}
 	k_mutex_unlock(&data->lock);
@@ -1130,7 +1203,8 @@ static void es8311_stop_output(const struct device *dev)
 	int ret;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
-	data->dac_mute = true;
+	data->output_stopped = true;
+	/* The lifecycle stops; the OUTPUT_MUTE property is left exactly as the caller set it. */
 	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
 	k_mutex_unlock(&data->lock);
 
@@ -1157,7 +1231,7 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 		data->dac_volume_code = es8311_db_to_code(val.vol);
 		break;
 	case AUDIO_PROPERTY_OUTPUT_MUTE:
-		data->dac_mute = val.mute;
+		data->output_mute = val.mute;
 		break;
 	case AUDIO_PROPERTY_INPUT_VOLUME:
 		data->adc_volume_code = es8311_db_to_code(val.vol);
@@ -1268,7 +1342,7 @@ static int es8311_apply_properties(const struct device *dev)
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	/* 1. Every requested mute. None of them is skipped because another one failed. */
-	if (data->playback && data->dac_mute) {
+	if (data->playback && data->output_mute) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
 		if (ret < 0) {
 			LOG_ERR("Failed to mute the DAC (%d)", ret);
@@ -1348,8 +1422,13 @@ static int es8311_apply_properties(const struct device *dev)
 		}
 	}
 
-	/* The DAC last of the two: it is the one with a speaker on it. */
-	if (first_err == 0 && data->playback && !data->dac_mute) {
+	/*
+	 * The DAC last of the two: it is the one with a speaker on it. It also carries the
+	 * lifecycle gate -- a stopped output stays muted here, exactly as it does in the
+	 * configure() commit, so apply_properties() never re-opens a speaker the application
+	 * stopped. output_mute and output_stopped are independent; either one keeps it shut.
+	 */
+	if (first_err == 0 && data->playback && !data->output_mute && !data->output_stopped) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
 		if (ret < 0) {
 			LOG_ERR("Failed to unmute the DAC (%d)", ret);
@@ -1483,8 +1562,14 @@ static int es8311_init(const struct device *dev)
 	/* Both directions default to 0 dB. */
 	data->dac_volume_code = ES8311_VOL_0DB_CODE;
 	data->adc_volume_code = ES8311_VOL_0DB_CODE;
-	data->dac_mute = false;
+	data->output_mute = false;
 	data->adc_mute = false;
+	/*
+	 * Not stopped: a first configure() may open a playback route without a
+	 * start_output(), matching the configure-driven sample. stop_output() is
+	 * what sets this.
+	 */
+	data->output_stopped = false;
 	/* Nothing is routed until configure() says so. */
 	data->playback = false;
 	data->capture = false;

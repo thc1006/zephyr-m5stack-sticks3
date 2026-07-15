@@ -687,8 +687,10 @@ ZTEST(es8311, test_start_stop_output)
 }
 
 /*
- * stop_output() caches the muted state, and a later configure() has to re-apply
- * it: otherwise reconfiguring a stopped stream would silently start the speaker.
+ * stop_output() marks the output STOPPED, and a later configure() has to respect that: a route
+ * reconfigured after an explicit stop must come up muted, or reconfiguring a stopped stream would
+ * silently start the speaker. This is the output_stopped half of the lifecycle split -- distinct
+ * from OUTPUT_MUTE, which test_pending_output_mute_survives_start_stop covers.
  */
 ZTEST(es8311, test_stop_output_state_survives_configure)
 {
@@ -1308,16 +1310,21 @@ ZTEST(es8311, test_the_driver_never_resets_the_register_file)
  *
  * emul_es8311_reset() puts the emulated CHIP back as it comes up: a clean register file, no
  * armed fault hook, an empty write log. It cannot touch the DRIVER. dac_volume_code,
- * adc_volume_code, dac_mute and adc_mute live in struct es8311_data and are set exactly once,
- * in init() -- so a test that left the output muted, or the input volume at -95 dB, handed
- * that to every test after it, and this fixture's own configure() then programmed the
- * hardware from it. Whether a later test passed depended on what ran before it.
+ * adc_volume_code, output_mute, adc_mute and output_stopped live in struct es8311_data and are
+ * set exactly once, in init() -- so a test that left the output muted, or the input volume at
+ * -95 dB, or (since the lifecycle split) the output STOPPED, handed that to every test after
+ * it, and this fixture's own configure() then programmed the hardware from it. Whether a later
+ * test passed depended on what ran before it.
  *
  * The evidence that this was real rather than theoretical: seven tests used to end with a
  * hand-written "restore 0 dB for the remaining tests" epilogue. That is a suite papering over
  * a broken fixture by hand, one forgotten line away from a test that passes for the wrong
- * reason. They are all gone now. Resetting the four properties through the PUBLIC API is the
- * whole of what replaced them -- no reaching into driver private state to do it.
+ * reason. They are all gone now. Resetting the four properties through the PUBLIC API, and the
+ * lifecycle with a start_output() after the configure(), is the whole of what replaced them --
+ * no reaching into driver private state to do it. start_output() is the public API that clears
+ * output_stopped, and leaving the fixture's output STARTED matches the state a fresh init() +
+ * configure() left before the split, so every test downstream sees the same configured, unmuted
+ * codec it always did.
  *
  * And the precondition is ASSERTED, not attempted. It used to be `(void)configure(...)`: a
  * test whose setup silently fails runs against whatever it inherited, and some of those make
@@ -1351,6 +1358,12 @@ static void es8311_before(void *fixture)
 	zassert_ok(audio_codec_configure(codec, &cfg),
 		   "test precondition failed: configure() did not succeed, so whatever this "
 		   "test goes on to check, it is not checking it against a configured codec");
+
+	/* Clear a stopped lifecycle left by a prior test: start_output() sets output_stopped
+	 * false through the public API, restoring the started, unmuted state the fixture always
+	 * handed downstream tests.
+	 */
+	audio_codec_start_output(codec);
 }
 
 /*
@@ -2214,6 +2227,224 @@ ZTEST(es8311, test_init_quiesces_even_when_the_register_file_write_fails)
 
 	zassert_ok(i2c_reg_read_byte_dt(&es_ini, ES8311_REG_ADC_PGA, &reg), "read failed");
 	zassert_equal(reg, ES8311_ADC_MIC_OFF, "MIC1 was left connected to the PGA");
+}
+
+/*
+ * THE LIFECYCLE SPLIT, from the mute's side: a pending OUTPUT_MUTE must survive a start/stop
+ * cycle. Before output_mute and output_stopped were separated, start_output() cleared the mute
+ * and stop_output() forged one, so "mute, then start" came out unmuted and the caller's request
+ * was silently dropped. This is the test that would have caught that.
+ */
+ZTEST(es8311, test_pending_output_mute_survives_start_stop)
+{
+	audio_property_value_t mute = {.mute = true};
+
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    mute),
+		   "set OUTPUT_MUTE(true) failed");
+
+	/*
+	 * stop_output() mutes the hardware; start_output() would normally unmute -- but it must
+	 * respect the pending OUTPUT_MUTE and leave the speaker muted.
+	 */
+	audio_codec_stop_output(codec);
+	audio_codec_start_output(codec);
+	zassert_equal(
+		reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		"start_output() unmuted a DAC the caller had muted: the pending OUTPUT_MUTE was "
+		"destroyed by the lifecycle");
+
+	/* And the property itself survived: apply_properties() still mutes, from a cleared reg. */
+	reg_put(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+	zassert_ok(audio_codec_apply_properties(codec), "apply_properties failed");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "apply_properties() did not mute: output_mute was lost across start/stop");
+}
+
+/*
+ * THE ROUTE-AWARE COMMIT, from the capture-only side. A playback route's last write is the DAC
+ * mute (the speaker); a capture-only route has no speaker to open, so its last write is the
+ * MICROPHONE port, with nothing that can fail after it. The earlier fixed
+ * SDP_IN -> SDP_OUT -> DAC_MUTE order wrote a redundant DAC mute AFTER the microphone was open.
+ */
+ZTEST(es8311, test_capture_only_commit_opens_the_microphone_last)
+{
+	struct audio_codec_cfg cfg;
+	int n;
+
+	emul_es8311_reset_log(emul);
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "capture configure failed");
+
+	n = emul_es8311_write_count(emul);
+	zassert_true(n >= 2, "capture configure emitted only %d writes", n);
+
+	/* The LAST write opens the microphone, unmuted, and NOTHING follows it. */
+	zassert_equal(
+		emul_es8311_write_at(emul, n - 1), ES8311_REG_SDP_OUT,
+		"the last write of a capture-only configure must be the ADC serial port (0x0A), "
+		"not 0x%02x",
+		emul_es8311_write_at(emul, n - 1));
+	zassert_equal(emul_es8311_wval_at(emul, n - 1) & ES8311_SDP_MUTE, 0x00U,
+		      "that last write must OPEN the microphone (unmuted)");
+
+	/* The write before it is the DAC serial port: the commit is exactly SDP_IN then SDP_OUT,
+	 * with no DAC mute wedged after the microphone opens.
+	 */
+	zassert_equal(emul_es8311_write_at(emul, n - 2), ES8311_REG_SDP_IN,
+		      "the capture-only commit must be SDP_IN then SDP_OUT; write %d was 0x%02x",
+		      n - 2, emul_es8311_write_at(emul, n - 2));
+}
+
+/*
+ * PERSISTENT failure, not a single glitch. fail_from(idx) fails transfer idx and every one after
+ * it, so the error-path quiesce fails on the same dead bus. That is what separates fail-closed by
+ * ORDERING from fail-closed-if-the-cleanup-runs: the only opener that is safe under a persistent
+ * failure is the one that is genuinely LAST in a route's commit, because a write after it that
+ * fails cannot be taken back.
+ *
+ * The speaker is the last opener on every route that carries one, so it is never left live. The
+ * microphone is the last opener ONLY on a capture-only route; on a full-duplex route it opens one
+ * write before the speaker and so CAN be stranded by a persistent failure at the very last
+ * transfer -- an inherent cost of a route that must open two things, and the reason the more
+ * dangerous of the two goes last. mic_must_stay_muted encodes exactly that per-route difference.
+ */
+static void walk_persistent_failure_into(audio_route_t target, const char *name,
+					 bool mic_must_stay_muted)
+{
+	struct audio_codec_cfg cfg;
+	bool reached_the_end = false;
+	int covered = 0;
+
+	for (int n = 0; n < FAULT_WALK_BOUND; n++) {
+		int ret;
+
+		/* Clean part, both openers seeded SHUT, so only a real write can open them. */
+		emul_es8311_reset(emul);
+		reg_put(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+		reg_put(ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+
+		make_cfg(&cfg, AUDIO_PCM_RATE_16K, target);
+		emul_es8311_fail_from(emul, n);
+		ret = audio_codec_configure(codec, &cfg);
+		emul_es8311_fail_from(emul, -1);
+
+		if (ret == 0) {
+			/* n is past the end of the sequence: the configure fully succeeded. */
+			reached_the_end = true;
+			break;
+		}
+		covered++;
+
+		zassert_equal(
+			reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+			"-> %s: persistent failure from transfer %d left the SPEAKER live, with "
+			"no working bus left to mute it",
+			name, n);
+
+		if (mic_must_stay_muted) {
+			zassert_equal(
+				reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+				"-> %s: persistent failure from transfer %d left the MICROPHONE "
+				"open with no working bus to mute it -- on this route the "
+				"microphone port must be the LAST commit write",
+				name, n);
+		}
+	}
+
+	zassert_true(
+		reached_the_end,
+		"-> %s: the persistent walk hit its bound of %d without getting past the end of "
+		"the sequence; it covered a PREFIX, not every transfer",
+		name, FAULT_WALK_BOUND);
+	zassert_true(covered > 1, "-> %s: must reach past the first transfer (covered %d)", name,
+		     covered);
+}
+
+ZTEST(es8311, test_persistent_failure_never_strands_the_last_opener)
+{
+	walk_persistent_failure_into(AUDIO_ROUTE_CAPTURE, "CAPTURE", true);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK, "PLAYBACK", true);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PLAYBACK_CAPTURE", false);
+}
+
+/*
+ * THE apply_properties() NARROW-NEGATIVE, made concrete. Its comment claims: if an unmute returns
+ * an error, the I2C layer cannot say whether the byte reached the part, so that path MIGHT be
+ * open even though apply() reports failure -- and the driver neither reads back nor rolls back.
+ * fail_write_landed() is exactly that fault: the unmute LANDS in the register file and the
+ * transfer still returns -EIO. So the register reads unmuted AND apply() returns an error, and the
+ * driver leaves it standing. This pins the honest claim: "apply() never opens a path after a
+ * failure" is exact, but "the failing unmute itself never opened anything" is NOT claimed.
+ */
+ZTEST(es8311, test_an_unmute_that_lands_then_errors_is_not_rolled_back)
+{
+	audio_property_value_t muted = {.mute = true};
+	audio_property_value_t unmuted = {.mute = false};
+
+	/* Get to a genuinely muted speaker first. */
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    muted),
+		   "set OUTPUT_MUTE(true) failed");
+	zassert_ok(audio_codec_apply_properties(codec), "apply mute failed");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U, "should be muted");
+
+	/* Ask to unmute; make that unmute LAND and still return an error. */
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    unmuted),
+		   "set OUTPUT_MUTE(false) failed");
+	emul_es8311_fail_write_landed(emul, ES8311_REG_DAC_MUTE);
+	zassert_true(audio_codec_apply_properties(codec) < 0,
+		     "apply_properties() must report the unmute's transport error");
+	emul_es8311_fail_write_landed(emul, -1);
+
+	/*
+	 * The write landed: the register is unmuted even though apply() failed. The driver did not
+	 * read it back and did not roll it back. A caller that needs silence uses stop_output().
+	 */
+	zassert_equal(
+		reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
+		"the landed unmute must be left in place, not rolled back -- the driver does not "
+		"read back a write it could not confirm");
+}
+
+/*
+ * THE QUIESCE IS PRIORITY-ORDERED. On a bus that fails partway through the cleanup the writes that
+ * land are a PREFIX, so the most dangerous thing to leave live -- the speaker -- must be muted
+ * FIRST. This pins the whole order the error-path quiesce emits: speaker mute, microphone mute,
+ * DAC data port, then the three power-downs -- so every mute precedes every power-down, and the
+ * one write to land first if only one lands is the speaker mute.
+ */
+ZTEST(es8311, test_quiesce_mutes_the_speaker_first)
+{
+	static const uint8_t expect[] = {
+		ES8311_REG_DAC_MUTE,  ES8311_REG_SDP_OUT,   ES8311_REG_SDP_IN,
+		ES8311_REG_SYSTEM_12, ES8311_REG_SYSTEM_0E, ES8311_REG_ADC_PGA,
+	};
+	struct audio_codec_cfg cfg;
+	int n;
+
+	/*
+	 * Fail a configure() mid-sequence so the error-path quiesce runs and is logged. fail_at
+	 * fires once, so the quiesce itself completes and every one of its writes is recorded.
+	 */
+	emul_es8311_reset_log(emul);
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	emul_es8311_fail_at(emul, 8);
+	zassert_true(audio_codec_configure(codec, &cfg) < 0, "configure() should have failed");
+	emul_es8311_fail_at(emul, -1);
+
+	n = emul_es8311_write_count(emul);
+	zassert_true(n >= (int)ARRAY_SIZE(expect), "expected the six quiesce writes, got %d", n);
+
+	/* The last six writes are the quiesce, in priority order. */
+	for (size_t i = 0; i < ARRAY_SIZE(expect); i++) {
+		zassert_equal(emul_es8311_write_at(emul, n - 6 + (int)i), expect[i],
+			      "quiesce write %zu must be reg 0x%02x, was 0x%02x", i, expect[i],
+			      emul_es8311_write_at(emul, n - 6 + (int)i));
+	}
+	zassert_equal(emul_es8311_wval_at(emul, n - 6), ES8311_DAC_MUTE_ON,
+		      "the quiesce's first write must be a DAC MUTE, not an unmute");
 }
 
 ZTEST_SUITE(es8311, NULL, NULL, es8311_before, NULL, NULL);

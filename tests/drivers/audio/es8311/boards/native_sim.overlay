@@ -4,20 +4,23 @@
  */
 
 /*
- * Five emulated parts on one bus.
+ * Seven emulated parts on one bus: one boot-initialised (codec@18) and six with
+ * zephyr,deferred-init, so each test that watches init() run gets a part it can drive into a
+ * chosen pre-probe state and that has never been initialised.
  *
- * A real ES8311 answers at 0x18 or 0x19 and nowhere else: the CE pin picks between the two,
- * and the binding says so. These are emulator slots rather than a claim about a board, and
- * they are on the same footing as the arbitrary addresses every other codec gets in
+ * A real ES8311 answers at 0x18 or 0x19 and NOWHERE ELSE: the CE pin picks between the two, and
+ * the binding says so. Two legal addresses cannot name seven parts, so five sit at synthetic
+ * addresses (0x1a-0x1e). They are emulator SLOTS, not a claim about a board, and are on the same
+ * footing as the arbitrary addresses every codec gets in
  * tests/drivers/build_all/audio/i2c_devices.overlay.
  *
- * Splitting them across three emulated buses so that each could sit at 0x18 or 0x19 does NOT
- * work, and the reason is worth writing down: emul_init_for_bus() resolves each child with
+ * Splitting them across emulated buses so each could sit at 0x18 or 0x19 does NOT work, and the
+ * reason is worth writing down: emul_init_for_bus() resolves each child with
  * emul_get_binding(elp->dev->name), and a Zephyr device's name is DT_NODE_FULL_NAME -- the
- * node's own name, not its path. Three buses each carrying an "es8311@18" therefore produce
- * three devices with the SAME name, every bus looks up and re-registers the FIRST emulator of
- * that name, and the one struct i2c_emul gets appended to three different slists. The lists
- * corrupt each other, and lookups start missing parts that the boot log says it registered.
+ * node's own name, not its path. Two buses each carrying an "es8311@18" therefore produce two
+ * devices with the SAME name, every bus looks up and re-registers the FIRST emulator of that
+ * name, and the one struct i2c_emul gets appended to several different slists. The lists corrupt
+ * each other, and lookups start missing parts that the boot log says it registered.
  */
 &i2c0 {
 	status = "okay";

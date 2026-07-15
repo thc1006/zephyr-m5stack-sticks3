@@ -60,6 +60,18 @@ struct es8311_emul_data {
 	 */
 	int fail_at;
 	/*
+	 * Fault injection PERSISTENT. fail_at() fires once and lets the sequence recover; this
+	 * fails transfer number `fail_from` and never stops, so the driver's error-path quiesce
+	 * fails on the same bus. Negative when disarmed.
+	 */
+	int fail_from;
+	/*
+	 * Fault injection AFTER EFFECT. fail_write_reg breaks a write before it lands; this lets
+	 * the write to `fail_write_landed` reach the register file and THEN returns -EIO, modelling
+	 * a NAK on the completion of a write the part already accepted. Negative when disarmed.
+	 */
+	int fail_write_landed;
+	/*
 	 * Fault injection by DIRECTION. set_fail() and fail_at() break a transfer whatever
 	 * it is; this breaks only reads, and lets every write through.
 	 *
@@ -192,6 +204,32 @@ void emul_es8311_fail_at(const struct emul *target, int idx)
 	data->fail_at = idx;
 }
 
+/*
+ * Fail transfer number `idx` and every transfer after it, persistently. Pass a negative value
+ * to disarm. This is the bus that dies and stays dead, so a driver's best-effort cleanup fails
+ * on the same bus -- the only way to prove a commit is fail-closed by ORDERING and not merely by
+ * a cleanup that happened to still work.
+ */
+void emul_es8311_fail_from(const struct emul *target, int idx)
+{
+	struct es8311_emul_data *data = target->data;
+
+	data->fail_from = idx;
+}
+
+/*
+ * Fail every write to `reg`, but only after applying it: the byte lands in the register file and
+ * the transfer still returns -EIO. Pass a negative value to disarm. Models a NAK on the
+ * completion of a write that already reached the part -- the case a driver cannot distinguish
+ * from a write that never left, and so must reason about rather than read back.
+ */
+void emul_es8311_fail_write_landed(const struct emul *target, int reg)
+{
+	struct es8311_emul_data *data = target->data;
+
+	data->fail_write_landed = reg;
+}
+
 void emul_es8311_reset_log(const struct emul *target)
 {
 	struct es8311_emul_data *data = target->data;
@@ -281,6 +319,13 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 		data->fail_at--;
 	}
 
+	if (data->fail_from >= 0) {
+		if (data->fail_from == 0) {
+			return -EIO; /* persistent: does NOT disarm, unlike fail_at */
+		}
+		data->fail_from--;
+	}
+
 	if (num_msgs == 1) {
 		/* Write transaction: buf = [reg, value]; only len 2 is valid. */
 		struct i2c_msg *m = &msgs[0];
@@ -345,6 +390,16 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 
 		data->regs[m->buf[0]] = m->buf[1];
 		LOG_DBG("W reg=0x%02x val=0x%02x", m->buf[0], m->buf[1]);
+
+		/*
+		 * Landed, then NAKed. The register above already took the value; returning the
+		 * error here models a write that reached the part but whose completion the bus
+		 * refused. The driver cannot tell this apart from a write that never left.
+		 */
+		if (data->fail_write_landed >= 0 && m->buf[0] == (uint8_t)data->fail_write_landed) {
+			LOG_DBG("W reg=0x%02x LANDED then FAILED (injected)", m->buf[0]);
+			return -EIO;
+		}
 		return 0;
 	}
 
@@ -401,7 +456,9 @@ static int es8311_emul_init(const struct emul *target, const struct device *pare
 	memset(data->regs, 0, sizeof(data->regs));
 	data->fail_remaining = 0;
 	data->fail_at = -1;        /* NOT 0: 0 means "fail transfer 0" */
+	data->fail_from = -1;      /* NOT 0: 0 means "fail from transfer 0" */
 	data->fail_write_reg = -1; /* NOT 0: 0x00 is a real register */
+	data->fail_write_landed = -1;
 	data->fail_reads = false;
 	data->pause_armed = false;
 	data->wcount = 0;
