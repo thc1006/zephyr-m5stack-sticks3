@@ -64,7 +64,7 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_REG_DAC_OFFSET   0x33U /* DAC DC offset */
 #define ES8311_REG_DAC_DRC      0x34U /* DRC_EN, DRC_WINSIZE */
 #define ES8311_REG_DAC_DRC_LVL  0x35U /* DRC maximum and minimum level */
-#define ES8311_REG_DAC_EQ       0x37U /* DAC equaliser bypass */
+#define ES8311_REG_DAC_RAMP_EQ  0x37U /* DAC_RAMPRATE [7:4], DAC equaliser bypass [3] */
 #define ES8311_REG_GPIO         0x44U /* ADC2DAC_SEL (bit 7), ADCDAT_SEL [6:4] */
 #define ES8311_REG_ADC_GP45     0x45U /* GP control */
 #define ES8311_REG_INI          0xFAU /* I2C_RETIME, INI_REG (bit 0) */
@@ -266,7 +266,16 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_DAC_PWR_ON      0x00U /* 0x12 */
 #define ES8311_DAC_PWR_DOWN    0x02U /* 0x12: PDN_DAC */
 #define ES8311_OUT_HEADPHONE   0x10U /* 0x13: headphone output path */
-#define ES8311_DAC_EQ_BYPASS   0x08U /* 0x37: bypass the DAC equaliser */
+/*
+ * 0x37: DAC_RAMPRATE in [7:4] and DAC_EQBYPASS in bit 3. 0x48 is a 0.25 dB / 32-LRCK volume
+ * soft ramp (rate 4) with the equaliser bypassed. The ramp is the point: the ADC volume is
+ * already ramped at the same rate (0x15 = 0x40), and without this the DAC volume was the odd
+ * one out -- every 0x32 change, and the level restored at unmute, landed as a hard step that
+ * zippers. The vendor esp-adf sequence sets 0x48 for the same reason; a driver that writes
+ * volume straight to a live DAC (as apply_properties() does) relies on this ramp to make it
+ * smooth. bit 3 keeps the equaliser bypassed, as before.
+ */
+#define ES8311_DAC_RAMP_EQ     0x48U /* 0x37 */
 
 /*
  * 0x31: the DAC has two mute points, DSMMUTE at bit 6 and DEMMUTE at bit 5. The
@@ -848,7 +857,7 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 			goto end;
 		}
 
-		ret = es8311_reg_write(dev, ES8311_REG_DAC_EQ, ES8311_DAC_EQ_BYPASS);
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_RAMP_EQ, ES8311_DAC_RAMP_EQ);
 		if (ret < 0) {
 			goto end;
 		}
@@ -1239,10 +1248,10 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
  * the same call then fails. That is the caller's own request on a path they left open, and a
  * successful apply() would land it too -- the failure did not create it. The only way to hold
  * it back is to mute both directions around every volume write, which turns each ordinary
- * volume change during playback into a mute-and-unmute gap, fighting the very volume ramp the
- * part provides to make those changes smooth. So this driver does not; it writes volume
- * straight to the live converter, and a caller that does not want a louder speaker does not
- * ask for one.
+ * volume change during playback into a mute-and-unmute gap, fighting the volume soft ramp this
+ * driver enables on both converters (0x37 for the DAC, 0x15 for the ADC) precisely so that a
+ * level change is smooth. So this driver does not; it writes volume straight to the live
+ * converter, ramped, and a caller that does not want a louder speaker does not ask for one.
  *
  * And the caller does not lean on a failed apply() for silence. stop_output() is the off
  * switch: it always ATTEMPTS a direct full-register mute and caches the muted intent. Its API

@@ -258,7 +258,8 @@ ZTEST(es8311, test_configure_16k_16bit_sequence)
 	/* Headphone output path. */
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_13), 0x10U, "0x13 should be 0x10");
 	/* EQ bypass. */
-	zassert_equal(reg_get(ES8311_REG_DAC_EQ), 0x08U, "0x37 should be 0x08");
+	zassert_equal(reg_get(ES8311_REG_DAC_EQ), 0x48U,
+		      "0x37 should be 0x48: DAC volume soft-ramp (rate 4) + EQ bypass");
 	/* The cached DAC volume is programmed. The fixture leaves it at 0 dB, which is 0xBF. */
 	zassert_equal(reg_get(ES8311_REG_DAC_VOLUME), 0xBFU,
 		      "0x32 should carry the cached volume (0 dB = 0xBF)");
