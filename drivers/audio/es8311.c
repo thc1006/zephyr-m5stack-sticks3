@@ -1057,20 +1057,27 @@ end:
  * stop_output() empty no-ops and leave OUTPUT_MUTE as the sole mute control; wm8904 also
  * unmutes at the end of configure(), exactly as here. This driver instead gives start/stop a
  * MEANING, because an earlier review asked stop_output() to be a real off switch that works
- * on a half-failing bus -- and an off switch necessarily moves the mute state. Keeping a
- * separate "started" flag from the OUTPUT_MUTE property, so that start_output() could refuse
- * to override a caller's mute, is a cleaner model on paper, but no in-tree codec has it, it
- * would make this the only one, and it would rework the exact output path that is hardware-
- * verified. The cost of the shared state is real and small: start_output() clears a prior
- * OUTPUT_MUTE, and stop_output() leaves the cache reading muted. Both are the documented
+ * on a half-failing bus -- and an off switch necessarily moves the mute state.
+ *
+ * Keeping a separate "started" flag from OUTPUT_MUTE, so that configure() left the DAC muted
+ * and only start_output() opened it, is a cleaner model on paper. It is also incompatible with
+ * the tree it has to live in: samples/drivers/i2s/i2s_codec calls audio_codec_configure() and
+ * then i2s_trigger(START), and NEVER calls audio_codec_start_output() at all. A codec that
+ * waited for start_output() to unmute would be silent under the one sample every codec is
+ * expected to work with. So configure() must open the output, exactly as wm8904's does, and a
+ * started-vs-muted split is not merely unusual (no in-tree codec has one) but would break the
+ * canonical sequence. The cost of the shared state is real and small: start_output() clears a
+ * prior OUTPUT_MUTE, stop_output() leaves the cache reading muted. Both are the documented
  * effect of "start/stop the output".
  *
- * The BCLK caveat is the same one wm8904 lives with. This codec's clock is BCLK, so an
- * unmuted DAC with no bit clock is a frozen modulator -- and configure() unmutes before the
- * application has necessarily started the I2S transport. Sequencing the transport around the
- * codec is the application's job (it is for wm8904 too, which has a separate MCLK and does
- * not even face this); what the driver owns, the warm-reboot case where it is handed an
- * unmuted DAC with no running clock, init() already quiesces.
+ * The BCLK caveat is the same one wm8904 lives with, and the same the i2s_codec sample builds
+ * in: configure() opens the output before i2s_trigger(START) runs the bit clock. This codec's
+ * clock IS BCLK, so in that window the DAC is unmuted with no clock. The ACUTE form of that --
+ * a DAC frozen on a real, possibly full-scale sample after a warm reboot -- is the case init()
+ * quiesces. A freshly configured DAC that has never been clocked sits at its idle bias, not on
+ * a loud sample, and the clock arrives microseconds later at START. Sequencing the transport is
+ * the application's job here as it is for every codec (wm8904 has a separate free-running MCLK
+ * and so does not even see the window); the driver owns only the warm-reboot case, and does.
  *
  * The two ops themselves are NOT symmetric. Unmuting is dangerous and is gated: it puts a
  * speaker back on the output, so it only happens when the current route actually carries
