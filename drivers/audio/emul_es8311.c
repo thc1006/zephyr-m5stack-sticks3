@@ -27,10 +27,12 @@
 #include <zephyr/drivers/i2c_emul.h>
 #include <zephyr/logging/log.h>
 
-/* The test-backend prototypes, so the definitions below are checked against them. On the
- * test's include path -- this emulator is only ever compiled by that test.
+/*
+ * The test-backend prototypes, so the definitions below are checked against them. Same
+ * directory as this file: a "" include resolves regardless of the build's include path, so
+ * the emulator compiles wherever CONFIG_EMUL_ES8311 puts it, not only inside its own test.
  */
-#include <emul_es8311.h>
+#include "emul_es8311.h"
 
 LOG_MODULE_REGISTER(emul_es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
 

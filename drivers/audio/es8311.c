@@ -1188,18 +1188,32 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
  * does it roll back: a compensating write on a bus that just returned an error has no fixpoint
  * -- it can fail too -- and it is not needed, for the reason below.
  *
- * What a failed apply() guarantees is a NEGATIVE, not a positive, and the distinction is the
- * whole point of the ordering. It does NOT guarantee the part is safe or that the hardware
- * matches the cache: if the bus drops a requested MUTE, the speaker the caller asked to
- * silence is still live, cache and hardware now disagree, and no amount of care in THIS
- * function can change that -- the write was refused. What it guarantees is that apply() never
- * makes things WORSE than it found them: it never turns up a path whose mute did not land
- * (phase 2 is gated on the mute), and never opens a path once anything has failed (phase 3 is
- * gated on the whole call). A path that was live stays no louder; a path that was silent is
- * not opened behind a failure. The caller is owed the error, retries, and -- because the
- * off switch it actually depends on for silence is stop_output(), an ungated direct write --
- * never has to depend on a failed apply() having left the part safe. This one does not
- * promise that, and says so.
+ * What a failed apply() guarantees is a NEGATIVE, and a narrow one. It does NOT guarantee the
+ * part is safe, or that the hardware matches the cache, or that nothing changed. Two things it
+ * genuinely prevents, both by the ordering:
+ *
+ *   - it never turns up a path whose REQUESTED mute did not land. If the caller asked to mute
+ *     a direction and that mute failed, its volume is not written (phase 2 is gated on the
+ *     mute). A speaker the caller tried to silence is never made louder.
+ *   - it never OPENS a path once anything in the call has failed (phase 3 gated on the whole
+ *     call) -- treating a write that returned an error as not having taken effect, which is
+ *     the most the I2C layer can tell us.
+ *
+ * What it does NOT prevent, and cannot without costing more than it saves: a path the caller
+ * chose to keep LIVE and gave a new volume DOES reach that volume, even if some other write in
+ * the same call then fails. That is the caller's own request on a path they left open, and a
+ * successful apply() would land it too -- the failure did not create it. The only way to hold
+ * it back is to mute both directions around every volume write, which turns each ordinary
+ * volume change during playback into a mute-and-unmute gap, fighting the very volume ramp the
+ * part provides to make those changes smooth. So this driver does not; it writes volume
+ * straight to the live converter, and a caller that does not want a louder speaker does not
+ * ask for one.
+ *
+ * And the caller does not lean on a failed apply() for silence. stop_output() is the off
+ * switch: it always ATTEMPTS a direct full-register mute and caches the muted intent. Its API
+ * returns void, so it cannot hand an immediate transport failure back to the caller -- it is
+ * the best emergency mute available at this layer, not a receipt -- but it does not depend on
+ * apply() having succeeded, and apply() does not pretend to stand in for it.
  */
 static int es8311_apply_properties(const struct device *dev)
 {

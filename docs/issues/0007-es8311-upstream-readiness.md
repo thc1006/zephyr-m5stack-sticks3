@@ -76,8 +76,9 @@ Two things to watch while the PR is open:
 - [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **52/52** (was 11,
   then 29, 33, 42, 47, 51). Coverage is 96.8% of lines and 74.8% of branches (`gcovr`); every
   other codec in `drivers/audio` is at zero. The emulator's test hooks are declared in a
-  header (`tests/drivers/audio/es8311/include/emul_es8311.h`) that both the emulator and the
-  test include, so the two cannot drift.
+  header (`drivers/audio/emul_es8311.h`, beside the emulator so it resolves whatever the
+  build's include path is) that both the emulator and the test include, so the two cannot
+  drift and the emulator compiles anywhere `CONFIG_EMUL_ES8311` puts it, not only in this test.
 
   The growth is not padding. Each round of adversarial review found a defect the suite
   structurally could not see, and the fix for each is a test that **fails on the driver as

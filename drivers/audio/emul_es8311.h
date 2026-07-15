@@ -15,11 +15,14 @@
  * checked against a single source rather than a hand-copied set of extern prototypes that can
  * drift. Both drivers/audio/emul_es8311.c and the test include this header.
  *
- * The header is private to the ES8311 test: the emulator is only ever compiled by it.
+ * It sits beside the emulator, in drivers/audio, so that emul_es8311.c finds it as a
+ * same-directory include no matter what include path a given build has -- the emulator is
+ * compiled wherever CONFIG_EMUL_ES8311 is set, which is not only this test. The test reaches
+ * it by putting drivers/audio on its own include path.
  */
 
-#ifndef ZEPHYR_TESTS_DRIVERS_AUDIO_ES8311_EMUL_ES8311_H_
-#define ZEPHYR_TESTS_DRIVERS_AUDIO_ES8311_EMUL_ES8311_H_
+#ifndef ZEPHYR_DRIVERS_AUDIO_EMUL_ES8311_H_
+#define ZEPHYR_DRIVERS_AUDIO_EMUL_ES8311_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -79,4 +82,4 @@ void emul_es8311_release(const struct emul *target);
 /* Put the emulated part back exactly as it comes up: clean register file, every hook disarmed. */
 void emul_es8311_reset(const struct emul *target);
 
-#endif /* ZEPHYR_TESTS_DRIVERS_AUDIO_ES8311_EMUL_ES8311_H_ */
+#endif /* ZEPHYR_DRIVERS_AUDIO_EMUL_ES8311_H_ */
