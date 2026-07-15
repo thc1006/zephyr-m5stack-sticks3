@@ -294,10 +294,9 @@ LOG_MODULE_REGISTER(es8311);
  * maximum, in 0.5 dB steps. The codec API expresses volume in whole dB, so the
  * same conversion serves both, and the reachable range is -95 dB to +32 dB.
  */
-#define ES8311_VOL_DB_MAX       32
-#define ES8311_VOL_DB_MIN       (-95)
-#define ES8311_VOL_0DB_CODE     0xBFU
-#define ES8311_VOL_DEFAULT_CODE 0xC0U /* ~ +0.5 dB */
+#define ES8311_VOL_DB_MAX   32
+#define ES8311_VOL_DB_MIN   (-95)
+#define ES8311_VOL_0DB_CODE 0xBFU
 
 /*
  * Analog capture front end. The ES8311 has a single fully differential microphone
@@ -954,8 +953,11 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 *
 	 * It is not an atomic commit -- these three are I2C writes and can fail like any other.
 	 * What it is, is a boundary: no configuration write happens after the first of them, and
-	 * if any of them fails the error path below quiesces the part immediately. So the part is
-	 * either fully open or fully silent, and never half-opened onto a half-programmed chip.
+	 * if any of them fails the error path below attempts a best-effort quiesce. So the part is
+	 * never half-opened onto a half-programmed chip: it is fully open, or it is programmed and
+	 * then quiesced as far as the bus will allow -- which, on a bus that has stopped taking
+	 * writes, may be no further than the mute that just failed. "Silent" is the intent and the
+	 * best effort, not a guarantee the failing bus cannot break.
 	 *
 	 * They used to be scattered through the sequence -- the serial ports right after the
 	 * clock tree, the DAC unmute in the middle of the playback branch -- and that was
@@ -973,8 +975,9 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 * hazard was re-creating the hazard inside its own sequence.
 	 *
 	 * The rule, and it is worth stating as a rule: NO write that lets data or sound flow
-	 * may come before a write that can fail. A failed configure() then leaves the part
-	 * muted rather than live, whatever it failed on.
+	 * may come before a write that can fail. A failed configure() then AIMS the part at
+	 * muted rather than live, whatever it failed on -- best-effort, since the same bus may
+	 * refuse the quiesce too.
 	 *
 	 * The DAC mute goes last of the three, because it is the one with a speaker on it.
 	 */
@@ -1041,20 +1044,40 @@ end:
 }
 
 /*
- * The two are deliberately NOT symmetric.
+ * THE OUTPUT LIFECYCLE MODEL, stated once, because it is a design choice a reviewer should
+ * be able to weigh rather than reverse-engineer.
  *
- * Unmuting is a dangerous operation and is gated: it puts a speaker back on the
- * output, so it only happens when the current route actually carries playback. A
- * configure() that failed leaves no route, and start_output() must not unmute a
- * converter whose power and clocks that failed call may have already changed.
+ * start_output() unmutes the DAC; stop_output() mutes it; configure() unmutes it at the end
+ * of a playback route. So the DAC mute follows the output lifecycle, and AUDIO_PROPERTY_
+ * OUTPUT_MUTE writes the same bit through the same cached flag. The three share one state:
+ * "is the DAC currently muted".
  *
- * Muting is a SAFETY operation and is not gated by anything. It is idempotent, and
- * writing the mute bit of a DAC that is powered down is harmless. Gating it on the route
- * would be a fail-open: after a failed configure() there is no route, and a caller
- * reaching for the off switch would find it disconnected. configure() now quiesces the
- * part on its own way out, so the DAC should already be muted by the time anyone gets
- * here -- but "should already be" is not a thing to build an off switch on. It stays
- * ungated. The one call whose entire job is to make the speaker stop must always try.
+ * That is deliberate, and it is the more functional of the two options the tree offers.
+ * wm8904 and da7212 -- the only other codecs with these ops -- make start_output() and
+ * stop_output() empty no-ops and leave OUTPUT_MUTE as the sole mute control; wm8904 also
+ * unmutes at the end of configure(), exactly as here. This driver instead gives start/stop a
+ * MEANING, because an earlier review asked stop_output() to be a real off switch that works
+ * on a half-failing bus -- and an off switch necessarily moves the mute state. Keeping a
+ * separate "started" flag from the OUTPUT_MUTE property, so that start_output() could refuse
+ * to override a caller's mute, is a cleaner model on paper, but no in-tree codec has it, it
+ * would make this the only one, and it would rework the exact output path that is hardware-
+ * verified. The cost of the shared state is real and small: start_output() clears a prior
+ * OUTPUT_MUTE, and stop_output() leaves the cache reading muted. Both are the documented
+ * effect of "start/stop the output".
+ *
+ * The BCLK caveat is the same one wm8904 lives with. This codec's clock is BCLK, so an
+ * unmuted DAC with no bit clock is a frozen modulator -- and configure() unmutes before the
+ * application has necessarily started the I2S transport. Sequencing the transport around the
+ * codec is the application's job (it is for wm8904 too, which has a separate MCLK and does
+ * not even face this); what the driver owns, the warm-reboot case where it is handed an
+ * unmuted DAC with no running clock, init() already quiesces.
+ *
+ * The two ops themselves are NOT symmetric. Unmuting is dangerous and is gated: it puts a
+ * speaker back on the output, so it only happens when the current route actually carries
+ * playback. Muting is a SAFETY operation and is gated by nothing -- writing the mute bit of a
+ * powered-down DAC is harmless, and gating the off switch on a route that a failed configure()
+ * cleared would leave a caller reaching for silence with nothing. The one call whose entire
+ * job is to make the speaker stop must always try.
  */
 static void es8311_start_output(const struct device *dev)
 {
@@ -1193,11 +1216,16 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
  * genuinely prevents, both by the ordering:
  *
  *   - it never turns up a path whose REQUESTED mute did not land. If the caller asked to mute
- *     a direction and that mute failed, its volume is not written (phase 2 is gated on the
- *     mute). A speaker the caller tried to silence is never made louder.
- *   - it never OPENS a path once anything in the call has failed (phase 3 gated on the whole
- *     call) -- treating a write that returned an error as not having taken effect, which is
- *     the most the I2C layer can tell us.
+ *     ANY direction and that mute failed, no volume is written at all (phase 2 is gated on the
+ *     whole call, not just that direction). A converter the caller tried to silence is never
+ *     made louder, and neither is the other one.
+ *   - it never issues a FURTHER open once anything in the call has failed (phase 3 gated on the
+ *     whole call). The one open it cannot take back is the write that failed itself: if an
+ *     unmute returns an error, the I2C layer cannot say whether the byte reached the part, so
+ *     that path MIGHT be open even though apply() reports failure. This driver does not read
+ *     back to find out, and does not roll back -- a compensating write on a bus that just
+ *     errored has no fixpoint. So "never opens a path after a failure" is exact; "the failing
+ *     unmute never opened anything" is NOT claimed, and the caller falls back on stop_output().
  *
  * What it does NOT prevent, and cannot without costing more than it saves: a path the caller
  * chose to keep LIVE and gave a new volume DOES reach that volume, even if some other write in
@@ -1218,8 +1246,6 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 static int es8311_apply_properties(const struct device *dev)
 {
 	struct es8311_data *data = dev->data;
-	bool dac_silenced = true;
-	bool adc_silenced = true;
 	int first_err = 0;
 	int ret;
 
@@ -1230,7 +1256,6 @@ static int es8311_apply_properties(const struct device *dev)
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
 		if (ret < 0) {
 			LOG_ERR("Failed to mute the DAC (%d)", ret);
-			dac_silenced = false;
 			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
@@ -1241,41 +1266,40 @@ static int es8311_apply_properties(const struct device *dev)
 				       ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
 		if (ret < 0) {
 			LOG_ERR("Failed to mute the microphone (%d)", ret);
-			adc_silenced = false;
 			first_err = (first_err == 0) ? ret : first_err;
 		}
 	}
 
 	/*
-	 * 2. The volumes -- but NOT on a direction the caller asked to silence and this
-	 *    function could not.
+	 * 2. The volumes -- but NOT once ANY requested mute has failed, in EITHER direction.
 	 *
-	 * A volume register is a GAIN. On a path that is still live because its mute write
-	 * just failed, writing the cached volume can make it LOUDER: a caller that sets
-	 * OUTPUT_VOLUME to +32 dB and OUTPUT_MUTE to true in one go, and whose mute write
-	 * fails, would otherwise get a speaker that is not muted and is now at full scale.
-	 * The rule for a failed safety write is not "carry on", it is DO NOT MAKE IT WORSE.
+	 * A volume register is a GAIN, and the rule for a failed safety write is DO NOT MAKE
+	 * IT WORSE. If a mute the caller asked for did not land, the path it was meant to
+	 * silence is still live -- and this call must not then turn any converter UP, not even
+	 * the OTHER one. A caller muting the microphone and, in the same batch, raising the
+	 * speaker must not come out of a failed mic-mute with a louder speaker. Gating the
+	 * whole of phase 2 on `first_err == 0` is what makes that hold across directions, not
+	 * just within one: a single failed mute stops every gain write in the call.
 	 *
-	 * That does mean a caller asking to be both quieter and muted gets neither, if the
-	 * mute fails. Leaving a direction exactly as it was is a defensible failure; turning
-	 * it up is not. And this driver does not attenuate as a consolation prize either --
-	 * writing a level the caller never asked for is not this function's decision to make.
-	 * The caller has stop_output(), which is ungated, writes the mute register directly,
-	 * and is always attempted.
+	 * That does mean a caller asking to be both quieter and muted gets neither if the mute
+	 * fails. Leaving a direction as it was is a defensible failure; turning something up is
+	 * not. And the driver does not attenuate as a consolation prize -- writing a level the
+	 * caller never asked for is not this function's decision to make. The caller has
+	 * stop_output(), ungated and always attempted.
 	 */
-	if (data->playback && dac_silenced) {
+	if (first_err == 0 && data->playback) {
 		ret = es8311_reg_write(dev, ES8311_REG_DAC_VOLUME, data->dac_volume_code);
 		if (ret < 0) {
 			LOG_ERR("Failed to set DAC volume 0x%02x (%d)", data->dac_volume_code, ret);
-			first_err = (first_err == 0) ? ret : first_err;
+			first_err = ret;
 		}
 	}
 
-	if (data->capture && adc_silenced) {
+	if (first_err == 0 && data->capture) {
 		ret = es8311_reg_write(dev, ES8311_REG_ADC_VOLUME, data->adc_volume_code);
 		if (ret < 0) {
 			LOG_ERR("Failed to set ADC volume 0x%02x (%d)", data->adc_volume_code, ret);
-			first_err = (first_err == 0) ? ret : first_err;
+			first_err = ret;
 		}
 	}
 
@@ -1440,7 +1464,8 @@ static int es8311_init(const struct device *dev)
 	}
 
 	k_mutex_init(&data->lock);
-	data->dac_volume_code = ES8311_VOL_DEFAULT_CODE;
+	/* Both directions default to 0 dB. */
+	data->dac_volume_code = ES8311_VOL_0DB_CODE;
 	data->adc_volume_code = ES8311_VOL_0DB_CODE;
 	data->dac_mute = false;
 	data->adc_mute = false;

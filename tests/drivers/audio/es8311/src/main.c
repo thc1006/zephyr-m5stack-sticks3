@@ -1918,6 +1918,71 @@ ZTEST(es8311, test_a_failure_on_one_direction_still_mutes_the_other)
 }
 
 /*
+ * A FAILED MUTE IN ONE DIRECTION MUST NOT LET THE OTHER DIRECTION BE TURNED UP.
+ *
+ * The cross-direction version of "a failed mute must not be followed by more gain". The caller
+ * mutes the microphone and, in the same batch, raises the speaker. The microphone mute fails.
+ * The speaker's volume write must NOT happen -- a failed safety write anywhere stops every
+ * gain write in the call, not just the one in its own direction. Otherwise a failed mic mute
+ * comes out the far side as a louder speaker, which is precisely "a failure made it worse".
+ */
+ZTEST(es8311, test_a_failed_input_mute_does_not_turn_the_speaker_up)
+{
+	audio_property_value_t mute = {.mute = true};
+	audio_property_value_t loud = {.vol = 32};
+
+	audio_codec_start_output(codec);
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT), ES8311_SDP_I2S_16BIT,
+		      "precondition: full duplex, microphone open");
+
+	reg_put(ES8311_REG_DAC_VOLUME, 0xBFU); /* speaker at 0 dB in hardware */
+
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_VOLUME, AUDIO_CHANNEL_ALL,
+					    loud),
+		   "set OUTPUT_VOLUME(+32 dB) failed");
+	zassert_ok(
+		audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, mute),
+		"set INPUT_MUTE(true) failed");
+
+	/* The microphone mute (SDP_OUT) dies. The DAC volume must not be written after it. */
+	emul_es8311_fail_write_to(emul, ES8311_REG_SDP_OUT);
+	zassert_true(audio_codec_apply_properties(codec) < 0, "apply must report the failed mute");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_DAC_VOLUME), 0xBFU,
+		      "the microphone's mute failed and the SPEAKER was turned up to 0x%02x "
+		      "anyway -- a failure in one direction made the other one worse",
+		      reg_get(ES8311_REG_DAC_VOLUME));
+}
+
+/* And the mirror: a failed output mute must not let the microphone gain be raised. */
+ZTEST(es8311, test_a_failed_output_mute_does_not_turn_the_microphone_up)
+{
+	audio_property_value_t mute = {.mute = true};
+	audio_property_value_t loud = {.vol = 32};
+
+	audio_codec_start_output(codec);
+	reg_put(ES8311_REG_ADC_VOLUME, 0xBFU); /* microphone at 0 dB in hardware */
+
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_VOLUME, AUDIO_CHANNEL_ALL,
+					    loud),
+		   "set INPUT_VOLUME(+32 dB) failed");
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    mute),
+		   "set OUTPUT_MUTE(true) failed");
+
+	/* The speaker mute (DAC_MUTE) dies. The ADC volume must not be written after it. */
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	zassert_true(audio_codec_apply_properties(codec) < 0, "apply must report the failed mute");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_ADC_VOLUME), 0xBFU,
+		      "the speaker's mute failed and the MICROPHONE gain was raised to 0x%02x "
+		      "anyway",
+		      reg_get(ES8311_REG_ADC_VOLUME));
+}
+
+/*
  * IDENTITY FIRST, AND IT IS A DECISION.
  *
  * A part that cannot be READ cannot be identified, and this driver then writes nothing to
