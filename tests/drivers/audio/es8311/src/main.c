@@ -1376,6 +1376,7 @@ static void es8311_before(void *fixture)
 ZTEST(es8311, test_init_quiesces_the_microphone_not_just_the_speaker)
 {
 	uint8_t reg = 0U;
+	struct audio_codec_cfg cfg_warm;
 
 	/*
 	 * A warm reboot out of a capture route.
@@ -1405,6 +1406,21 @@ ZTEST(es8311, test_init_quiesces_the_microphone_not_just_the_speaker)
 
 	zassert_ok(i2c_reg_read_byte_dt(&es_warm, ES8311_REG_ADC_PGA, &reg), "read failed");
 	zassert_equal(reg, ES8311_ADC_MIC_OFF, "init() left MIC1 selected into the PGA");
+
+	/*
+	 * And fresh from init() the output is STOPPED: a configure() with no start_output() leaves
+	 * the DAC muted. output_stopped defaults true and configure() is not start_output(). This
+	 * is a device the fixture's start_output() has never touched, so it pins the init DEFAULT
+	 * itself, not just the stop_output() path.
+	 */
+	zassert_ok(i2c_reg_write_byte_dt(&es_warm, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF),
+		   "seed the DAC unmuted so only a real mute can silence it");
+	make_cfg(&cfg_warm, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec_warm, &cfg_warm), "configure(codec_warm) failed");
+	zassert_ok(i2c_reg_read_byte_dt(&es_warm, ES8311_REG_DAC_MUTE, &reg), "read failed");
+	zassert_equal(reg & 0x60U, 0x60U,
+		      "fresh from init(), configure() must leave the DAC muted: output_stopped "
+		      "defaults true and configure() is not start_output()");
 }
 
 ZTEST(es8311, test_configure_rejects_a_gated_bit_clock)
@@ -2486,6 +2502,27 @@ ZTEST(es8311, test_an_unmute_that_lands_then_errors_is_best_effort_remuted)
 	 */
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
 		      "a landed-then-errored unmute must be best-effort re-muted, not left open");
+}
+
+/*
+ * The same best-effort re-mute on the MICROPHONE side. A landed-then-errored SDP_OUT unmute is
+ * re-closed too, so an errored apply() aims BOTH converters back at muted, not just the speaker.
+ */
+ZTEST(es8311, test_a_mic_unmute_that_lands_then_errors_is_best_effort_remuted)
+{
+	/*
+	 * The fixture configured PLAYBACK_CAPTURE with the microphone unmuted (adc_mute is false),
+	 * so apply_properties() will unmute the microphone. Seed the port muted, then make every
+	 * SDP_OUT write land-then-error.
+	 */
+	reg_put(ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
+	emul_es8311_fail_write_landed(emul, ES8311_REG_SDP_OUT);
+	zassert_true(audio_codec_apply_properties(codec) < 0,
+		     "apply_properties() must report the microphone unmute's transport error");
+	emul_es8311_fail_write_landed(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "a landed-then-errored microphone unmute must be best-effort re-muted");
 }
 
 /*

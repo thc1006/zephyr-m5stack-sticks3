@@ -73,8 +73,8 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **61/61** (was 11,
-  then 29, 33, 42, 47, 51, 52, 54, 59, 60). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **62/62** (was 11,
+  then 29, 33, 42, 47, 51, 52, 54, 59, 60, 61). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
   other codec in `drivers/audio` is at zero. The emulator's test hooks are declared in a
   header (`drivers/audio/emul_es8311.h`, beside the emulator so it resolves whatever the
   build's include path is) that both the emulator and the test include, so the two cannot
@@ -108,12 +108,15 @@ Two things to watch while the PR is open:
     converter opens, its opener is the last write and is never stranded; the speaker is never left
     live. This is the payoff of making the commit *state*-aware, not just route-aware — a muted
     speaker used to be written *after* the microphone opened.
-  - Three exercise the **output lifecycle split**: a pending `OUTPUT_MUTE` survives a start/stop
-    cycle (`output_mute` and `output_stopped` are independent, `output_stopped` defaults *stopped*
-    so `configure()` sets up but does not unmute and `start_output()` is the first unmute —
-    `tas2563` is the in-tree precedent); the error-path quiesce mutes the **speaker first**; and
-    `apply_properties()` **best-effort re-mutes** an unmute that lands-then-errors
-    (`fail_write_landed()`) — a monotonic mute is strictly safer than leaving a possibly-open path.
+  - The **output lifecycle split**: a pending `OUTPUT_MUTE` survives a start/stop cycle
+    (`output_mute` and `output_stopped` are independent). `output_stopped` defaults *stopped*, so
+    `configure()` sets up but does not unmute and `start_output()` is the first unmute — pinned on
+    a device fresh from `init()` that the fixture's `start_output()` never touched, so it catches
+    the default itself (`tas2563` is the in-tree precedent). The error-path quiesce mutes the
+    **speaker first**. And `apply_properties()` **best-effort re-mutes** an unmute that
+    lands-then-errors (`fail_write_landed()`) — on *both* the speaker and the microphone side, and
+    it backs out a microphone the same call opened, so a failed `apply()` lands muted, not
+    half-open; a monotonic mute is strictly safer than leaving a possibly-open path.
   - **Seven break a write to a named register and ask what a failure is followed by.** Does
     the mute still land? A failed *volume* write must not cancel the mute the caller asked
     for, and a failure in one direction must not suppress the safety mute in the other. And
