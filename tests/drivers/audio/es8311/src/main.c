@@ -162,6 +162,13 @@ static void make_cfg(struct audio_codec_cfg *cfg, uint32_t rate, audio_route_t r
 	cfg->dai_cfg.i2s.word_size = AUDIO_PCM_WIDTH_16_BITS;
 	cfg->dai_cfg.i2s.channels = 2;
 	cfg->dai_cfg.i2s.frame_clk_freq = rate;
+	/*
+	 * The codec-local clock role. This part is always the target (the I2S controller drives
+	 * BCLK and LRCK), which is exactly what samples/drivers/i2s/i2s_codec passes to the codec
+	 * when the SoC supplies the clock. options == 0 would be CONTROLLER|CONTROLLER -- the one
+	 * role this codec cannot fill -- so every test must set it, not inherit the memset zero.
+	 */
+	cfg->dai_cfg.i2s.options = I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET;
 }
 
 /* 16 kHz / 16-bit playback, the configuration the application uses. */
@@ -1651,40 +1658,52 @@ ZTEST(es8311, test_input_mute_survives_a_bus_that_cannot_be_read)
 }
 
 /*
- * The codec is ALWAYS the clock target. It never drives BCLK or LRCK. So the controller has
- * to be the clock controller, and a configuration that says otherwise leaves nobody driving
- * the link -- silently, because both configure() calls would return 0.
- *
- * i2s.h says these flags describe the I2S DRIVER (the SoC), and every SoC I2S driver in the
- * tree reads them that way. An earlier version of this suite asserted that TARGET|TARGET must
- * SUCCEED, on the grounds that #113334 had not decided what the flag means. That was wrong:
- * it pinned a dead link as expected behaviour.
+ * The I2S_OPT_*_CLK role flags are ENDPOINT-RELATIVE (see the clock-role comment in configure()):
+ * the codec-local role for this part is always TARGET on both clocks, because it never drives BCLK
+ * or LRCK. samples/drivers/i2s/i2s_codec passes exactly TARGET|TARGET to audio_codec_configure()
+ * when the SoC supplies the clock; CONTROLLER on either clock would ask this codec to drive a clock
+ * it cannot, leaving the link driven by nobody while configure() returned 0. wm8904 reads the same
+ * flag the same way. These four cases pin that contract.
  */
-ZTEST(es8311, test_configure_requires_the_controller_to_drive_the_clocks)
+ZTEST(es8311, test_codec_clock_target_is_accepted)
 {
 	struct audio_codec_cfg cfg;
 
-	/* The SoC drives both clocks. This is the only configuration this codec can honour. */
-	make_cfg_16k_16bit(&cfg);
-	cfg.dai_cfg.i2s.options = I2S_OPT_BIT_CLK_CONTROLLER | I2S_OPT_FRAME_CLK_CONTROLLER;
-	zassert_ok(audio_codec_configure(codec, &cfg),
-		   "a controller-driven link is the only thing this codec can do");
-
-	/* Both TARGET: the SoC waits for clocks the codec cannot produce. Nobody drives. */
 	make_cfg_16k_16bit(&cfg);
 	cfg.dai_cfg.i2s.options = I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET;
+	zassert_ok(audio_codec_configure(codec, &cfg),
+		   "TARGET|TARGET is the codec-local role the SoC-clocked sample passes");
+}
+
+ZTEST(es8311, test_codec_clock_controller_is_rejected)
+{
+	struct audio_codec_cfg cfg;
+
+	make_cfg_16k_16bit(&cfg);
+	cfg.dai_cfg.i2s.options = I2S_OPT_BIT_CLK_CONTROLLER | I2S_OPT_FRAME_CLK_CONTROLLER;
+	zassert_equal(
+		audio_codec_configure(codec, &cfg), -ENOTSUP,
+		"CONTROLLER|CONTROLLER asks this codec to drive BCLK and LRCK, which it cannot");
+}
+
+ZTEST(es8311, test_mixed_bit_target_frame_controller_is_rejected)
+{
+	struct audio_codec_cfg cfg;
+
+	make_cfg_16k_16bit(&cfg);
+	cfg.dai_cfg.i2s.options = I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_CONTROLLER;
 	zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
-		      "TARGET|TARGET makes the SoC a slave, and this codec cannot drive BCLK "
-		      "or LRCK: the link would be silent and configure() would still say ok");
+		      "a frame-clock CONTROLLER role still asks this codec to drive LRCK");
+}
 
-	/* And each one alone is equally dead, for the clock it names. */
-	make_cfg_16k_16bit(&cfg);
-	cfg.dai_cfg.i2s.options = I2S_OPT_BIT_CLK_TARGET;
-	zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP, "nobody would drive BCLK");
+ZTEST(es8311, test_mixed_bit_controller_frame_target_is_rejected)
+{
+	struct audio_codec_cfg cfg;
 
 	make_cfg_16k_16bit(&cfg);
-	cfg.dai_cfg.i2s.options = I2S_OPT_FRAME_CLK_TARGET;
-	zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP, "nobody would drive LRCK");
+	cfg.dai_cfg.i2s.options = I2S_OPT_BIT_CLK_CONTROLLER | I2S_OPT_FRAME_CLK_TARGET;
+	zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
+		      "a bit-clock CONTROLLER role still asks this codec to drive BCLK");
 }
 
 /*

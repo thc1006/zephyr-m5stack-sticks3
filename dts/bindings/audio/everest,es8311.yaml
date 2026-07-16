@@ -109,15 +109,19 @@ description: |
   So audio_codec_stop_output() (or an OUTPUT_MUTE) must land BEFORE the transport stops or the
   I2S controller is suspended.
 
-  Startup does not need the mirror of that. configure() brings the DAC up powered but MUTED, and
-  audio_codec_start_output() is the first unmute; unmuting before the transport starts the clock
-  is fine, because a freshly powered DAC idles at mid-scale with no clock, not at a stale level.
-  This is the order samples/drivers/i2s/i2s_codec uses:
+  For startup, the recommended order is to have the transport already running -- continuous BCLK,
+  with silent frames flowing -- BEFORE audio_codec_start_output() unmutes the DAC, so the first
+  unmute lands into a running clock and cannot produce a step:
 
-      audio_codec_configure()
-      audio_codec_start_output()   # first DAC unmute
-      queue initial I2S buffers
-      i2s_trigger(START)           # continuous BCLK begins, frames flow
+      audio_codec_configure()      # the DAC comes up powered but MUTED
+      i2s_configure()
+      queue initial (silent) I2S buffers
+      i2s_trigger(START)           # continuous BCLK begins, silence flows
+      audio_codec_start_output()   # first DAC unmute, into a running clock
+
+  samples/drivers/i2s/i2s_codec unmutes BEFORE it starts the transport; that also works in
+  practice, but it relies on the DAC's un-clocked idle level, which this driver has not
+  characterised on silicon, so the order above is the one it recommends.
 
   Shutdown reverses the streaming pair: audio_codec_stop_output() (mute), then stop the
   transport. A board with a separate power-amp enable should gate the speaker with THAT -- on

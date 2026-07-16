@@ -656,33 +656,27 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * This codec is always the clock TARGET. It never drives BCLK or LRCK: 0x06's
-	 * BCLK_CON is cleared, the serial port is programmed as a slave, and the internal
-	 * master clock is derived from the BCLK the controller supplies. So the controller
-	 * has to be the clock CONTROLLER, and a configuration that says otherwise leaves
-	 * nobody driving the link.
+	 * This codec is always the clock TARGET: it never drives BCLK or LRCK (0x06 BCLK_CON is
+	 * cleared, the serial port is a slave, and the internal master clock is derived from the
+	 * BCLK the I2S controller supplies). So its codec-local role must be TARGET on BOTH clocks.
 	 *
-	 * i2s.h is explicit that these flags describe the I2S DRIVER -- the SoC peripheral:
+	 * The I2S_OPT_*_CLK_{CONTROLLER,TARGET} flags are ENDPOINT-RELATIVE: i2s.h documents them
+	 * as "the I2S driver is bit/frame clock controller/target", and "the I2S driver" is
+	 * whichever endpoint the config is handed to. samples/drivers/i2s/i2s_codec proves it by
+	 * building TWO configs with OPPOSITE role bits -- when the SoC supplies the clock, the host
+	 * config is CONTROLLER|CONTROLLER and the codec config passed to audio_codec_configure() is
+	 * TARGET|TARGET. In-tree codecs read it the same way (wm8904: FRAME_CLK_TARGET set means
+	 * the codec receives BCLK/LRCK). So for this part the correct config is TARGET on both
+	 * clocks.
 	 *
-	 *     I2S_OPT_BIT_CLK_TARGET      "I2S driver is bit clock target"
-	 *     I2S_OPT_FRAME_CLK_TARGET    "I2S driver is frame clock target"
-	 *
-	 * and every SoC I2S driver in the tree reads them that way: i2s_esp32, i2s_stm32,
-	 * i2s_mcux_sai, i2s_mcux_flexcomm, i2s_sam_ssc, i2s_infineon, i2s_max32 and
-	 * i2s_renesas_ra_ssie all make the controller a slave when TARGET is set. That is
-	 * the contract.
-	 *
-	 * So TARGET set means the controller stops driving the clocks, and this codec cannot
-	 * take over: BCLK and LRCK are driven by nobody and the link is silent, while both
-	 * configure() calls return 0. It is rejected here.
-	 *
-	 * (Some in-tree codecs read the same flag as describing the codec instead; the discrepancy
-	 * is tracked in issue #113334. This driver implements the contract i2s.h documents.)
+	 * Accept only TARGET|TARGET. CONTROLLER on either clock would ask this codec to drive a
+	 * clock it cannot, leaving the link driven by nobody while configure() returned 0.
 	 */
 	if ((cfg->dai_cfg.i2s.options & (I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET)) !=
-	    0U) {
-		LOG_INF("the I2S controller must be the bit- and frame-clock controller: this "
-			"codec is always the clock target and cannot drive BCLK or LRCK");
+	    (I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET)) {
+		LOG_INF("this codec is always the clock target: the bit- and frame-clock roles "
+			"must "
+			"both be TARGET (the I2S controller drives BCLK and LRCK)");
 		return -ENOTSUP;
 	}
 
@@ -1108,16 +1102,15 @@ end:
  * its own.
  *
  * The BCLK caveat is the same one wm8904 lives with, moved to the right place. configure() leaves
- * the DAC muted, so it opens no window; start_output() unmutes, and if the application calls it
- * before i2s_trigger(START) has run the bit clock -- this codec's clock IS BCLK -- the DAC is
- * briefly unmuted with no clock. How long that window is, is the application's choice: it closes
- * entirely when start_output() is called AFTER the transport is running. A DAC that has never been
- * clocked sits at its idle bias, so the window is a bias level, not a held sample; the ACUTE form
- * -- a DAC frozen on a real, possibly full-scale sample after a warm reboot -- is the case init()
- * quiesces. (The i2s_codec sample cited above for the configure()/start_output() split calls
- * start_output() BEFORE it starts the transport, so it sits in exactly this window: it is a
- * precedent for "configure() is not start_output()", not for the safe transport ordering. The
- * binding's "Clock sequencing" note states that ordering.)
+ * the DAC muted, so it opens no window; start_output() unmutes. This codec's clock IS BCLK, so if
+ * the application calls start_output() before i2s_trigger(START) has run the bit clock, the DAC is
+ * briefly unmuted with no clock. The binding's "Clock sequencing" note recommends closing that
+ * window -- start the transport with silent frames first, then start_output() -- rather than
+ * relying on how the un-clocked DAC idles, which this driver does not characterise on silicon. The
+ * ACUTE form, a DAC frozen on a real, possibly full-scale sample after a warm reboot, is the case
+ * init() quiesces. (The i2s_codec sample calls start_output() BEFORE it starts the transport, so it
+ * sits in this window: it is a precedent for "configure() is not start_output()", not for the
+ * transport ordering the binding recommends.)
  *
  * The two ops themselves are NOT symmetric. Unmuting is dangerous and is gated: it puts a
  * speaker back on the output, so it only happens for a route that carries playback and that the
