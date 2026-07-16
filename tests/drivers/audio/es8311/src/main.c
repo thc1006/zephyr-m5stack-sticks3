@@ -263,8 +263,11 @@ ZTEST(es8311, test_configure_16k_16bit_sequence)
 	/* The cached DAC volume is programmed. The fixture leaves it at 0 dB, which is 0xBF. */
 	zassert_equal(reg_get(ES8311_REG_DAC_VOLUME), 0xBFU,
 		      "0x32 should carry the cached volume (0 dB = 0xBF)");
-	/* Unmuted at end of configure. */
-	zassert_equal(reg_get(ES8311_REG_DAC_MUTE), 0x00U, "0x31 should be unmuted (0x00)");
+	/* Muted at end of configure: configure() leaves the output stopped, start_output() unmutes.
+	 */
+	zassert_equal(
+		reg_get(ES8311_REG_DAC_MUTE), 0x60U,
+		"0x31 should be MUTED after configure (0x60): configure() is not start_output()");
 
 	/*
 	 * A playback-only route owes the caller a microphone that is off, not merely
@@ -703,6 +706,93 @@ ZTEST(es8311, test_stop_output_state_survives_configure)
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
 		      "configure() must re-apply the cached mute state, not unmute");
+}
+
+/*
+ * configure() leaves the output STOPPED, whatever the lifecycle was before -- so a RECONFIGURE of
+ * a started output comes up muted, the lifecycle is left stopped (a later apply_properties() must
+ * NOT unmute -- only start_output() may), and a configure() that FAILED while started does not let
+ * the retry self-unmute the DAC. That last case is the pre-split hazard: started -> failed
+ * reconfigure -> retry -> speaker live with no start_output().
+ */
+ZTEST(es8311, test_configure_leaves_the_output_stopped)
+{
+	struct audio_codec_cfg cfg;
+	audio_property_value_t vol = {.vol = 0};
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure failed");
+	audio_codec_start_output(codec);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U, "speaker should be live");
+
+	/* Reconfigure a started output: it comes up MUTED, and the lifecycle is left STOPPED. */
+	zassert_ok(audio_codec_configure(codec, &cfg), "reconfigure failed");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "a reconfigure of a started output must come up MUTED");
+
+	/* apply_properties() must not unmute after a configure: the output is stopped. */
+	reg_put(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_VOLUME, AUDIO_CHANNEL_ALL,
+					    vol),
+		   "set volume failed");
+	zassert_ok(audio_codec_apply_properties(codec), "apply failed");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "apply_properties() must not unmute after a configure: start_output() is the "
+		      "first unmute");
+
+	/* And a FAILED configure leaves it stopped too: the retry must not self-unmute. */
+	audio_codec_start_output(codec);
+	emul_es8311_fail_at(emul, 5);
+	zassert_true(audio_codec_configure(codec, &cfg) < 0, "the injected failure must surface");
+	emul_es8311_fail_at(emul, -1);
+	reg_put(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+	zassert_ok(audio_codec_configure(codec, &cfg), "retry configure failed");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "after a failed configure, the retry must come up MUTED, not self-unmute");
+}
+
+/*
+ * start_output()'s error policy matches apply_properties() and tas2563: the lifecycle is marked
+ * started only if the unmute SUCCEEDS. An unmute that fails before it lands leaves the output
+ * STOPPED, so a later apply_properties() re-mutes rather than unmutes.
+ */
+ZTEST(es8311, test_start_output_that_fails_before_effect_stays_stopped)
+{
+	struct audio_codec_cfg cfg;
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure failed");
+
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	audio_codec_start_output(codec);
+	emul_es8311_fail_write_to(emul, -1);
+
+	reg_put(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+	zassert_ok(audio_codec_apply_properties(codec), "apply failed");
+	zassert_equal(
+		reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		"start_output() whose unmute failed must leave the output STOPPED, so a later "
+		"apply_properties() re-mutes rather than unmutes");
+}
+
+/*
+ * And a start_output() unmute that LANDS then errors is best-effort re-muted, exactly as
+ * apply_properties() does -- the DAC ends muted, not live.
+ */
+ZTEST(es8311, test_start_output_that_lands_then_errors_is_best_effort_remuted)
+{
+	struct audio_codec_cfg cfg;
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure failed");
+
+	emul_es8311_fail_write_landed(emul, ES8311_REG_DAC_MUTE);
+	audio_codec_start_output(codec);
+	emul_es8311_fail_write_landed(emul, -1);
+
+	zassert_equal(
+		reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		"a start_output() unmute that lands-then-errors must be best-effort re-muted");
 }
 
 /*
@@ -1657,25 +1747,15 @@ ZTEST(es8311, test_init_recovers_a_chip_left_holding_its_register_file)
 }
 
 /*
- * NOTHING THAT CAN FAIL MAY HAPPEN AFTER THE PART IS ALLOWED TO MAKE A SOUND.
+ * NOTHING THAT CAN FAIL MAY HAPPEN AFTER THE MICROPHONE IS OPENED.
  *
- * configure() used to write the final (unmuted) serial ports right after the clock tree, and
- * unmute the DAC in the middle of the playback branch -- with fifteen writes still to come.
- * That was wrong twice.
- *
- * It was wrong on the failure path: a bus error in any of those fifteen left a POWERED,
- * UNMUTED DAC and an OPEN microphone port behind a configure() that returned an error.
- *
- * And it was wrong even when nothing failed, which is the part that is easy to miss. 0x44
- * bit 7 is ADC2DAC_SEL: it routes the ADC into the DAC, so a chip handed over with it set
- * plays its own microphone instead of the caller's audio. Normalising it is one of the
- * reasons this driver exists. And it was normalised TWENTY LINES AFTER the DAC was unmuted --
- * so for that window, the speaker was live and still wired to the microphone. The fix for the
- * stale-0x44 hazard was re-creating the hazard inside its own sequence.
- *
- * The register values at the end cannot show any of this. Only the write ORDER can.
+ * configure() leaves the DAC muted -- start_output() unmutes the speaker -- so the only converter
+ * a configure() opens is the microphone. Its serial port must be the LAST write, and 0x44
+ * (ADC2DAC_SEL, which wires the ADC into the DAC) must be normalised before it, or a chip handed
+ * over with that bit set would route its microphone into the path in the window. Register values
+ * at the end cannot show ordering; only the write ORDER can.
  */
-ZTEST(es8311, test_configure_opens_the_part_last_of_all)
+ZTEST(es8311, test_configure_opens_the_microphone_last_of_all)
 {
 	struct audio_codec_cfg cfg;
 	int n;
@@ -1697,31 +1777,30 @@ ZTEST(es8311, test_configure_opens_the_part_last_of_all)
 		}
 	}
 
-	/* The last three writes, in this order, are the only ones that open the part. */
+	/* The last three writes: DAC serial port, DAC mute (held ON), microphone port (opened). */
 	zassert_equal(emul_es8311_write_at(emul, n - 3), ES8311_REG_SDP_IN,
 		      "write %d should be the DAC serial port (0x09), not 0x%02x", n - 3,
 		      emul_es8311_write_at(emul, n - 3));
-	zassert_equal(emul_es8311_write_at(emul, n - 2), ES8311_REG_SDP_OUT,
-		      "write %d should be the ADC serial port (0x0A), not 0x%02x", n - 2,
+	zassert_equal(emul_es8311_write_at(emul, n - 2), ES8311_REG_DAC_MUTE,
+		      "write %d should be the DAC mute (0x31), not 0x%02x", n - 2,
 		      emul_es8311_write_at(emul, n - 2));
-	zassert_equal(emul_es8311_write_at(emul, n - 1), ES8311_REG_DAC_MUTE,
-		      "the LAST write of a configure() must be the DAC mute (0x31): it is the "
-		      "one with a speaker on it. It was 0x%02x",
-		      emul_es8311_write_at(emul, n - 1));
+	zassert_equal(
+		emul_es8311_write_at(emul, n - 1), ES8311_REG_SDP_OUT,
+		"the LAST write of a configure() must be the microphone port (0x0A): it is the "
+		"only converter configure() opens. It was 0x%02x",
+		emul_es8311_write_at(emul, n - 1));
 
-	/* And they open it: this route carries both directions and neither is muted. */
-	zassert_equal(emul_es8311_wval_at(emul, n - 3), ES8311_SDP_I2S_16BIT,
-		      "the DAC serial port was not opened");
-	zassert_equal(emul_es8311_wval_at(emul, n - 2), ES8311_SDP_I2S_16BIT,
-		      "the ADC serial port was not opened");
-	zassert_equal(emul_es8311_wval_at(emul, n - 1), ES8311_DAC_MUTE_OFF,
-		      "the DAC was not unmuted");
+	/* The DAC is held muted; the microphone port is opened. */
+	zassert_equal(emul_es8311_wval_at(emul, n - 2), ES8311_DAC_MUTE_ON,
+		      "the DAC must be left MUTED by configure()");
+	zassert_equal(emul_es8311_wval_at(emul, n - 1) & ES8311_SDP_MUTE, 0x00U,
+		      "the microphone serial port was not opened");
 
-	zassert_true(mux >= 0 && mux < n - 1,
-		     "0x44 was normalised at write %d and the DAC was unmuted at write %d. "
-		     "ADC2DAC_SEL is still set for that window, so the speaker is live and "
-		     "playing the microphone.",
-		     mux, n - 1);
+	zassert_true(
+		mux >= 0 && mux < n - 1,
+		"0x44 was normalised at write %d but the microphone opened at %d: ADC2DAC_SEL is "
+		"still set in that window",
+		mux, n - 1);
 }
 
 /*
@@ -1761,9 +1840,13 @@ static void walk_every_failure_into(audio_route_t target, const char *name)
 	for (int n = 0; n < FAULT_WALK_BOUND; n++) {
 		int ret;
 
-		/* Come from a live full-duplex route: a playing speaker and an open mic. */
+		/* Come from a live full-duplex route: a playing speaker and an open mic.
+		 * configure() leaves the DAC muted, so start_output() is what makes the speaker
+		 * live.
+		 */
 		make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 		zassert_ok(audio_codec_configure(codec, &cfg), "setup configure must pass");
+		audio_codec_start_output(codec);
 		zassert_equal(reg_get(ES8311_REG_DAC_MUTE), ES8311_DAC_MUTE_OFF,
 			      "setup: the DAC must be live before we break anything");
 		zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU,
@@ -2357,20 +2440,21 @@ ZTEST(es8311, test_capture_only_commit_opens_the_microphone_last)
 }
 
 /*
- * PERSISTENT failure, not a single glitch. fail_from(idx) fails transfer idx and every one after
- * it, so the error-path quiesce fails on the same dead bus. That is what separates fail-closed by
- * ORDERING from fail-closed-if-the-cleanup-runs: the only opener that is safe under a persistent
- * failure is the one that is genuinely LAST in a route's commit, because a write after it that
- * fails cannot be taken back.
+ * PERSISTENT FAIL-BEFORE-EFFECT. fail_from(idx) returns -EIO on transfer idx and every one after
+ * it, BEFORE the write takes effect, so the error-path quiesce fails on the same dead bus. This is
+ * what separates fail-closed by ORDERING from fail-closed-if-the-cleanup-runs: an opener is safe
+ * only if it is genuinely the LAST write, so that a write failing after it cannot have opened it.
  *
- * The speaker is the last opener on every route that carries one, so it is never left live. The
- * microphone is the last opener ONLY on a capture-only route; on a full-duplex route it opens one
- * write before the speaker and so CAN be stranded by a persistent failure at the very last
- * transfer -- an inherent cost of a route that must open two things, and the reason the more
- * dangerous of the two goes last. mic_must_stay_muted encodes exactly that per-route difference.
+ * configure() leaves the DAC muted, so the only converter it opens is the microphone, and that is
+ * its last write. So under a persistent fail-before-effect BOTH converters stay muted on every
+ * route: the speaker because configure() never unmutes it, the microphone because its opener is
+ * the last write and never lands.
+ *
+ * This proves fail-closure for a fail-BEFORE-effect bus. A write that takes EFFECT and then reports
+ * an error, on a bus that then dies forever, is a different fault the transport can leave
+ * unrecoverable; the driver's contract there is best-effort, not a guarantee.
  */
-static void walk_persistent_failure_into(audio_route_t target, const char *name,
-					 bool mic_must_stay_muted)
+static void walk_persistent_failure_into(audio_route_t target, const char *name)
 {
 	struct audio_codec_cfg cfg;
 	bool reached_the_end = false;
@@ -2401,15 +2485,11 @@ static void walk_persistent_failure_into(audio_route_t target, const char *name,
 			"-> %s: persistent failure from transfer %d left the SPEAKER live, with "
 			"no working bus left to mute it",
 			name, n);
-
-		if (mic_must_stay_muted) {
-			zassert_equal(
-				reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
-				"-> %s: persistent failure from transfer %d left the MICROPHONE "
-				"open with no working bus to mute it -- on this route the "
-				"microphone port must be the LAST commit write",
-				name, n);
-		}
+		zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+			      "-> %s: persistent failure from transfer %d left the MICROPHONE open "
+			      "-- its "
+			      "serial port must be the LAST commit write",
+			      name, n);
 	}
 
 	zassert_true(
@@ -2421,46 +2501,40 @@ static void walk_persistent_failure_into(audio_route_t target, const char *name,
 		     covered);
 }
 
-ZTEST(es8311, test_persistent_failure_never_strands_the_last_opener)
+ZTEST(es8311, test_persistent_fail_before_effect_does_not_strand_any_opener)
 {
-	walk_persistent_failure_into(AUDIO_ROUTE_CAPTURE, "CAPTURE", true);
-	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK, "PLAYBACK", true);
-	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PLAYBACK_CAPTURE", false);
+	walk_persistent_failure_into(AUDIO_ROUTE_CAPTURE, "CAPTURE");
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK, "PLAYBACK");
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PLAYBACK_CAPTURE");
 }
 
 /*
- * The persistent walk again, but varying the STATE, not just the route. A full-duplex route can
- * have its speaker held muted (OUTPUT_MUTE, or the output stopped) while the microphone opens, or
- * the microphone held muted (INPUT_MUTE) while the speaker opens. In each case only ONE converter
- * opens, so its opener is the LAST commit write and a persistent failure can never strand it --
- * this is exactly the window the route-aware-but-not-state-aware commit left open (a muted speaker
- * was written AFTER the microphone was already unmuted). mic_must_stay_muted is TRUE for all of
- * them: whenever the microphone opens here it is the sole opener, so it is never stranded.
+ * The persistent walk again, but varying the mute/stopped STATE, not just the route. configure()
+ * always leaves the DAC muted, so no state can make it the opener; the microphone is always the
+ * only opener and always last. This checks that fail-closure is independent of OUTPUT_MUTE, the
+ * stopped lifecycle and INPUT_MUTE -- a regression guard against a state-dependent unmute creeping
+ * back into configure().
  */
-ZTEST(es8311, test_persistent_failure_is_fail_closed_across_state)
+ZTEST(es8311, test_persistent_fail_before_effect_is_fail_closed_across_state)
 {
 	const audio_property_value_t on = {.mute = true};
 	const audio_property_value_t off = {.mute = false};
 
-	/* Speaker muted by OUTPUT_MUTE: microphone is the sole opener, speaker stays muted. */
 	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, on);
-	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+output_mute", true);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+output_mute");
 	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
 
-	/* Speaker stopped: same shape through the lifecycle flag. */
 	audio_codec_stop_output(codec);
-	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+output_stopped", true);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+output_stopped");
 	audio_codec_start_output(codec);
 
-	/* Microphone muted by INPUT_MUTE: speaker is the sole opener, microphone stays muted. */
 	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, on);
-	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+input_mute", true);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+input_mute");
 	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, off);
 
-	/* Both muted: no opener at all; nothing can be stranded. */
 	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, on);
 	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, on);
-	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+both_muted", true);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+both_muted");
 	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
 	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, off);
 }

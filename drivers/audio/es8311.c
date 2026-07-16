@@ -668,11 +668,8 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 * take over: BCLK and LRCK are driven by nobody and the link is silent, while both
 	 * configure() calls return 0. It is rejected here.
 	 *
-	 * (wm8904, da7212 and wm8962 read the SAME flag as describing the CODEC, which is the
-	 * opposite. That is issue #113334, and it is a bug in those three drivers rather than
-	 * an ambiguity in the API: eight SoC drivers against three codecs, with the header's
-	 * own wording on the SoCs' side. A new driver should implement the documented
-	 * contract, not replicate the deviation.)
+	 * (Some in-tree codecs read the same flag as describing the codec instead; the discrepancy
+	 * is tracked in issue #113334. This driver implements the contract i2s.h documents.)
 	 */
 	if ((cfg->dai_cfg.i2s.options & (I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET)) !=
 	    0U) {
@@ -705,6 +702,16 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 */
 	data->playback = false;
 	data->capture = false;
+	/*
+	 * And the output goes STOPPED. configure() is not start_output(): it sets up and powers the
+	 * path but leaves the DAC muted, whatever the lifecycle was before -- so "start_output() is
+	 * the first unmute" holds on a RECONFIGURE too, not only a fresh init. It also stops a
+	 * configure() that FAILED while the output was started from letting the next successful
+	 * configure() self-unmute the DAC before the caller has started the output again.
+	 * configure() mutes, powers down and reclocks the whole path regardless, so there is no
+	 * live-reconfigure continuity to preserve by staying started.
+	 */
+	data->output_stopped = true;
 
 	/*
 	 * Everything route-dependent is decided here, under the lock. Sampling the
@@ -979,104 +986,44 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * COMMIT.
+	 * COMMIT: the last writes, the only ones that can move a converter.
 	 *
-	 * The last writes in this function -- the only ones that open a converter. Everything else
-	 * is programmed already, so all that is left is to open exactly what the route AND the
-	 * current state say should be open.
+	 * configure() leaves the output stopped, so the speaker stays muted here -- start_output()
+	 * is what unmutes it. The microphone is the only converter a configure() opens, so its
+	 * serial port is written LAST, with nothing failable after it: on a persistent bus failure
+	 * the microphone is never left open behind a write that failed after it. 0x44 (ADC2DAC_SEL)
+	 * is normalised well above this, so a chip handed over with the ADC wired into the DAC
+	 * cannot play its microphone into the speaker in the meantime.
 	 *
-	 * The commit is ROUTE- AND STATE-AWARE. "Opening" is two things, and each has to be the
-	 * LAST write on its own path so nothing failable follows it:
-	 *
-	 *   dac_opens = playback && !output_mute && !output_stopped  (the speaker: DAC unmute)
-	 *   adc_opens = capture  && !adc_mute                        (the microphone: SDP_OUT
-	 * unmute)
-	 *
-	 * Phase A writes everything that does NOT open a converter, in any order: the DAC serial
-	 * input port (it only routes data; the DAC mute gates sound), the DAC mute held ON whenever
-	 * the speaker is not opening, and the microphone port held muted whenever the microphone is
-	 * not opening. Phase B then runs the openers least-dangerous-first: microphone, then
-	 * speaker LAST. So when only one converter opens, its opener is the final write and a
-	 * persistent bus failure -- which fails the cleanup too -- cannot strand it open.
-	 *
-	 * An earlier version was only ROUTE-aware: a playback route always wrote the DAC mute last,
-	 * even when the speaker was meant to STAY muted (OUTPUT_MUTE set, or output stopped). On
-	 * PLAYBACK_CAPTURE with a muted speaker that put a redundant, failable DAC_MUTE_ON AFTER
-	 * the microphone was already open -- the same stranded-microphone window the capture-only
-	 * fix closed, hidden in a different state. State-awareness closes it for every (route,
-	 * mute, stopped) combination.
-	 *
-	 * It is not an atomic commit -- these are I2C writes and can fail like any other. What it
-	 * is, is a boundary: no configuration write happens after the first of them, and if any
-	 * of them fails the error path below attempts a best-effort quiesce. So the part is never
-	 * half-opened onto a half-programmed chip: it is fully open, or it is programmed and then
-	 * quiesced as far as the bus will allow -- which, on a bus that has stopped taking writes,
-	 * may be no further than the write that just failed. "Silent" is the intent and the best
-	 * effort, not a guarantee the failing bus cannot break.
-	 *
-	 * The commit used to be scattered through the sequence -- the serial ports right after the
-	 * clock tree, the DAC unmute in the middle of the playback branch -- and that was wrong
-	 * twice over.
-	 *
-	 * It was wrong on the failure path: a bus error in any of the fifteen writes that
-	 * followed left a POWERED, UNMUTED DAC and an OPEN microphone port behind a
-	 * configure() that returned an error and cleared its own route.
-	 *
-	 * And it was wrong even when nothing failed. 0x44 bit 7 is ADC2DAC_SEL, which routes
-	 * the ADC into the DAC -- and it is normalised twenty lines ABOVE this, which used to
-	 * be twenty lines AFTER the DAC was unmuted. So a chip handed over with that bit set
-	 * (see the 0x44 comment: it is exactly the hazard this driver exists to clear) spent
-	 * that window playing its own microphone into the speaker. The fix for the stale-0x44
-	 * hazard was re-creating the hazard inside its own sequence.
-	 *
-	 * The guarantee is exact and no broader: every non-opening write lands first, and the
-	 * openers run least-dangerous-first with the speaker held for last. When only one converter
-	 * opens, nothing failable follows its opener. When BOTH must open, the second opener can
-	 * still fail and leave the FIRST -- the less dangerous microphone -- open; that is inherent
-	 * to opening two things on a bus that can die between them, and it is why the speaker is
-	 * always the one held for last. A failed configure() then AIMS the part at muted,
-	 * best-effort, since the same bus may refuse the quiesce too.
+	 * These are I2C writes and can fail. If one does, the error path below runs a best-effort
+	 * quiesce; on a bus that has stopped taking writes it may get no further than the write
+	 * that failed. "Silent" is the intent and the best effort, not a guarantee.
 	 */
 	/*
-	 * "Opening" is two writes, and each must be LAST on its own path. dac_opens is the speaker
-	 * (the DAC unmute), adc_opens is the microphone (the SDP_OUT unmute). Both depend on the
-	 * current mute/stopped STATE, not only the route.
+	 * configure() leaves the output STOPPED (set at the top of this function), so the DAC stays
+	 * muted: start_output() is what unmutes the speaker, never configure(). The ONLY converter
+	 * a configure() opens is the microphone, so the microphone's serial port is the LAST write,
+	 * with nothing failable after it, and the DAC mute and the DAC's own serial port precede
+	 * it.
 	 */
-	bool dac_opens = playback && !data->output_mute && !data->output_stopped;
-	bool adc_opens = capture && !data->adc_mute;
-
-	/* Phase A: everything that does NOT open a converter, in any order. */
 	ret = es8311_reg_write(dev, ES8311_REG_SDP_IN, sdp_in);
 	if (ret < 0) {
 		goto end;
 	}
-	if (!dac_opens) {
-		/* Speaker stays muted: assert it here, BEFORE any opener, never after one. */
-		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
-		if (ret < 0) {
-			goto end;
-		}
+	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+	if (ret < 0) {
+		goto end;
 	}
-	if (!adc_opens) {
-		/* Microphone stays muted: sdp_out already carries the mute bit here. */
-		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
-		if (ret < 0) {
-			goto end;
-		}
-	}
-
-	/* Phase B: the openers, least-dangerous first, so the speaker is the very last write. */
-	if (adc_opens) {
-		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
-		if (ret < 0) {
-			goto end;
-		}
-	}
-	if (dac_opens) {
-		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
-		if (ret < 0) {
-			goto end;
-		}
+	/*
+	 * The microphone port last. sdp_out carries the UNMUTE bit only when the route captures and
+	 * the caller has not muted the input; otherwise it is muted, and a muting write opens
+	 * nothing. Either way it is the last thing this function does, so a persistent bus failure
+	 * -- which fails the error-path quiesce too -- can never leave the microphone open behind a
+	 * write that failed after it.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
+	if (ret < 0) {
+		goto end;
 	}
 
 	data->playback = playback;
@@ -1084,7 +1031,7 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 
 end:
 	/*
-	 * A FAILED configure() LEAVES THE CODEC SILENT, NOT MERELY UNDESCRIBED.
+	 * A FAILED configure() AIMS THE CODEC AT SILENT, BEST-EFFORT -- not merely undescribed.
 	 *
 	 * Clearing the route cache above is necessary -- the hardware is half reprogrammed and
 	 * the old route no longer describes it -- but on its own it is a fail-OPEN. It makes
@@ -1181,15 +1128,38 @@ static void es8311_start_output(const struct device *dev)
 	int ret = 0;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
-	data->output_stopped = false;
-	/*
-	 * Unmute only what the caller has not already muted. start_output() runs the
-	 * lifecycle, not the mute property: a pending OUTPUT_MUTE stays pending, and a
-	 * route that carries no playback has nothing to open.
-	 */
-	if (data->playback && !data->output_mute) {
-		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+
+	if (!data->playback) {
+		/*
+		 * Nothing to start -- and marking the lifecycle started here would pre-arm the
+		 * NEXT configure() to open a speaker the caller never asked to run. Leave it.
+		 */
+		LOG_WRN("start_output: no playback route configured");
+		k_mutex_unlock(&data->lock);
+		return;
 	}
+
+	if (data->output_mute) {
+		/* Started, but the caller's OUTPUT_MUTE stays authoritative: no unmute here. */
+		data->output_stopped = false;
+		k_mutex_unlock(&data->lock);
+		return;
+	}
+
+	/*
+	 * The unmute is the write that puts a speaker back on the output. Mark the lifecycle
+	 * started only if it SUCCEEDS -- like tas2563, which sets is_started after the hardware
+	 * write -- and best-effort re-mute (a monotonic mute) on an error that might have landed,
+	 * exactly as apply_properties() does. A failed start leaves the output STOPPED.
+	 */
+	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+	if (ret < 0) {
+		(void)es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+		data->output_stopped = true;
+	} else {
+		data->output_stopped = false;
+	}
+
 	k_mutex_unlock(&data->lock);
 
 	if (ret < 0) {
@@ -1470,8 +1440,9 @@ static int es8311_apply_properties(const struct device *dev)
 			first_err = ret;
 			/*
 			 * Best-effort re-close the speaker, same monotonic-mute argument. And back
-			 * out the microphone THIS call opened: a failed apply() lands muted, not
-			 * half-open, and a retry re-applies both cleanly.
+			 * out the microphone THIS call opened: a failed apply() AIMS at muted
+			 * rather than half-open -- best-effort, since the re-mute can fail on the
+			 * same bus -- and a retry re-applies both cleanly.
 			 */
 			(void)es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
 			if (this_apply_opened_mic) {
