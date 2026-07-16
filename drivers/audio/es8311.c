@@ -84,14 +84,13 @@ LOG_MODULE_REGISTER(es8311);
  * The only register-file reset on this part is 0xFA bit 0, and it is not usable as one:
  * see ES8311_INI_RELEASE.
  *
- * So this driver programs every register its behaviour depends on. That used to be an
- * aspiration -- the comment said it while eleven registers went unwritten -- and
- * es8311_known_state[] below is what makes it true.
+ * So this driver programs every register its behaviour depends on; es8311_known_state[]
+ * below is what makes that true.
  */
 #define ES8311_RESET_CSM_ON 0x80U
 
 /*
- * THE REGISTERS THIS DRIVER DEPENDS ON AND USED TO LEAVE ALONE.
+ * THE REGISTERS THIS DRIVER DEPENDS ON AND MUST NORMALISE.
  *
  * A codec that is never reset inherits its whole register file from whatever ran last:
  * a vendor bootloader, another OS, an earlier firmware, or this driver's own previous
@@ -787,22 +786,16 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * The ADC is NOT powered down here, only muted at its serial port above. It drives
-	 * no speaker, so it cannot pop -- and taking its analog down and back up on every
-	 * configure() would restart a settling time measured in SECONDS, not milliseconds.
+	 * The ADC is NOT powered down here, only muted at its serial port above. It drives no
+	 * speaker, so it cannot pop -- and taking its analog down and back up on every configure()
+	 * would restart a settling time measured in SECONDS, not milliseconds.
 	 *
-	 * WHY it costs seconds is measured and NOT explained, and this comment has now been
-	 * wrong about it twice. It first blamed a DC offset the high-pass filter had to
-	 * settle out. It then blamed the reference capacitors recharging -- and that is
-	 * refuted too: a cold power-on charges those same capacitors from zero and the ADC
-	 * is alive at the earliest moment it can be sampled, while the same part 2.2 s after
-	 * a register reset reads a floor of exactly zero. Whatever the reset does, a cold
-	 * start does not do it.
+	 * WHY it costs seconds is MEASURED but not explained: a cold power-on has the ADC alive at
+	 * the earliest moment it can be sampled, yet the same part reads a floor of zero for ~2 s
+	 * after a register reset. The driver acts on the measurement; the mechanism is not claimed.
 	 *
-	 * The measurement stands and the driver acts on it. The explanation is not offered.
-	 *
-	 * The route logic below still powers the ADC down when the new route does not carry
-	 * capture, which is the case that matters.
+	 * The route logic below still powers the ADC down when the new route does not carry capture,
+	 * which is the case that matters.
 	 */
 
 	/* Power the clock state machine up. This resets no register: see 0x00 above. */
@@ -961,19 +954,15 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * 0x44 and 0x45 belong to BOTH routes, and used to be written only on capture.
+	 * 0x44 and 0x45 belong to BOTH routes, so they are normalised on every configure().
 	 *
-	 * 0x44 bit 7 is ADC2DAC_SEL, which routes the ADC digitally into the DAC. That is a
-	 * PLAYBACK control living in a register whose other field happens to be about the
-	 * ADC. A playback-only configure() never touched it -- so a chip that came up with
-	 * bit 7 set, from a vendor bootloader or an aborted loopback, played the ADC instead
-	 * of the caller's audio while the same route had just powered that ADC down. Silence
-	 * out of the speaker, configure() returning 0, every register the driver checked
-	 * reading back exactly as intended, and no way out of it on any later call unless
-	 * capture happened to be routed once.
+	 * 0x44 bit 7 is ADC2DAC_SEL, which routes the ADC digitally into the DAC: a PLAYBACK
+	 * control living in a register whose other field is about the ADC. A chip that comes up
+	 * with bit 7 set (a vendor bootloader, an aborted loopback) would play the ADC instead
+	 * of the caller's audio -- silence out of the speaker with every register reading back
+	 * as intended -- so it must be cleared even on a playback-only route.
 	 *
-	 * 0x45 is chip-wide (FORCECSM, PULLUP_SE) and has nothing to do with the route
-	 * either.
+	 * 0x45 is chip-wide (FORCECSM, PULLUP_SE) and has nothing to do with the route either.
 	 */
 	ret = es8311_reg_write(dev, ES8311_REG_GPIO, ES8311_GPIO_ADCDAT_ADC);
 	if (ret < 0) {
@@ -1085,9 +1074,8 @@ end:
  * playback && !output_mute && !output_stopped.
  * start_output() clears output_stopped; stop_output() sets it. Neither touches output_mute, and
  * OUTPUT_MUTE never touches output_stopped -- so a caller can mute, start and stop in any order
- * and each control keeps its own meaning. An earlier version folded all three into one "is the
- * DAC muted" flag, and the bug that hid there was precisely that start_output() then silently
- * cleared a pending OUTPUT_MUTE and stop_output() silently forged one.
+ * and each control keeps its own meaning. Folding them into one "is the DAC muted" flag would let
+ * start_output() silently clear a pending OUTPUT_MUTE and stop_output() silently forge one.
  *
  * output_stopped DEFAULTS true, so configure() sets up and powers the path but leaves the DAC
  * muted; start_output() is the first unmute. configure() is not start_output(). That is what
@@ -1113,7 +1101,10 @@ end:
  * entirely when start_output() is called AFTER the transport is running. A DAC that has never been
  * clocked sits at its idle bias, so the window is a bias level, not a held sample; the ACUTE form
  * -- a DAC frozen on a real, possibly full-scale sample after a warm reboot -- is the case init()
- * quiesces.
+ * quiesces. (The i2s_codec sample cited above for the configure()/start_output() split calls
+ * start_output() BEFORE it starts the transport, so it sits in exactly this window: it is a
+ * precedent for "configure() is not start_output()", not for the safe transport ordering. The
+ * binding's "Clock sequencing" note states that ordering.)
  *
  * The two ops themselves are NOT symmetric. Unmuting is dangerous and is gated: it puts a
  * speaker back on the output, so it only happens for a route that carries playback and that the
@@ -1135,24 +1126,32 @@ static void es8311_start_output(const struct device *dev)
 		 * NEXT configure() to open a speaker the caller never asked to run. Leave it.
 		 */
 		LOG_WRN("start_output: no playback route configured");
-		k_mutex_unlock(&data->lock);
-		return;
+		goto out;
 	}
 
-	if (data->output_mute) {
-		/* Started, but the caller's OUTPUT_MUTE stays authoritative: no unmute here. */
-		data->output_stopped = false;
-		k_mutex_unlock(&data->lock);
-		return;
+	if (!data->output_stopped) {
+		/*
+		 * Already started: a duplicate start_output() must not re-issue a dangerous unmute
+		 * that could glitch on the bus and stop a running stream. tas2563 guards the same
+		 * way.
+		 */
+		goto out;
 	}
 
 	/*
-	 * The unmute is the write that puts a speaker back on the output. Mark the lifecycle
+	 * start_output() ESTABLISHES the hardware state it claims, it does not only flip the flag:
+	 * a stop_output() whose mute write glitched may have left the DAC live, so the muted branch
+	 * writes the mute rather than trusting the register. Either write marks the lifecycle
 	 * started only if it SUCCEEDS -- like tas2563, which sets is_started after the hardware
-	 * write -- and best-effort re-mute (a monotonic mute) on an error that might have landed,
-	 * exactly as apply_properties() does. A failed start leaves the output STOPPED.
+	 * write -- and best-effort re-mutes (a monotonic mute) on an error that might have landed.
+	 * A failed start leaves the output STOPPED.
 	 */
-	ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+	if (data->output_mute) {
+		/* Started, but the caller's OUTPUT_MUTE is authoritative: establish MUTED. */
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
+	} else {
+		ret = es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_OFF);
+	}
 	if (ret < 0) {
 		(void)es8311_reg_write(dev, ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_ON);
 		data->output_stopped = true;
@@ -1160,10 +1159,11 @@ static void es8311_start_output(const struct device *dev)
 		data->output_stopped = false;
 	}
 
+out:
 	k_mutex_unlock(&data->lock);
 
 	if (ret < 0) {
-		LOG_ERR("start_output: failed to unmute (%d)", ret);
+		LOG_ERR("start_output: failed to establish the output state (%d)", ret);
 	}
 }
 
@@ -1234,36 +1234,21 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 /*
  * THE PROPERTY TRANSACTION, AND THE THREE WAYS IT USED TO GET THIS WRONG.
  *
- * This is the OTHER off switch: set_property(OUTPUT_MUTE, true) then apply_properties() is
- * what the audio_codec API documents for silencing a speaker. stop_output() is the direct
- * one. There is no reason for the two to disagree, and they used to.
+ * This is the OTHER off switch: set_property(OUTPUT_MUTE, true) then apply_properties() is what
+ * the audio_codec API documents for silencing a speaker, and it must not disagree with the direct
+ * one, stop_output().
  *
- * It ran straight down -- DAC volume, DAC mute, ADC volume, ADC mute -- with a `goto end` on
- * each error. So a failed write to the DAC VOLUME, a register with no safety role whatever,
- * returned before the mute was ever attempted: the speaker went on playing and the caller got
- * an error for a mute that never happened. And because the playback block came first, a
- * failure there skipped the capture block whole, so a DAC volume glitch left the MICROPHONE
- * open too.
- *
- * Ordering the mutes first fixed that and introduced two more, which is worth writing down
- * because they are the same mistake wearing a different hat:
- *
- *   - a mute that FAILED, followed by a volume write that SUCCEEDED, can turn the still-live
- *     path UP. Set OUTPUT_VOLUME to +32 dB and OUTPUT_MUTE to true in one go, lose the mute
- *     write, and the speaker you asked to silence is now at full scale.
- *   - a failure in one direction did not stop the UNMUTE in the other. Lose the microphone's
- *     mute, keep the speaker's unmute, and the call has left the microphone open AND opened
- *     the speaker, on a board where the two are centimetres apart, while returning an error.
- *
- * The rule that settles all three, and it is the same one configure()'s commit block follows:
+ * The rule, the same one configure()'s commit follows:
  *
  *   A MUTE MAY NEVER BE CANCELLED, SKIPPED OR UNDONE BY A WRITE THAT IS NOT A MUTE.
  *   AN UNMUTE MAY ONLY HAPPEN ONCE EVERYTHING THAT CAN FAIL HAS ALREADY SUCCEEDED.
  *   A FAILURE MAY LEAVE THINGS UNCHANGED. IT MAY NOT MAKE THEM WORSE.
  *
- * So: every requested mute first, none of them skipped because another failed; then the
- * volumes, but not on a direction we were asked to silence and could not; then the unmutes,
- * and only if the whole call is clean. The first error is returned.
+ * So: every requested mute first, none skipped because another failed; then the volumes, but not
+ * on a direction we were asked to silence and could not (a volume is a GAIN -- writing one to a
+ * path whose mute just failed could turn a still-live speaker UP); then the unmutes, and only if
+ * the whole call is clean, so a failed mute in one direction cannot be followed by an unmute in
+ * the other. The first error is returned.
  *
  * The lock is held across all of it, not merely across the read of the cached state. Taking a
  * snapshot and then releasing would let stop_output() run in between: it would cache "muted",
@@ -1295,11 +1280,10 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
  *     made louder, and neither is the other one.
  *   - it never issues a FURTHER open once anything in the call has failed (phase 3 gated on the
  *     whole call).
- *   - and the one open it used to be unable to take back -- an unmute that errored but may have
- *     landed -- is now best-effort re-muted; and if that unmute was the speaker, the microphone
- *     THIS call opened is re-muted with it. This is best-effort, not a guarantee: the re-mute can
- *     fail on the same bus, exactly as the configure() error path's quiesce can. What it is no
- *     longer is a deliberate fail-open. The caller still has stop_output() for a direct mute.
+ *   - an unmute that errored but may have landed is best-effort re-muted; and if that unmute was
+ *     the speaker, the microphone THIS call opened is re-muted with it. Best-effort, not a
+ *     guarantee: the re-mute can fail on the same bus, exactly as the configure() error path's
+ *     quiesce can. The caller still has stop_output() for a direct mute.
  *
  * What it does NOT prevent, and cannot without costing more than it saves: a path the caller
  * chose to keep LIVE and gave a new volume DOES reach that volume, even if some other write in
@@ -1621,37 +1605,25 @@ static int es8311_init(const struct device *dev)
 	}
 
 	/*
-	 * init() used to write ZERO registers, and that was a hazard, not a simplification.
+	 * The ES8311 has no reset pin -- the datasheet's twenty-pin list has no such signal --
+	 * so nothing a warm reboot does reaches it. west flash, sys_reboot(), a watchdog and a
+	 * debugger's reset-on-attach all reset the SoC and leave the codec exactly as the previous
+	 * firmware left it. Meanwhile the SoC's I2S peripheral DOES reset, so the bit clock stops;
+	 * and this codec takes its master clock from the bit clock. A DAC that was powered and
+	 * unmuted when the reboot hit therefore has its modulator frozen on whatever sample it held
+	 * -- a DC level sitting on the amplifier -- until the application gets around to configure().
+	 * If the previous route was capture, the microphone stays live at its last PGA gain. Neither
+	 * needs a hostile prior firmware; this driver's own previous boot is enough.
 	 *
-	 * The ES8311 has no reset pin -- the datasheet's twenty-pin list has no such
-	 * signal -- so nothing a warm reboot does reaches it. west flash, sys_reboot(), a
-	 * watchdog and a debugger's reset-on-attach all reset the SoC and leave the codec
-	 * exactly as the previous firmware left it. Meanwhile the SoC's I2S peripheral DOES
-	 * reset, so the bit clock stops; and this codec takes its master clock from the bit
-	 * clock. A DAC that was powered and unmuted when the reboot hit therefore has its
-	 * modulator frozen on whatever sample it held -- a DC level, sitting on the
-	 * amplifier, for as long as it takes the application to get around to configure().
-	 * If the previous route was capture, the microphone stays live at its last PGA gain
-	 * with no software in control of it. Neither needs a hostile prior firmware; this
-	 * driver's own previous boot is enough.
+	 * So: normalise 0xFA, then put the part somewhere safe -- see es8311_quiesce() -- and leave
+	 * it there until a configure() asks for something.
 	 *
-	 * So: normalise 0xFA, then put the part somewhere safe -- see es8311_quiesce() -- and
-	 * leave it there until a configure() asks for something.
-	 *
-	 * THIS WRITE DOES NOT GET A VETO OVER THE QUIESCE, and that is a correction. It used to
-	 * `return` on failure, on the grounds that 0xFA is a precondition rather than a safety
-	 * write: while INI_REG holds the register file down, nothing else can land, so
-	 * attempting the quiesce would be theatre.
-	 *
-	 * That argument is sound in configure(), and it is FALSE here. es8311_check_id() has
-	 * just read 0x8311 back, and a part whose register file is held answers 0x00 to every
-	 * read -- so by the time control reaches this line, INI_REG is PROVEN clear. What is
-	 * left is normalising the register's other bits, which is housekeeping. Letting a
-	 * transient failure of a housekeeping write abandon the DAC mute, the DAC power-down,
-	 * the ADC power-down and the microphone disconnect is the same fail-open this driver
-	 * exists to close, wearing a precondition's clothes.
-	 *
-	 * It is attempted, its error is kept, and the quiesce runs regardless.
+	 * The 0xFA write does NOT get a veto over the quiesce. es8311_check_id() has just read 0x8311
+	 * back, and a part whose register file is held answers 0x00 to every read -- so INI_REG is
+	 * PROVEN clear by the time control reaches here, and this write only normalises the register's
+	 * other (housekeeping) bits. Letting it fail-and-return would abandon the DAC mute, the DAC
+	 * and ADC power-downs and the microphone disconnect to a transient housekeeping error. It is
+	 * attempted, its error is kept, and the quiesce runs regardless.
 	 */
 	int normalize_err = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
 	int quiesce_err;

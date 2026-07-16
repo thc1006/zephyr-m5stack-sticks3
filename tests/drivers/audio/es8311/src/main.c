@@ -672,21 +672,75 @@ ZTEST(es8311, test_set_mute)
 		      "mute field (bit6 DSMMUTE | bit5 DEMMUTE) should be clear");
 }
 
-/* start_output() and stop_output() must drive the DAC mute field directly. */
+/* start_output() and stop_output() drive the DAC mute across the stopped<->started transition. */
 ZTEST(es8311, test_start_stop_output)
 {
-	reg_put(ES8311_REG_DAC_MUTE, 0x60);
-	audio_codec_start_output(codec);
-	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
-		      "start_output() must unmute the DAC");
-
+	/* The fixture leaves the output started; stop it first so start_output() has work to do. */
 	audio_codec_stop_output(codec);
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
 		      "stop_output() must mute the DAC");
 
 	audio_codec_start_output(codec);
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
+		      "start_output() must unmute the DAC");
+
+	audio_codec_stop_output(codec);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U, "stop_output() must mute again");
+
+	audio_codec_start_output(codec);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
 		      "start_output() must unmute again");
+}
+
+/*
+ * A duplicate start_output() on an already-started output is a no-op: it must not re-issue the
+ * unmute, so a transient error on that redundant write cannot glitch a running stream to a
+ * best-effort stop. tas2563 guards the same way.
+ */
+ZTEST(es8311, test_duplicate_start_output_is_a_noop)
+{
+	/* The output is started (fixture). Re-start it with the DAC-mute write armed to fail. */
+	emul_es8311_reset_log(emul);
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	audio_codec_start_output(codec);
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(emul_es8311_write_count(emul), 0,
+		      "a duplicate start_output() must issue no I2C writes");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
+		      "a duplicate start_output() must leave the running stream unmuted");
+}
+
+/*
+ * A pending OUTPUT_MUTE + a stop_output() whose mute glitched + start_output() must NOT leave the
+ * speaker live. start_output() ESTABLISHES the hardware state it claims: with a pending mute it
+ * writes the mute, it does not merely flip the lifecycle flag. Without that, the invariant
+ * "audible iff playback && !output_mute && !output_stopped" is violated -- output_mute is set, yet
+ * the DAC is live.
+ */
+ZTEST(es8311, test_pending_mute_survives_a_glitched_stop_then_start)
+{
+	audio_property_value_t mute = {.mute = true};
+
+	/* Speaker live (fixture), then cache a pending mute WITHOUT applying it. */
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U, "precondition: speaker live");
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    mute),
+		   "set OUTPUT_MUTE(true) failed");
+
+	/* stop_output() believes it stopped, but its mute write never lands. */
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	audio_codec_stop_output(codec);
+	emul_es8311_fail_write_to(emul, -1);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
+		      "precondition: the glitched stop left the speaker live");
+
+	/* start_output() must establish started-but-muted, not merely flip the flag. */
+	audio_codec_start_output(codec);
+	zassert_equal(
+		reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		"start_output() with a pending mute must ESTABLISH the muted hardware state -- "
+		"the pending mute was lost across a glitched stop/start");
 }
 
 /*

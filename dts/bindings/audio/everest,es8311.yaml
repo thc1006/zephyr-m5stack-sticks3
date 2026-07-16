@@ -106,6 +106,29 @@ description: |
   Linux's es8311 has suspend/resume and bias-level handling; that is the shape of the
   follow-up, and it is not in this version.
 
+  Clock sequencing: the application owns this too
+  -----------------------------------------------
+
+  Because the codec's clock IS the bit clock, the transport and the codec output have to be
+  sequenced, in both directions:
+
+    - The I2S controller must run a CONTINUOUS bit clock (I2S_OPT_BIT_CLK_GATED is refused),
+      and BCLK must already be running before audio_codec_start_output() unmutes the DAC.
+      Otherwise the DAC is unmuted with no clock; after a warm restart its modulator can be
+      frozen on the last real sample -- a DC step or pop into the amplifier.
+    - On the way down, audio_codec_stop_output() (or an OUTPUT_MUTE) must happen BEFORE BCLK
+      stops, for the same reason.
+
+  Safe order:
+
+      audio_codec_configure()
+      i2s_configure()
+      queue initial I2S buffers
+      i2s_trigger(START)          # BCLK now running, continuous
+      audio_codec_start_output()
+
+  Shutdown is the reverse: audio_codec_stop_output(), then stop the I2S transport.
+
 compatible: "everest,es8311"
 
 # The power properties are BLOCKED, not merely unimplemented.
