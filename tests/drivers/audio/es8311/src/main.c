@@ -51,6 +51,11 @@ static const struct device *const codec_ini = DEVICE_DT_GET(INI_NODE);
 static const struct i2c_dt_spec es_ini = I2C_DT_SPEC_GET(INI_NODE);
 static const struct emul *const emul_ini = EMUL_DT_GET(INI_NODE);
 
+/* A part with every board-policy devicetree property set to its non-default value. */
+#define PROFILE_NODE DT_NODELABEL(codec_profile)
+static const struct device *const codec_profile = DEVICE_DT_GET(PROFILE_NODE);
+static const struct i2c_dt_spec es_profile = I2C_DT_SPEC_GET(PROFILE_NODE);
+
 /* Emulator test backend (defined in drivers/audio/emul_es8311.c). */
 #include <emul_es8311.h>
 
@@ -2692,6 +2697,43 @@ ZTEST(es8311, test_reconfigure_from_a_live_route_quiesces_before_clocks_and_neve
 	reconfigure_from_live_never_unmutes_the_dac(AUDIO_ROUTE_CAPTURE, "live->CAPTURE");
 	reconfigure_from_live_never_unmutes_the_dac(AUDIO_ROUTE_PLAYBACK, "live->PLAYBACK");
 	reconfigure_from_live_never_unmutes_the_dac(AUDIO_ROUTE_PLAYBACK_CAPTURE, "live->PB_CAP");
+}
+
+/*
+ * The three board-policy devicetree properties each reach the register they name. codec_profile
+ * (native_sim.overlay) sets all of them to their non-default value -- right slot, 0 dB PGA,
+ * line-out -- and the default node proves the defaults. This is what makes everest,es8311 a device
+ * profile rather than one board's fixed tuning.
+ */
+ZTEST(es8311, test_board_policy_devicetree_properties)
+{
+	struct audio_codec_cfg cfg;
+	uint8_t v;
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+
+	/* Defaults on the main node: left slot, 30 dB PGA (MIC1 differential), headphone. */
+	emul_es8311_reset(emul);
+	zassert_ok(audio_codec_configure(codec, &cfg), "default configure must pass");
+	zassert_equal(reg_get(ES8311_REG_SDP_IN) & 0x80U, 0x00U,
+		      "default everest,mono-dac-source is the LEFT slot (SDP_IN_SEL clear)");
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU,
+		      "default everest,mic-pga-gain-db is 30 dB (0x14 = MIC1 diff | code 0x0A)");
+	zassert_equal(reg_get(ES8311_REG_SYSTEM_13), 0x10U,
+		      "default everest,output-mode is headphone (0x13 HPSW set)");
+
+	/* The configured node: right slot, 0 dB PGA, line-out. */
+	zassert_true(device_is_ready(codec_profile), "the profile codec must be ready");
+	zassert_ok(audio_codec_configure(codec_profile, &cfg), "profile configure must pass");
+
+	zassert_ok(i2c_reg_read_byte_dt(&es_profile, ES8311_REG_SDP_IN, &v), "read SDP_IN failed");
+	zassert_equal(v & 0x80U, 0x80U, "mono-dac-source=right must set SDP_IN_SEL (0x09 bit 7)");
+	zassert_ok(i2c_reg_read_byte_dt(&es_profile, ES8311_REG_ADC_PGA, &v),
+		   "read ADC_PGA failed");
+	zassert_equal(v, 0x10U, "mic-pga-gain-db=0 must be MIC1 differential | 0 dB (0x14 = 0x10)");
+	zassert_ok(i2c_reg_read_byte_dt(&es_profile, ES8311_REG_SYSTEM_13, &v),
+		   "read SYSTEM_13 failed");
+	zassert_equal(v, 0x00U, "output-mode=lineout must clear HPSW (0x13 = 0x00)");
 }
 
 /*

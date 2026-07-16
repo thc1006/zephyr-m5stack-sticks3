@@ -56,43 +56,30 @@ description: |
   possible hold: it releases 0xFA, re-reads the id, and only then rejects a part
   that still fails to identify.
 
-  Board policy this driver compiles in
-  ------------------------------------
+  Board policy: devicetree properties, and what is still compiled in
+  ------------------------------------------------------------------
 
-  Five choices are compiled in rather than exposed. They are the ones both Espressif
-  reference drivers make, but they are board policy, not the only legal configuration
-  of the chip -- mainline Linux exposes each of them as a separate control:
+  Three board-policy choices are devicetree properties (defined below), because they are the
+  ones most likely to differ between boards and to be met as silence or as clipping. Mainline
+  Linux exposes each as a control, and both Espressif reference drivers hard-code the values
+  this driver takes as defaults:
 
-    output path      headphone (0x13)
-    capture input    MIC1, differential (0x14 LINSEL)
-    PGA gain         30 dB, the maximum (0x14)
-    ADC scale        +24 dB (0x16)
-    mono DAC source  the LEFT I2S slot (0x09 bit 7, SDP_IN_SEL)
+    everest,output-mode      headphone vs line-out drive (0x13 bit 4, HPSW); default headphone
+    everest,mic-pga-gain-db  analog PGA gain, 0..30 dB in 3 dB steps (0x14 [3:0]); default 30
+    everest,mono-dac-source  which I2S slot the mono DAC plays (0x09 bit 7); default left
 
-  The last one is easy to miss and it is the one most likely to be met as silence.
-  The ES8311 has a single DAC, and 0x09 bit 7 chooses which half of the stereo I2S
-  frame it takes: 0 is the left slot (the reset default), 1 is the right. Linux
-  exposes it as a control called "Mono DAC Source", Left or Right. This driver
-  writes 0x09 whole, so the bit is always clear: THE DAC ALWAYS PLAYS THE LEFT SLOT.
-  An application that places its mono samples in the right slot will hear nothing
-  and will find nothing wrong with any register it reads back. Right-slot playback
-  needs a devicetree property, and there is not one in this version.
+  The mono DAC source is the one most easily met as silence: the ES8311 has a single DAC, 0x09
+  bit 7 chooses which half of the stereo frame it plays, and a board that puts its samples in the
+  other slot hears nothing with every register reading back as intended.
 
-  A board that drives a line output, or clips at 30 dB of PGA gain, or wants a
-  different ADC scale, needs those to become devicetree properties or codec
-  properties too. That work is deliberately not in this first version, and it is
-  written down here so that "supports the ES8311" is not read as "drives every
-  board that has one".
+  Two choices remain compiled in, because they are not board-variable on this hardware:
 
-  And one thing that is not a gain choice at all: 0x14 bit 6 selects a DIGITAL
-  microphone on MIC1P instead of the analog front end. This driver does not
-  support that path. It is not a variation on the analog input, it is a different
-  input, and a board wired for it will not work with this driver at all.
-
-  (There is no such thing as a single-ended analog microphone on this part. The
-  analog mux, 0x14 bit 4, has exactly two states: disabled, or the differential
-  MIC1P-MIC1N pair. Mainline Linux models it the same way -- "Disabled" /
-  "MIC1P-MIC1N" -- with the DMIC path as a separate control.)
+    capture input  MIC1, differential (0x14 LINSEL). The ES8311 has exactly one analog input,
+                   the differential MIC1P/MIC1N pair -- there is no single-ended analog
+                   microphone (the mux has two states, disabled or MIC1P-MIC1N, and Linux models
+                   it the same way). 0x14 bit 6 selects a DIGITAL microphone on MIC1P instead;
+                   that is a different input this driver does not support at all.
+    ADC scale      +24 dB (0x16), a digital gain that could become a property in a follow-up.
 
   Power management: the application owns it
   -----------------------------------------
@@ -140,6 +127,42 @@ description: |
   buffers rather than expect the opening frames to be clean.
 
 compatible: "everest,es8311"
+
+properties:
+  everest,mono-dac-source:
+    type: string
+    enum:
+      - "left"
+      - "right"
+    default: "left"
+    description: |
+      Which slot of the stereo I2S frame the single (mono) DAC plays, via 0x09 bit 7
+      (SDP_IN_SEL). "left" is the reset default and the value for a mono stream placed in the
+      left slot; "right" takes the right slot. An application whose samples are in the other
+      slot hears silence with every register reading back as intended.
+
+  everest,mic-pga-gain-db:
+    type: int
+    enum: [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+    default: 30
+    description: |
+      Analog microphone PGA gain in dB, 0x14 bits [3:0] (3 dB per step, 0-30 dB). The default
+      is the 30 dB maximum both Espressif reference drivers use; a hot microphone that clips the
+      ADC needs this lowered, because the digital INPUT_VOLUME downstream cannot undo analog
+      clipping.
+
+  everest,output-mode:
+    type: string
+    enum:
+      - "headphone"
+      - "lineout"
+    default: "headphone"
+    description: |
+      Drive mode of the single OUTP/OUTN differential output pair, 0x13 bit 4 (HPSW):
+      "headphone" enables the headphone driver (the reset/reference default), "lineout" selects
+      the line-level differential mode. NOTE: only "headphone" is hardware-verified; "lineout"
+      is derived from the ES8311 datasheet and the mainline Linux driver and has not been
+      exercised on silicon.
 
 # The power properties are BLOCKED, not merely unimplemented.
 #
