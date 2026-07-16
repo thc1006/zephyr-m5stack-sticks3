@@ -73,8 +73,8 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **60/60** (was 11,
-  then 29, 33, 42, 47, 51, 52, 54, 59). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **61/61** (was 11,
+  then 29, 33, 42, 47, 51, 52, 54, 59, 60). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
   other codec in `drivers/audio` is at zero. The emulator's test hooks are declared in a
   header (`drivers/audio/emul_es8311.h`, beside the emulator so it resolves whatever the
   build's include path is) that both the emulator and the test include, so the two cannot
@@ -92,25 +92,28 @@ Two things to watch while the PR is open:
     `0xFA` was the first write — which was true, and did not stop `init()` from bailing out
     on the chip-id read before it got there.
   - Two prove the **mute still fires on a bus whose reads fail** but whose writes land.
-  - One asserts the **route-aware write order**: a playback `configure()` ends on the DAC mute
-    (the write with a speaker behind it) and a capture-only one ends on the microphone's serial
-    port, so on neither route does a write that can fail follow the one that opens the part.
+  - Two assert the **route- and state-aware commit order**: the write that opens a converter
+    (the speaker's DAC unmute, the microphone's serial-port unmute) is the *last* one on its
+    path, and the speaker — the more dangerous — is last of all; every non-opening write, DAC
+    mute included, lands first. A capture-only `configure()` ends on the microphone opener with
+    the DAC mute *before* it, never after.
   - One walks a *single* I2C failure across **every transfer** of a `configure()`, into **all
     three target routes**, and reads the registers back before calling anything else: a failed
     `configure()` must leave the DAC muted and powered down and the microphone off the mux,
     because the `audio_codec` API has no `stop_input()` and there would otherwise be no way
     to switch a live microphone off.
-  - One walks a **persistent** failure (`fail_from()`, which fails the error-path quiesce too)
-    across every transfer of all three routes: the speaker is never left live, and on a
-    capture-only route the microphone is never stranded open — the payoff of the route-aware
-    commit, which the old fixed order could not give.
-  - Four exercise the **output lifecycle split**: a pending `OUTPUT_MUTE` survives a start/stop
-    cycle (`output_mute` and `output_stopped` are independent — `tas2563` is the in-tree
-    precedent); an unmute that **lands then errors** (`fail_write_landed()`) is left in place,
-    not rolled back; the error-path quiesce mutes the **speaker first**, so a half-completed
-    cleanup silences the most dangerous thing before the rest; and `apply_properties()`
-    **re-mutes a stopped output whose `stop_output()` mute glitched** on the bus, because a
-    stopped DAC is a muted DAC.
+  - Two walk a **persistent** failure (`fail_from()`, which fails the error-path quiesce too)
+    across every transfer — one across all three *routes*, one across the *state* matrix
+    (`OUTPUT_MUTE`, output-stopped, `INPUT_MUTE`, both) on a full-duplex route. Whenever only one
+    converter opens, its opener is the last write and is never stranded; the speaker is never left
+    live. This is the payoff of making the commit *state*-aware, not just route-aware — a muted
+    speaker used to be written *after* the microphone opened.
+  - Three exercise the **output lifecycle split**: a pending `OUTPUT_MUTE` survives a start/stop
+    cycle (`output_mute` and `output_stopped` are independent, `output_stopped` defaults *stopped*
+    so `configure()` sets up but does not unmute and `start_output()` is the first unmute —
+    `tas2563` is the in-tree precedent); the error-path quiesce mutes the **speaker first**; and
+    `apply_properties()` **best-effort re-mutes** an unmute that lands-then-errors
+    (`fail_write_landed()`) — a monotonic mute is strictly safer than leaving a possibly-open path.
   - **Seven break a write to a named register and ask what a failure is followed by.** Does
     the mute still land? A failed *volume* write must not cancel the mute the caller asked
     for, and a failure in one direction must not suppress the safety mute in the other. And

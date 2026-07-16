@@ -1559,7 +1559,12 @@ ZTEST(es8311, test_init_finishes_quiescing_even_when_a_safety_write_fails)
 	zassert_ok(i2c_reg_write_byte_dt(&es_quiesce, ES8311_REG_SYSTEM_0E, 0x02U), "seed failed");
 	zassert_ok(i2c_reg_write_byte_dt(&es_quiesce, ES8311_REG_ADC_PGA, 0x1AU), "seed failed");
 
-	/* And the very first safety write it will attempt, the serial-port mute, will fail. */
+	/*
+	 * And one of its safety writes will fail: the DAC serial-port mute, which the quiesce now
+	 * emits THIRD (after the DAC mute and the microphone port -- the priority order the
+	 * dedicated test_quiesce_mutes_the_speaker_first pins). This test is about continuation,
+	 * not order: a failure part-way through must not abandon the writes after it.
+	 */
 	emul_es8311_fail_write_to(emul_quiesce, ES8311_REG_SDP_IN);
 
 	zassert_not_equal(device_init(codec_quiesce), 0,
@@ -2300,6 +2305,7 @@ ZTEST(es8311, test_capture_only_commit_opens_the_microphone_last)
 {
 	struct audio_codec_cfg cfg;
 	int n;
+	int dac_mute_idx = -1;
 
 	emul_es8311_reset_log(emul);
 	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_CAPTURE);
@@ -2308,7 +2314,7 @@ ZTEST(es8311, test_capture_only_commit_opens_the_microphone_last)
 	n = emul_es8311_write_count(emul);
 	zassert_true(n >= 2, "capture configure emitted only %d writes", n);
 
-	/* The LAST write opens the microphone, unmuted, and NOTHING follows it. */
+	/* The LAST write opens the microphone, unmuted, and NOTHING failable follows it. */
 	zassert_equal(
 		emul_es8311_write_at(emul, n - 1), ES8311_REG_SDP_OUT,
 		"the last write of a capture-only configure must be the ADC serial port (0x0A), "
@@ -2317,12 +2323,21 @@ ZTEST(es8311, test_capture_only_commit_opens_the_microphone_last)
 	zassert_equal(emul_es8311_wval_at(emul, n - 1) & ES8311_SDP_MUTE, 0x00U,
 		      "that last write must OPEN the microphone (unmuted)");
 
-	/* The write before it is the DAC serial port: the commit is exactly SDP_IN then SDP_OUT,
-	 * with no DAC mute wedged after the microphone opens.
+	/* The DAC mute is held ON and written in phase A, BEFORE the microphone opener -- never
+	 * after it. That is what keeps the capture-only commit fail-closed under a persistent bus
+	 * failure that also kills the quiesce.
 	 */
-	zassert_equal(emul_es8311_write_at(emul, n - 2), ES8311_REG_SDP_IN,
-		      "the capture-only commit must be SDP_IN then SDP_OUT; write %d was 0x%02x",
-		      n - 2, emul_es8311_write_at(emul, n - 2));
+	for (int i = 0; i < n; i++) {
+		if (emul_es8311_write_at(emul, i) == ES8311_REG_DAC_MUTE) {
+			dac_mute_idx = i;
+		}
+	}
+	zassert_true(
+		dac_mute_idx >= 0 && dac_mute_idx < n - 1,
+		"the DAC mute must be written BEFORE the microphone opener (mute at %d, mic at %d)",
+		dac_mute_idx, n - 1);
+	zassert_equal(emul_es8311_wval_at(emul, dac_mute_idx), ES8311_DAC_MUTE_ON,
+		      "the DAC must be held MUTED on a capture-only route, not unmuted");
 }
 
 /*
@@ -2398,15 +2413,52 @@ ZTEST(es8311, test_persistent_failure_never_strands_the_last_opener)
 }
 
 /*
- * THE apply_properties() NARROW-NEGATIVE, made concrete. Its comment claims: if an unmute returns
- * an error, the I2C layer cannot say whether the byte reached the part, so that path MIGHT be
- * open even though apply() reports failure -- and the driver neither reads back nor rolls back.
- * fail_write_landed() is exactly that fault: the unmute LANDS in the register file and the
- * transfer still returns -EIO. So the register reads unmuted AND apply() returns an error, and the
- * driver leaves it standing. This pins the honest claim: "apply() never opens a path after a
- * failure" is exact, but "the failing unmute itself never opened anything" is NOT claimed.
+ * The persistent walk again, but varying the STATE, not just the route. A full-duplex route can
+ * have its speaker held muted (OUTPUT_MUTE, or the output stopped) while the microphone opens, or
+ * the microphone held muted (INPUT_MUTE) while the speaker opens. In each case only ONE converter
+ * opens, so its opener is the LAST commit write and a persistent failure can never strand it --
+ * this is exactly the window the route-aware-but-not-state-aware commit left open (a muted speaker
+ * was written AFTER the microphone was already unmuted). mic_must_stay_muted is TRUE for all of
+ * them: whenever the microphone opens here it is the sole opener, so it is never stranded.
  */
-ZTEST(es8311, test_an_unmute_that_lands_then_errors_is_not_rolled_back)
+ZTEST(es8311, test_persistent_failure_is_fail_closed_across_state)
+{
+	const audio_property_value_t on = {.mute = true};
+	const audio_property_value_t off = {.mute = false};
+
+	/* Speaker muted by OUTPUT_MUTE: microphone is the sole opener, speaker stays muted. */
+	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, on);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+output_mute", true);
+	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
+
+	/* Speaker stopped: same shape through the lifecycle flag. */
+	audio_codec_stop_output(codec);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+output_stopped", true);
+	audio_codec_start_output(codec);
+
+	/* Microphone muted by INPUT_MUTE: speaker is the sole opener, microphone stays muted. */
+	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, on);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+input_mute", true);
+	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, off);
+
+	/* Both muted: no opener at all; nothing can be stranded. */
+	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, on);
+	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, on);
+	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+both_muted", true);
+	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
+	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, off);
+}
+
+/*
+ * apply_properties() BEST-EFFORT RE-MUTES a landed-then-errored unmute. fail_write_landed() is the
+ * fault: a write LANDS in the register file and the transfer still returns -EIO. The DAC unmute
+ * lands (register unmuted) and errors; apply() then best-effort re-mutes -- and because the re-mute
+ * is another write to the same register, IT lands too (and also errors, harmlessly). So the DAC
+ * ends MUTED even though the caller-visible unmute failed, and apply() still returns the error. A
+ * best-effort mute is monotonic: it can only leave the path the same or safer, so re-muting is
+ * strictly better than leaving a possibly-open path standing.
+ */
+ZTEST(es8311, test_an_unmute_that_lands_then_errors_is_best_effort_remuted)
 {
 	audio_property_value_t muted = {.mute = true};
 	audio_property_value_t unmuted = {.mute = false};
@@ -2418,23 +2470,22 @@ ZTEST(es8311, test_an_unmute_that_lands_then_errors_is_not_rolled_back)
 	zassert_ok(audio_codec_apply_properties(codec), "apply mute failed");
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U, "should be muted");
 
-	/* Ask to unmute; make that unmute LAND and still return an error. */
+	/* Ask to unmute; make every DAC-mute write LAND and still return an error. */
 	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL,
 					    unmuted),
 		   "set OUTPUT_MUTE(false) failed");
 	emul_es8311_fail_write_landed(emul, ES8311_REG_DAC_MUTE);
 	zassert_true(audio_codec_apply_properties(codec) < 0,
-		     "apply_properties() must report the unmute's transport error");
+		     "apply_properties() must still report the unmute's transport error");
 	emul_es8311_fail_write_landed(emul, -1);
 
 	/*
-	 * The write landed: the register is unmuted even though apply() failed. The driver did not
-	 * read it back and did not roll it back. A caller that needs silence uses stop_output().
+	 * The unmute landed, but the best-effort re-mute landed on top of it. The DAC ends MUTED,
+	 * not left open, even though apply() failed -- a monotonic mute is strictly safer than
+	 * leaving a path that might be open.
 	 */
-	zassert_equal(
-		reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
-		"the landed unmute must be left in place, not rolled back -- the driver does not "
-		"read back a write it could not confirm");
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "a landed-then-errored unmute must be best-effort re-muted, not left open");
 }
 
 /*
