@@ -73,8 +73,8 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **67/67** (was 11,
-  then 29, 33, 42, 47, 51, 52, 54, 59, 60, 61, 62, 65). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **68/68** (was 11,
+  then 29, 33, 42, 47, 51, 52, 54, 59, 60, 61, 62, 65, 67). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
   other codec in `drivers/audio` is at zero. The emulator's test hooks are declared in a
   header (`drivers/audio/emul_es8311.h`, beside the emulator so it resolves whatever the
   build's include path is) that both the emulator and the test include, so the two cannot

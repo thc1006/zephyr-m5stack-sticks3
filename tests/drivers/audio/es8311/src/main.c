@@ -715,8 +715,8 @@ ZTEST(es8311, test_duplicate_start_output_is_a_noop)
  * A pending OUTPUT_MUTE + a stop_output() whose mute glitched + start_output() must NOT leave the
  * speaker live. start_output() ESTABLISHES the hardware state it claims: with a pending mute it
  * writes the mute, it does not merely flip the lifecycle flag. Without that, the invariant
- * "audible iff playback && !output_mute && !output_stopped" is violated -- output_mute is set, yet
- * the DAC is live.
+ * "audible only when playback && !output_mute && !output_stopped" is violated -- output_mute is
+ * set, yet the DAC is live.
  */
 ZTEST(es8311, test_pending_mute_survives_a_glitched_stop_then_start)
 {
@@ -1452,27 +1452,15 @@ ZTEST(es8311, test_the_driver_never_resets_the_register_file)
 /*
  * THE FIXTURE HAS TO RESET BOTH SIDES, AND IT USED TO RESET ONE.
  *
- * emul_es8311_reset() puts the emulated CHIP back as it comes up: a clean register file, no
- * armed fault hook, an empty write log. It cannot touch the DRIVER. dac_volume_code,
- * adc_volume_code, output_mute, adc_mute and output_stopped live in struct es8311_data and are
- * set exactly once, in init() -- so a test that left the output muted, or the input volume at
- * -95 dB, or (since the lifecycle split) the output STOPPED, handed that to every test after
- * it, and this fixture's own configure() then programmed the hardware from it. Whether a later
- * test passed depended on what ran before it.
+ * emul_es8311_reset() puts the emulated CHIP back to a clean register file, but it cannot touch the
+ * DRIVER: dac_volume_code, adc_volume_code, output_mute, adc_mute and output_stopped live in struct
+ * es8311_data and persist across tests, so a test that left the output muted (or, since the split,
+ * STOPPED) would hand that to every test after it. This fixture resets the four properties through
+ * the PUBLIC API and re-starts the output with start_output() after the configure(), so every test
+ * downstream sees the same configured, unmuted codec -- without reaching into driver private state.
  *
- * The evidence that this was real rather than theoretical: seven tests used to end with a
- * hand-written "restore 0 dB for the remaining tests" epilogue. That is a suite papering over
- * a broken fixture by hand, one forgotten line away from a test that passes for the wrong
- * reason. They are all gone now. Resetting the four properties through the PUBLIC API, and the
- * lifecycle with a start_output() after the configure(), is the whole of what replaced them --
- * no reaching into driver private state to do it. start_output() is the public API that clears
- * output_stopped, and leaving the fixture's output STARTED matches the state a fresh init() +
- * configure() left before the split, so every test downstream sees the same configured, unmuted
- * codec it always did.
- *
- * And the precondition is ASSERTED, not attempted. It used to be `(void)configure(...)`: a
- * test whose setup silently fails runs against whatever it inherited, and some of those make
- * the next test pass for the wrong reason, which is worse than failing.
+ * The precondition is ASSERTED, not attempted: a setup that silently fails would run against
+ * whatever it inherited, and some inherited states make the next test pass for the wrong reason.
  */
 static void es8311_before(void *fixture)
 {
@@ -2342,15 +2330,12 @@ ZTEST(es8311, test_a_failed_unmute_stops_the_next_unmute)
 /*
  * HOUSEKEEPING DOES NOT GET A VETO OVER SAFETY.
  *
- * init() writes 0xFA before it quiesces, and it used to `return` if that write failed. The
- * justification was that 0xFA is a precondition rather than a safety write: while INI_REG
- * holds the register file down, nothing else can land.
- *
- * That is true in configure(). It is FALSE in init(), because es8311_check_id() has already
- * read 0x8311 back -- and a part whose register file is held answers 0x00 to every read. So by
- * the time init() writes 0xFA, INI_REG is PROVEN clear and the write is housekeeping on the
- * register's other bits. Letting it abandon the DAC mute, the DAC power-down, the ADC
- * power-down and the microphone disconnect is the same fail-open in a precondition's clothes.
+ * init() writes 0xFA before it quiesces, but a failure of that write must NOT abandon the quiesce.
+ * The 0xFA-is-a-precondition argument (nothing lands while INI_REG holds the file down) is true in
+ * configure() but false here: es8311_check_id() has already read 0x8311 back, and a held part
+ * answers 0x00 to every read, so INI_REG is proven clear and this write is housekeeping on its
+ * other bits. Letting it abandon the DAC mute, the power-downs and the microphone disconnect is a
+ * fail-open.
  */
 ZTEST(es8311, test_init_quiesces_even_when_the_register_file_write_fails)
 {
@@ -2591,6 +2576,122 @@ ZTEST(es8311, test_persistent_fail_before_effect_is_fail_closed_across_state)
 	walk_persistent_failure_into(AUDIO_ROUTE_PLAYBACK_CAPTURE, "PB_CAP+both_muted");
 	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
 	audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, off);
+}
+
+/*
+ * Reconfiguring a LIVE route. The persistent walks above start from a part that is already shut;
+ * this starts from a RUNNING codec -- full-duplex, DAC unmuted by start_output(), microphone open
+ * -- which is the state a reconfigure actually meets in service.
+ *
+ * Part A: a successful reconfigure must silence the OLD route's live converters BEFORE it moves the
+ * clock tree, so neither the DAC nor the microphone is still live when the dividers shift under it.
+ *
+ * Part B: a FAILED reconfigure must never be the thing that unmutes the DAC. Opening the speaker is
+ * start_output()'s job alone, so configure() writes 0x31 only as MUTE, wherever the bus dies. (That
+ * the quiesce may not COMPLETE on a dead bus -- leaving a live converter live from a live start --
+ * is the best-effort limit the failed-configure and persistent-walk tests already pin; no software
+ * beats a dead bus.)
+ */
+static void reconfigure_from_live_never_unmutes_the_dac(audio_route_t target, const char *name)
+{
+	struct audio_codec_cfg cfg;
+	const audio_property_value_t off = {.mute = false};
+	bool reached_the_end = false;
+	int covered = 0;
+
+	for (int n = 0; n < FAULT_WALK_BOUND; n++) {
+		int ret;
+
+		emul_es8311_reset(emul);
+		make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+		zassert_ok(audio_codec_configure(codec, &cfg), "-> %s: setup configure must pass",
+			   name);
+		audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
+		audio_codec_start_output(codec);
+		zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
+			      "-> %s: precondition -- the DAC must be LIVE before the reconfigure",
+			      name);
+
+		emul_es8311_reset_log(emul);
+		make_cfg(&cfg, AUDIO_PCM_RATE_16K, target);
+		emul_es8311_fail_from(emul, n);
+		ret = audio_codec_configure(codec, &cfg);
+		emul_es8311_fail_from(emul, -1);
+
+		for (int i = 0; i < emul_es8311_write_count(emul); i++) {
+			if (emul_es8311_write_at(emul, i) != ES8311_REG_DAC_MUTE) {
+				continue;
+			}
+			zassert_equal(
+				emul_es8311_wval_at(emul, i) & 0x60U, 0x60U,
+				"-> %s: a reconfigure failing from transfer %d WROTE a DAC UNMUTE "
+				"(0x31=0x%02x) -- only start_output() may open the speaker",
+				name, n, emul_es8311_wval_at(emul, i));
+		}
+
+		if (ret == 0) {
+			reached_the_end = true;
+			break;
+		}
+		covered++;
+	}
+
+	zassert_true(
+		reached_the_end,
+		"-> %s: the live walk hit its bound of %d without reaching the end of the sequence",
+		name, FAULT_WALK_BOUND);
+	zassert_true(covered > 1, "-> %s: must reach past the first transfer (covered %d)", name,
+		     covered);
+}
+
+ZTEST(es8311, test_reconfigure_from_a_live_route_quiesces_before_clocks_and_never_unmutes)
+{
+	struct audio_codec_cfg cfg;
+	const audio_property_value_t off = {.mute = false};
+	int clk = -1;
+	int dac_mute = -1;
+	int sdp_out = -1;
+
+	/* Part A: a SUCCESSFUL reconfigure of a live full-duplex route down to playback-only. */
+	emul_es8311_reset(emul);
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "setup configure must pass");
+	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
+	audio_codec_start_output(codec);
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
+		      "precondition -- the DAC must be LIVE");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, 0x00U,
+		      "precondition -- the microphone must be OPEN");
+
+	emul_es8311_reset_log(emul);
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	zassert_ok(audio_codec_configure(codec, &cfg), "reconfigure must pass");
+
+	for (int i = 0; i < emul_es8311_write_count(emul); i++) {
+		int r = emul_es8311_write_at(emul, i);
+
+		if (r == ES8311_REG_CLK_MANAGER && clk < 0) {
+			clk = i;
+		} else if (r == ES8311_REG_DAC_MUTE && dac_mute < 0) {
+			dac_mute = i;
+		} else if (r == ES8311_REG_SDP_OUT && sdp_out < 0) {
+			sdp_out = i;
+		}
+	}
+
+	zassert_true(clk > 0, "the clock manager (0x01) must be written");
+	zassert_true(dac_mute >= 0 && dac_mute < clk,
+		     "the live DAC must be muted before the clocks move (0x31 at %d, 0x01 at %d)",
+		     dac_mute, clk);
+	zassert_true(
+		sdp_out >= 0 && sdp_out < clk,
+		"the live microphone must be muted before the clocks move (0x0A at %d, 0x01 at %d)",
+		sdp_out, clk);
+
+	/* Part B: no FAILED reconfigure of a live route may write a DAC unmute, into any route. */
+	reconfigure_from_live_never_unmutes_the_dac(AUDIO_ROUTE_CAPTURE, "live->CAPTURE");
+	reconfigure_from_live_never_unmutes_the_dac(AUDIO_ROUTE_PLAYBACK, "live->PLAYBACK");
+	reconfigure_from_live_never_unmutes_the_dac(AUDIO_ROUTE_PLAYBACK_CAPTURE, "live->PB_CAP");
 }
 
 /*

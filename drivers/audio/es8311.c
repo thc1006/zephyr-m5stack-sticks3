@@ -286,12 +286,15 @@ LOG_MODULE_REGISTER(es8311);
 /*
  * Settle delays (ms).
  *
- * These bound the DIGITAL settling only -- the clock state machine coming up, and the
- * analog power-up sequence being armed. They say nothing about the ANALOG, which on this
- * part is three 1 uF filtering capacitors on VMID, ADCVREF and DACVREF, takes seconds to
- * charge from cold, and is not specified by the datasheet at all. Mainline Linux's
- * es8311.c says as much in its own reset function: "Specific delay is not documented".
- * Nothing here can or should try to wait that out; the driver simply never causes it.
+ * These give the power-up writes just above them -- CSM_ON, and the analog power register --
+ * a little time to take effect before the next writes lean on them. They do NOT wait on the
+ * audio clock: the codec is configured over I2C with no BCLK running (the transport starts it
+ * later, see the binding's clock-sequencing note), so nothing here is waiting for the clock
+ * state machine to advance. Nor do they cover the ANALOG, which on this part is three 1 uF
+ * filtering capacitors on VMID, ADCVREF and DACVREF, takes seconds to charge from cold, and is
+ * not specified by the datasheet at all -- mainline Linux's es8311.c says the same in its own
+ * reset function ("Specific delay is not documented"). Nothing here can or should wait that
+ * out; the driver simply never causes it.
  */
 #define ES8311_CSM_SETTLE_MS   10
 #define ES8311_PWR_UP_DELAY_MS 10
@@ -794,8 +797,8 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 * the earliest moment it can be sampled, yet the same part reads a floor of zero for ~2 s
 	 * after a register reset. The driver acts on the measurement; the mechanism is not claimed.
 	 *
-	 * The route logic below still powers the ADC down when the new route does not carry capture,
-	 * which is the case that matters.
+	 * The route logic below still powers the ADC down when the new route does not carry
+	 * capture, which is the case that matters.
 	 */
 
 	/* Power the clock state machine up. This resets no register: see 0x00 above. */
@@ -1069,9 +1072,13 @@ end:
  *   output_mute    -- the AUDIO_PROPERTY_OUTPUT_MUTE the caller last asked for.
  *   output_stopped -- the start_output()/stop_output() lifecycle.
  *
- * The DAC is audible only when a playback route is configured AND the caller has not muted it
- * AND the output has not been stopped -- unmuted exactly when
- * playback && !output_mute && !output_stopped.
+ * The DESIRED DAC state is unmuted exactly when a playback route is configured AND the caller has
+ * not muted it AND the output has not been stopped -- playback && !output_mute && !output_stopped.
+ * The HARDWARE is known to match that only after a call that programs the mute register succeeds:
+ * configure(), start_output(), stop_output(), or apply_properties(). set_property() alone only
+ * updates the cache; a bare set_property(OUTPUT_MUTE, true) leaves a live speaker live until the
+ * next such call. This is the audio_codec contract (set_property caches, apply_properties() lands
+ * the cache "as atomic as possible"), not a gap.
  * start_output() clears output_stopped; stop_output() sets it. Neither touches output_mute, and
  * OUTPUT_MUTE never touches output_stopped -- so a caller can mute, start and stop in any order
  * and each control keeps its own meaning. Folding them into one "is the DAC muted" flag would let
@@ -1611,19 +1618,19 @@ static int es8311_init(const struct device *dev)
 	 * firmware left it. Meanwhile the SoC's I2S peripheral DOES reset, so the bit clock stops;
 	 * and this codec takes its master clock from the bit clock. A DAC that was powered and
 	 * unmuted when the reboot hit therefore has its modulator frozen on whatever sample it held
-	 * -- a DC level sitting on the amplifier -- until the application gets around to configure().
-	 * If the previous route was capture, the microphone stays live at its last PGA gain. Neither
-	 * needs a hostile prior firmware; this driver's own previous boot is enough.
+	 * -- a DC level sitting on the amplifier -- until the application gets around to
+	 * configure(). If the previous route was capture, the microphone stays live at its last PGA
+	 * gain. Neither needs a hostile prior firmware; this driver's own previous boot is enough.
 	 *
 	 * So: normalise 0xFA, then put the part somewhere safe -- see es8311_quiesce() -- and leave
 	 * it there until a configure() asks for something.
 	 *
-	 * The 0xFA write does NOT get a veto over the quiesce. es8311_check_id() has just read 0x8311
-	 * back, and a part whose register file is held answers 0x00 to every read -- so INI_REG is
-	 * PROVEN clear by the time control reaches here, and this write only normalises the register's
-	 * other (housekeeping) bits. Letting it fail-and-return would abandon the DAC mute, the DAC
-	 * and ADC power-downs and the microphone disconnect to a transient housekeeping error. It is
-	 * attempted, its error is kept, and the quiesce runs regardless.
+	 * The 0xFA write does NOT get a veto over the quiesce. es8311_check_id() has just read
+	 * 0x8311 back, and a part whose register file is held answers 0x00 to every read -- so
+	 * INI_REG is PROVEN clear by the time control reaches here, and this write only normalises
+	 * the register's other (housekeeping) bits. Letting it fail-and-return would abandon the
+	 * DAC mute, the DAC and ADC power-downs and the microphone disconnect to a transient
+	 * housekeeping error. It is attempted, its error is kept, and the quiesce runs regardless.
 	 */
 	int normalize_err = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
 	int quiesce_err;

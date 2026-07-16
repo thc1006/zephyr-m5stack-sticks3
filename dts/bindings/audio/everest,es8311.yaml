@@ -25,8 +25,10 @@ description: |
     frame carries 48 bit clocks and a 32-bit frame 64, which would put the
     master clock at 384 * Fs and 512 * Fs and silently mis-clock the codec.
 
-  A board that wires a real MCLK into the codec would need register 0x01 bit 7
-  cleared and its own divider values, which this driver does not implement.
+  A configuration that drives the codec from its MCLK input pin (rather than from
+  BCLK) would need register 0x01 bit 7 cleared and its own divider values, which
+  this driver does not implement -- independent of whether the board physically
+  routes an MCLK signal, which this BCLK-derived mode simply ignores.
 
   This driver does not reset the codec, and there is no reset-gpios property,
   because the ES8311 has no reset pin. Its twenty pins are the I2C three, MCLK,
@@ -49,8 +51,10 @@ description: |
   any of them. In particular 0xFA bit 0 (INI_REG) is a LEVEL, not a pulse: while
   it is set the part holds its register file at the defaults, answers 0x00 to
   every read, and discards every write except a write to 0xFA itself. The vendor
-  Linux driver asserts it at shutdown deliberately, so a part can be handed over
-  in that state, and this driver releases it before it does anything else.
+  Linux driver asserts it at shutdown deliberately, so a part can be handed over in
+  that state. This driver reads the identity FIRST and treats a 0x0000 read as a
+  possible hold: it releases 0xFA, re-reads the id, and only then rejects a part
+  that still fails to identify.
 
   Board policy this driver compiles in
   ------------------------------------
@@ -110,24 +114,30 @@ description: |
   -----------------------------------------------
 
   Because the codec's clock IS the bit clock, the transport and the codec output have to be
-  sequenced, in both directions:
+  sequenced. The I2S controller must run a CONTINUOUS bit clock while streaming
+  (I2S_OPT_BIT_CLK_GATED is refused).
 
-    - The I2S controller must run a CONTINUOUS bit clock (I2S_OPT_BIT_CLK_GATED is refused),
-      and BCLK must already be running before audio_codec_start_output() unmutes the DAC.
-      Otherwise the DAC is unmuted with no clock; after a warm restart its modulator can be
-      frozen on the last real sample -- a DC step or pop into the amplifier.
-    - On the way down, audio_codec_stop_output() (or an OUTPUT_MUTE) must happen BEFORE BCLK
-      stops, for the same reason.
+  The hard rule is on the way DOWN: never let BCLK stop while the DAC is powered and unmuted.
+  With no clock the modulator freezes on its last sample -- a DC level sitting on the amplifier.
+  So audio_codec_stop_output() (or an OUTPUT_MUTE) must land BEFORE the transport stops or the
+  I2S controller is suspended.
 
-  Safe order:
+  Startup does not need the mirror of that. configure() brings the DAC up powered but MUTED, and
+  audio_codec_start_output() is the first unmute; unmuting before the transport starts the clock
+  is fine, because a freshly powered DAC idles at mid-scale with no clock, not at a stale level.
+  This is the order samples/drivers/i2s/i2s_codec uses:
 
       audio_codec_configure()
-      i2s_configure()
+      audio_codec_start_output()   # first DAC unmute
       queue initial I2S buffers
-      i2s_trigger(START)          # BCLK now running, continuous
-      audio_codec_start_output()
+      i2s_trigger(START)           # continuous BCLK begins, frames flow
 
-  Shutdown is the reverse: audio_codec_stop_output(), then stop the I2S transport.
+  Shutdown reverses the streaming pair: audio_codec_stop_output() (mute), then stop the
+  transport. A board with a separate power-amp enable should gate the speaker with THAT -- on
+  only once clean frames are flowing, off before the mute -- which is the primary click control
+  on such boards. Capture has no start_input(): the ADC is live as soon as the transport clocks
+  it, and its analog settling is measured in seconds, so an application should discard the first
+  buffers rather than expect the opening frames to be clean.
 
 compatible: "everest,es8311"
 
