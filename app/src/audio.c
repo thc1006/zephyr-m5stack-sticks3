@@ -1411,6 +1411,14 @@ static int sweep_one(uint32_t rate)
 
 	adc_alive = (alive_blocks * 4U) >= (SWEEP_BASELINE_BLOCKS * 3U);
 
+	/*
+	 * Unmute the DAC now -- AFTER the silence baseline above, so it stays clean. configure()
+	 * leaves the DAC muted (start_output() is the first unmute, since the 2026-07 lifecycle
+	 * split), so the tone below and the amplifier would otherwise drive silence. The next
+	 * rate's configure() re-mutes it, so each baseline is measured muted.
+	 */
+	audio_codec_start_output(codec_dev);
+
 	SWEEP_STEP(rate, "amp");
 	/* The clocks are already running, so raising the amplifier here cannot pop. */
 	ret = gpio_pin_set_dt(&amp_gpio, 1);
