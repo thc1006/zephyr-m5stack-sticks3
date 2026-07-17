@@ -95,14 +95,14 @@ west build -p always -b native_sim -d build_test \
 ./build_test/zephyr/zephyr.exe
 ```
 
-Result 2026-06-02: 11/11 pass. Grown to 29/29 by the 2026-07-12 driver rewrite. Covers chip-ID read (a foreign chip id
+Result 2026-06-02: 11/11 pass. Grown to 72/72 across the 2026-07 adversarial reviews. Covers chip-ID read (a foreign chip id
 is rejected with `-ENODEV` and the device is left not-ready), the 16 kHz / 16-bit
 playback configure sequence + write ordering, the capture (ADC) configure sequence,
 **the route transitions** (a route programs BOTH directions and powers the one it
 does not carry DOWN - the earlier test asserted that a capture-only route left the
 DAC *untouched*, which was not a test of correct behaviour but a pin holding the bug
 in place: this driver deliberately never resets the codec, so a DAC a previous route
-powered up stayed up), **a dirty register file** (the first 29 tests all started from
+powered up stayed up), **a dirty register file** (the early tests all started from
 an all-zero emulator, which is a chip in exactly the state the driver would like to
 find it in, so the suite structurally could not see the one defect class the no-reset
 design creates; four tests now seed a dirty chip first, and three of them fail on the
@@ -294,7 +294,7 @@ Pass criteria:
 - I2S playback or loopback works at one sample rate.
 
 Result (2026-06-01): PASS. The in-repo ES8311 codec driver (Zephyr audio codec
-API, native_sim ztest 29/29) configures the codec at 16 kHz / 16-bit
+API, native_sim ztest 72/72) configures the codec at 16 kHz / 16-bit
 (MCLK-from-BCLK) and a 440 Hz beep plays from the speaker on entering the AUDIO
 page - user-confirmed. The AW8737 amp is enabled via the M5PM1 MFD gpio child
 (masked write), and the LCD stayed lit when the amp toggled (L3B rail preserved).
