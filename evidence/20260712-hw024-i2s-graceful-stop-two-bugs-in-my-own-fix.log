@@ -1,0 +1,871 @@
+PARTIALLY SUPERSEDED BY HW-027 -- READ THIS FIRST
+------------------------------------------------
+The two bugs below are real and the measurements stand. But this file's mutation table also
+said, of the GDMA channel reset, "and neither is a channel reset". THAT IS FALSE. The build
+it was based on never had the reset in it: I "verified" the patch with
+`grep -c gdma_ll_rx_reset_channel`, got 2, and did not know that the PRISTINE driver already
+contains two -- in dma_esp32_config_rx() and dma_esp32_reload(). The count proved nothing.
+
+Re-run with the resets counted INSIDE dma_esp32_stop(), the channel reset ALONE is sufficient:
+canary 0/8, 100 cycles, with the I2S RX unit left running. See
+evidence/20260713-hw027-dma_stop-returns-before-the-channel-stops.log.
+
+================================================================================
+
+HW-024  ESP32 I2S: the leak fix I published had TWO bugs of its own -- and the harness
+        I built to prove it caught them CAUGHT ONLY ONE. A human caught the other, by
+        eye. This file is the corrected record.
+
+        M5Stack StickS3 (ESP32-S3-PICO-1), Zephyr 4.4.0, 2026-07-12/13.
+        Upstream: issue #113310, PR #113311.
+
+READ THIS FIRST: THE FIRST VERSION OF THIS FILE OVERCLAIMED
+------------------------------------------------------------
+It said, of the four-build table below, "the test fails on both of my own bugs. That is
+what makes it a test rather than a demonstration."
+
+That was FALSE, and it was published -- in this file, in a commit message, in the body of
+PR #113311, and in a comment to the Espressif area maintainer who had just asked to take
+the fix into his own PR.
+
+The harness printed `STOP drained 0 tail blocks` on the i2s_hal_tx_stop build and then
+printed `STRESS PASSED`, because nothing in it ever ASSERTED on that number. `tail` was
+counted, printed, and thrown away; the pass/fail conditions looked only at the mem-slab
+census, the canary, and the cycle count. And the slab census could not possibly see this
+bug: stopping the TX unit kills the shared bit clock, so RX never reaches STOPPING, so
+nothing leaks and nothing is double-freed. Two defects, each hiding the other, behind a
+flat 8/8 slab.
+
+What actually caught it was a person reading "drained 0" next to stock Zephyr's
+"drained 1" and asking why. A test that prints the evidence and does not check it is not
+a test, and I said it was one.
+
+The harness now asserts it. Re-measured, and both directions verified below.
+
+THE BUG THE OLD HARNESS COULD NOT SEE, AND THE ONE IT COULD
+-----------------------------------------------------------
+    build                                  graceful STOP    mem-slab        verdict
+    ---------------------------------------------------------------------------------
+    stock upstream Zephyr                  drains 1/1       LEAKS 8,7,6...  FAILED
+    my patch v1 (i2s_hal_tx_stop)          DRAINS 0 of 27   flat 8/8        FAILED *
+    my patch v2, RX hand-off removed       drains 1/1       CORRUPT rx=9/8  FAILED
+    my patch v2, complete                  drains 27/27     flat 8/8        PASSED
+
+    * this row is the correction. With the old harness it read PASSED.
+
+The corrected harness's verdict on the tx_stop build, verbatim:
+
+    *** STRESS FAILED: 27 of 27 graceful STOPs drained NOTHING (first at cycle 3).
+        The RX callback's STOPPING branch always hands its final block to the receive
+        queue before it stops, so an empty tail read means that branch never ran and
+        the RX DMA never finished the block it was holding. On this SoC that is what
+        stopping the I2S TX unit does: the TX unit is the source of the shared bit
+        clock, and the RX side is then stranded in I2S_STATE_STOPPING for good.
+
+        The slab is FLAT and the canary is CLEAN and it is still broken. ***
+
+and on the correct driver:
+
+    === STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, and 27 ended with
+        a graceful I2S_TRIGGER_STOP instead of a DROP. All 27 of those drained a tail
+        block (0 came back empty), the slab held 8/8 free the whole way, and the canary
+        was clean. ===
+
+WHAT THE OLD STRESS COULD NOT SEE AT ALL
+-----------------------------------------
+The stress that signed off the first version of the fix ran 100 cycles of
+configure/START/io/DROP and passed. I2S_TRIGGER_DROP goes straight to I2S_STATE_READY
+under irq_lock; I2S_TRIGGER_STOP is the only trigger that ever reaches
+I2S_STATE_STOPPING, and BOTH of the bugs below live there. A test whose inputs never vary
+cannot find a defect that only appears when they do.
+
+So the stress now ends one cycle in three with a graceful STOP and a tail read -- and,
+since 2026-07-13, ASSERTS that the tail read returns something.
+
+BUG 1 -- I STOPPED THE WRONG UNIT, AND IT KILLED THE BIT CLOCK
+--------------------------------------------------------------
+The crash the quiesce fixes is real: on the GDMA path *_stop_transfer() called dma_stop()
+and nothing else, so the hardware went on writing into a block that had just been handed
+back to the slab, and the audio landed on the free-list next pointer. Stopping the I2S
+unit before dma_stop() fixes it.
+
+But I did it in BOTH directions "for symmetry", and symmetry is exactly wrong here:
+
+  RX DMA WRITES to the mem-slab block. A burst that lands after the free corrupts the
+     free list. Stopping the RX unit is necessary.
+  TX DMA only READS from it. A late read of a freed block cannot move one byte of slab
+     metadata. Stopping the TX unit is not necessary --
+
+  -- and it is harmful, because on this SoC the I2S TX unit is what generates the shared
+  bit clock. On a full-duplex graceful STOP the TX side stops first; the bit clock dies
+  with it; the RX DMA can then never finish the block it is holding;
+  i2s_esp32_rx_callback() never fires again; and the stream is stranded in
+  I2S_STATE_STOPPING forever.
+
+Measured, cycle 3, same code, three drivers:
+
+    stock upstream          my patch v1                 my patch v2 (correct)
+    c3.stop    tx=4 rx=5    c3.stop    tx=6 rx=7        c3.stop    tx=6 rx=7
+    c3.stopped tx=5 rx=5    c3.stopped tx=7 rx=7        c3.stopped tx=7 rx=7
+    c3.tail    tx=5 rx=6    c3.tail    tx=7 rx=7        c3.tail    tx=7 rx=8
+    drained 1 tail block    DRAINED 0 TAIL BLOCKS       drained 1 tail block
+
+rx frozen at 7 for a full 150 ms is an RX DMA that is not running. Stock recovers; my
+patch did not, every single time.
+
+Note what the pristine non-GDMA branch actually calls, which is what I thought I was
+mirroring: i2s_hal_tx_stop_LINK() -- the DMA link -- not i2s_hal_tx_stop(), the unit.
+I mirrored the wrong function. (Both names do appear in the pristine driver, in
+*_start_transfer(), which stops and resets the unit before arming the next transfer.
+That also made a bare `grep i2s_hal_rx_stop` idempotency test say "already patched"
+about a completely untouched tree; that check now matches the two-line sequence.)
+
+BUG 2 -- PART 3 TURNED THE LEAK INTO A DOUBLE FREE ON THE STOPPING PATH
+-----------------------------------------------------------------------
+Giving *_stop_transfer() the job of returning whatever mem_block points at is right for a
+block the DMA still owns, and wrong for one the RX callback has already handed to the
+receive queue -- because mem_block goes on pointing at it. Six lines below that
+k_msgq_put(), the STOPPING branch does `goto rx_disable`, which lands in
+rx_stop_transfer(), which frees the block the queue is holding. i2s_read() then returns a
+block that is already on the free list and frees it a second time.
+
+The leak had been covering for this one too.
+
+Measured with the RX hand-off removed -- the mechanism, step by step, in the census:
+
+    c3.stop      tx=6 rx=7    one RX block in flight, queue empty
+    c3.stopped   tx=7 rx=8    rx_stop_transfer() freed the block the QUEUE owns  (7 -> 8)
+    c3.tail-done tx=7 rx=9    i2s_read() freed the same block again              (8 -> 9)
+    *** STRESS: SLAB CORRUPT at cycle 4: tx=8 rx=9 of 8. ***
+
+Nine free blocks in a slab of eight: the same block is on the free list twice.
+
+The fix is to hand ownership over explicitly -- NULL mem_block at the instant the queue
+takes the block -- after which every path out of the callback is correct by construction
+rather than by accident:
+
+    queue full     mem_block still ours        -> rx_stop_transfer() frees it   (right)
+    STOPPING       mem_block NULL, queue owns  -> rx_stop_transfer() skips it   (right)
+    alloc failed   k_mem_slab_alloc() NULLs it -> rx_stop_transfer() skips it   (right)
+    dma failed     freed and NULLed inline     -> rx_stop_transfer() skips it   (right)
+
+The alloc-failure row is worth spelling out, because a reviewer raised it as a second
+double-free trigger and it is not one -- but only by luck. It is safe TODAY because
+k_mem_slab_alloc() writes NULL through its out-parameter when a K_NO_WAIT allocation
+fails (kernel/mem_slab.c). That is an implementation detail of the allocator, not a
+documented contract. With the hand-off above, that path no longer depends on it.
+
+AND THE PART WORTH REMEMBERING
+------------------------------
+Bug 1 was found by eye, not by the harness, and the harness then told me -- in capital
+letters, in a log I committed -- that it had found it. Two bugs on the same code path,
+each masking the other, behind a green test.
+
+The harness now asserts the one thing it was only printing. Both directions are verified
+below: it fails on the tx_stop build and passes on the correct one.
+
+================================================================================
+1. STOCK upstream Zephyr, no patch. Graceful STOP works; the slab leaks.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S stress: 100 cycles, TX starved every 5, graceful STOP every 3 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- one of the two places the leak fix could
+
+       double-free.
+
+STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches
+
+       I2S_STATE_STOPPING -- DROP goes straight to READY -- and that is
+
+       where the RX callback hands its block to the queue while still
+
+       pointing at it. A DROP-only stress cannot see that path at all.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=7 rx=7
+
+    c1.canary  stamped 7 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=7 rx=7
+
+    c2.reset     tx=7 rx=7
+
+    c2.configure tx=7 rx=7
+
+    c2.prequeue  tx=7 rx=7
+
+    c2.start     tx=5 rx=7
+
+    c2.io        tx=5 rx=6
+
+    c2.drop      tx=5 rx=6
+
+    c2.dropped   tx=6 rx=6
+
+    c2.canary  stamped 6 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=6 rx=6   graceful STOP + tail read
+
+    c3.reset     tx=6 rx=6
+
+    c3.configure tx=6 rx=6
+
+    c3.prequeue  tx=6 rx=6
+
+    c3.start     tx=4 rx=6
+
+    c3.io        tx=4 rx=5
+
+    c3.stop      tx=4 rx=5
+
+    c3.stopped   tx=5 rx=5
+
+    c3.tail-read tx=5 rx=5
+
+    c3.tail-done tx=5 rx=6
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=5 rx=6
+
+    c3.dropped   tx=6 rx=6
+
+  stress   4: slab tx=6 rx=6
+
+  stress   5: slab tx=5 rx=5   TX starved on purpose
+
+  stress   6: slab tx=5 rx=4   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress   7: slab tx=5 rx=4
+
+  stress   8: slab tx=4 rx=3
+
+  stress   9: slab tx=3 rx=2   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress  10: slab tx=3 rx=2   TX starved on purpose
+
+*** STRESS: SLAB EXHAUSTED at cycle 12: tx=2 rx=1 of 8.
+
+    The driver leaks one block per direction per START/DROP.
+
+    Starting anyway would block FOREVER inside i2s_buf_write(),
+
+    which allocates with K_FOREVER -- no error, no log line.
+
+    Fix: scripts/patch_zephyr_i2s_leak.sh ***
+
+  final census: tx=2 rx=1 of 8
+
+*** STRESS FAILED: the slab leaked out after 12 cycle(s).
+
+    This is the unpatched Zephyr ESP32 I2S driver. ***
+
+*** I2S SLAB STRESS FAILED ***
+
+[monitor captured 9641 chars; last 1.5s silent]
+
+================================================================================
+2. MY PATCH v1 -- with i2s_hal_tx_stop(), against the CORRECTED harness.
+   The slab is flat 8/8 the whole way and the canary is clean. It fails anyway:
+   27 of 27 graceful STOPs drained nothing. This is the run the old harness passed.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S stress: 100 cycles, TX starved every 5, graceful STOP every 3 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- one of the two places the leak fix could
+
+       double-free.
+
+STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches
+
+       I2S_STATE_STOPPING -- DROP goes straight to READY -- and that is
+
+       where the RX callback hands its block to the queue while still
+
+       pointing at it. A DROP-only stress cannot see that path at all.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stop      tx=6 rx=7
+
+    c3.stopped   tx=7 rx=7
+
+    c3.tail-read tx=7 rx=7
+
+    c3.tail-done tx=7 rx=7
+
+             STOP drained 0 tail blocks
+
+    c3.drop      tx=7 rx=7
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+  stress   6: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 0 tail blocks
+
+  stress   7: slab tx=8 rx=8
+
+  stress   8: slab tx=8 rx=8
+
+  stress   9: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 0 tail blocks
+
+  stress  10: slab tx=8 rx=8   TX starved on purpose
+
+  stress  12: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  15: slab tx=8 rx=8   TX starved on purpose
+
+  stress  18: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  20: slab tx=8 rx=8   TX starved on purpose
+
+  stress  21: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  24: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  25: slab tx=8 rx=8   TX starved on purpose
+
+  stress  27: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  30: slab tx=8 rx=8   TX starved on purpose
+
+  stress  33: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  35: slab tx=8 rx=8   TX starved on purpose
+
+  stress  36: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  39: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  40: slab tx=8 rx=8   TX starved on purpose
+
+  stress  42: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  45: slab tx=8 rx=8   TX starved on purpose
+
+  stress  48: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  50: slab tx=8 rx=8   TX starved on purpose
+
+  stress  51: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  54: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  55: slab tx=8 rx=8   TX starved on purpose
+
+  stress  57: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  60: slab tx=8 rx=8   TX starved on purpose
+
+  stress  63: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  65: slab tx=8 rx=8   TX starved on purpose
+
+  stress  66: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  69: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  70: slab tx=8 rx=8   TX starved on purpose
+
+  stress  72: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  75: slab tx=8 rx=8   TX starved on purpose
+
+  stress  78: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  80: slab tx=8 rx=8   TX starved on purpose
+
+  stress  81: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  84: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  85: slab tx=8 rx=8   TX starved on purpose
+
+  stress  87: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  90: slab tx=8 rx=8   TX starved on purpose
+
+  stress  93: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  95: slab tx=8 rx=8   TX starved on purpose
+
+  stress  96: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  99: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress 100: slab tx=8 rx=8   TX starved on purpose
+
+  final census: tx=8 rx=8 of 8
+
+*** STRESS FAILED: 27 of 27 graceful STOPs drained NOTHING (first at
+
+    cycle 3). The RX callback's STOPPING branch always hands its final
+
+    block to the receive queue before it stops, so an empty tail read
+
+    means that branch never ran and the RX DMA never finished the block
+
+    it was holding. On this SoC that is what stopping the I2S TX unit
+
+    does: the TX unit is the source of the shared bit clock, and the RX
+
+    side is then stranded in I2S_STATE_STOPPING for good.
+
+    The slab is FLAT and the canary is CLEAN and it is still broken. ***
+
+*** I2S SLAB STRESS FAILED ***
+
+[monitor captured 12835 chars; last 0.0s silent]
+
+================================================================================
+3. MY PATCH v2 with the RX hand-off REMOVED -- the callback keeps pointing at the block
+   it gave the queue. rx climbs to 9 of 8 and the census stops the run.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S stress: 100 cycles, TX starved every 5, graceful STOP every 3 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- one of the two places the leak fix could
+
+       double-free.
+
+STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches
+
+       I2S_STATE_STOPPING -- DROP goes straight to READY -- and that is
+
+       where the RX callback hands its block to the queue while still
+
+       pointing at it. A DROP-only stress cannot see that path at all.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stop      tx=6 rx=7
+
+    c3.stopped   tx=7 rx=8
+
+    c3.tail-read tx=7 rx=8
+
+    c3.tail-done tx=7 rx=9
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=7 rx=9
+
+    c3.dropped   tx=8 rx=9
+
+*** STRESS: SLAB CORRUPT at cycle 4: tx=8 rx=9 of 8.
+
+    More free blocks than exist. The free list has a cycle:
+
+    some block was returned to the slab twice. ***
+
+  final census: tx=8 rx=9 of 8
+
+*** STRESS FAILED: the slab free list was corrupted at cycle 4.
+
+    A block was freed twice. ***
+
+*** I2S SLAB STRESS FAILED ***
+
+[monitor captured 10989 chars; last 0.0s silent]
+
+================================================================================
+4. MY PATCH v2, COMPLETE, against the corrected harness. 100 cycles, 20 TX-starved,
+   27 graceful STOPs, all 27 draining a tail block, slab flat, canary clean.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S stress: 100 cycles, TX starved every 5, graceful STOP every 3 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- one of the two places the leak fix could
+
+       double-free.
+
+STOP  : the other one. I2S_TRIGGER_STOP is the only trigger that reaches
+
+       I2S_STATE_STOPPING -- DROP goes straight to READY -- and that is
+
+       where the RX callback hands its block to the queue while still
+
+       pointing at it. A DROP-only stress cannot see that path at all.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stop      tx=6 rx=7
+
+    c3.stopped   tx=7 rx=7
+
+    c3.tail-read tx=7 rx=7
+
+    c3.tail-done tx=7 rx=8
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=7 rx=8
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+  stress   6: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress   7: slab tx=8 rx=8
+
+  stress   8: slab tx=8 rx=8
+
+  stress   9: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress  10: slab tx=8 rx=8   TX starved on purpose
+
+  stress  12: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  15: slab tx=8 rx=8   TX starved on purpose
+
+  stress  18: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  20: slab tx=8 rx=8   TX starved on purpose
+
+  stress  21: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  24: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  25: slab tx=8 rx=8   TX starved on purpose
+
+  stress  27: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  30: slab tx=8 rx=8   TX starved on purpose
+
+  stress  33: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  35: slab tx=8 rx=8   TX starved on purpose
+
+  stress  36: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  39: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  40: slab tx=8 rx=8   TX starved on purpose
+
+  stress  42: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  45: slab tx=8 rx=8   TX starved on purpose
+
+  stress  48: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  50: slab tx=8 rx=8   TX starved on purpose
+
+  stress  51: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  54: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  55: slab tx=8 rx=8   TX starved on purpose
+
+  stress  57: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  60: slab tx=8 rx=8   TX starved on purpose
+
+  stress  63: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  65: slab tx=8 rx=8   TX starved on purpose
+
+  stress  66: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  69: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  70: slab tx=8 rx=8   TX starved on purpose
+
+  stress  72: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  75: slab tx=8 rx=8   TX starved on purpose
+
+  stress  78: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  80: slab tx=8 rx=8   TX starved on purpose
+
+  stress  81: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  84: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  85: slab tx=8 rx=8   TX starved on purpose
+
+  stress  87: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  90: slab tx=8 rx=8   TX starved on purpose
+
+  stress  93: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  95: slab tx=8 rx=8   TX starved on purpose
+
+  stress  96: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  99: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress 100: slab tx=8 rx=8   TX starved on purpose
+
+  final census: tx=8 rx=8 of 8
+
+=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, and 27 ended
+
+    with a graceful I2S_TRIGGER_STOP instead of a DROP. All 27 of those
+
+    drained a tail block (0 came back empty), the slab held 8/8 free the
+
+    whole way, and the canary was clean. No leak; no block freed twice on
+
+    the tx_disable path or on the STOPPING queue hand-off; and no stream
+
+    stranded in STOPPING by a bit clock that stopped with TX. ===
+
+*** I2S SLAB STRESS PASSED ***
+
+[monitor captured 14929 chars; last 0.0s silent]

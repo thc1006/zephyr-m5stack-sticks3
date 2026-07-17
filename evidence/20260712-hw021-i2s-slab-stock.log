@@ -1,0 +1,135 @@
+# HW-021a - the ESP32 I2S mem-slab leak, on STOCK Zephyr. 2026-07-12, COM35.
+#
+# 100 reconfigure/START/DROP cycles with a census of the TX and RX slabs before each.
+# The slab drains by EXACTLY ONE BLOCK PER DIRECTION PER CYCLE and is empty by the 8th.
+# It does not fail: i2s_buf_write() allocates with K_FOREVER, so an exhausted slab is a
+# silent unkillable block. The guard in the test is what turns that into a report.
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x29 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x403773aa
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90190,len:0x2cec
+
+load:0x40374000,len:0xc17c
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 89622a935d6ef40263cea072f69f8abcf2bb78b5825fc211c3ea91c91be01b8e
+
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037a924
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Jul 12 2026 19:52:29
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0cdc8h ( 52680)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=043cch ( 17356)
+
+I (boot): libc heap size 146 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S START/DROP stress: 100 cycles, TX starved every 5 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- the one place the leak fix could double-free.
+
+  stress   1: slab tx=8 rx=8
+
+  stress   2: slab tx=7 rx=7
+
+  stress   3: slab tx=6 rx=6
+
+  stress   4: slab tx=5 rx=5
+
+  stress   5: slab tx=4 rx=4   TX starved on purpose
+
+  stress   6: slab tx=4 rx=3
+
+  stress   7: slab tx=3 rx=2
+
+*** STRESS: SLAB EXHAUSTED at cycle 8: tx=2 rx=1 of 8.
+
+    The driver leaks one block per direction per START/DROP.
+
+    Starting anyway would block FOREVER inside i2s_buf_write(),
+
+    which allocates with K_FOREVER -- no error, no log line.
+
+    Fix: scripts/patch_zephyr_i2s_leak.sh ***
+
+  final census: tx=2 rx=1 of 8
+
+*** STRESS FAILED: the slab leaked out after 8 cycle(s).
+
+    This is the unpatched Zephyr ESP32 I2S driver. ***
+
+*** I2S SLAB STRESS FAILED ***
+
+[monitor captured 7343 chars; last 0.0s silent]

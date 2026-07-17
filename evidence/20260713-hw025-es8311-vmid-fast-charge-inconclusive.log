@@ -1,0 +1,535 @@
+HW-025  ES8311: an attempt to shorten the six-second ADC wake-up. INCONCLUSIVE.
+        Recorded because the negative is worth having and the lever is worth knowing.
+
+        M5Stack StickS3 (3rd unit, COM35), Zephyr 4.4.0, 2026-07-13.
+
+WHY THIS WAS TRIED
+------------------
+HW-023 established that the ES8311's ADC takes about six seconds of wall clock to wake
+up after the codec's analog state is disturbed, that there is no sample-rate dependence,
+and that neither the analog bias register (0x10 = 0x1F) nor the power-up stage timers
+(0x0B / 0x0C = 0x00) shorten it.
+
+The datasheet (Everest ES8311, Rev 10.0, Jan 2021) explains why none of that was going
+to work, and names the one thing that might.
+
+There is NO microphone-bias pin on this codec. Pins 14, 15 and 16 are DACVREF, ADCVREF
+and VMID, and the datasheet describes all three identically: "Analog Filtering capacitor
+connection". Its own typical application circuit hangs 1 uF on each. So the settling time
+is three capacitors charging -- as much a property of the board's component values as of
+the chip -- which is exactly why no chip datasheet can specify it, and none does. Neither
+does any reference driver: the longest delay anywhere in eight of them is 20 ms, and
+mainline Linux's es8311.c says so outright:
+
+    /* Specific delay is not documented, using the same as es8316. */
+    usleep_range(5000, 5500);
+
+The 0x00 block reset clears CSM_ON, which powers the state machine and the analog down.
+The caps discharge. Charging them back is the six seconds.
+
+And register 0x0D bits [1:0] are VMIDSEL, whose documented values are:
+
+    0 - vmid off        1 - normal speed charge        3 - start up vmid FAST speed charge
+
+A field whose entire purpose is the speed of the thing being measured. All EIGHT
+reference drivers -- ESP-ADF, esp_codec_dev, esp-bsp, esp-dev-kits, NuttX, Bouffalo,
+mainline Linux and the ANYCUBIC vendor tree -- write 0x0D = 0x01. Normal. So does this
+driver. Nobody uses the fast charge.
+
+RESULT
+------
+    arm                                        woke after   "steady" floor
+    A  0x0D as the driver writes it (VMIDSEL=1)   5151 ms        573
+    B  VMIDSEL=3, fast speed charge               4128 ms       1404
+    C  VMIDSEL=3 + IBIAS_SW level3 (0x10=0x1f)    4641 ms       1003
+
+Read naively, B is a second faster than A and the fast charge works. That reading does
+not survive contact with the rest of the data, and this run is recorded as a NEGATIVE for
+two reasons.
+
+1. THE RUN-TO-RUN VARIANCE IS AS LARGE AS THE EFFECT. Arm A is the same experiment as
+   HW-023c arm A, on the same board, with the same code. HW-023c measured 6175 ms. This
+   run measured 5151 ms. That is a one-second spread between two runs of an IDENTICAL
+   arm -- the same size as the A-to-B difference the experiment is trying to claim. And
+   C, which adds the maximum analog bias on top of the fast charge, came back SLOWER than
+   B rather than faster, which an effect this clean should not do.
+
+2. THE METRIC IS CONTAMINATED. The "steady floor" column should read 81..116 -- that is
+   this board's settled noise floor, measured many times today. It reads 573, 1404, 1003.
+   Those are five to fifteen times too high, which means the peak-RMS-over-500 ms readout
+   is being dominated by room noise, not by the codec. If a transient can move the steady
+   floor by 10x, it can also trip the >= 40 wake threshold early, and the "woke after"
+   column inherits that.
+
+So: no claim is made here. The fast charge is neither confirmed nor refuted.
+
+WHAT WOULD SETTLE IT
+--------------------
+A median-over-the-window floor instead of a peak, so a cough does not register; each arm
+repeated enough times to state a variance rather than a number; and a quiet room. None of
+that is hard. It was not done because it does not block anything: the driver does not
+reset the codec and does not need to (HW-023d: writing every register it depends on gives
+a fully deterministic state at zero settling cost), so the six seconds are only ever paid
+on a true cold power-on, by the board, before any driver runs.
+
+The lever is recorded here for whoever wants it. VMIDSEL = 3 is documented, unused by
+every reference implementation, and costs one constant.
+
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== HW-025: is VMIDSEL fast-charge (0x0D[1:0]=3) the lever on the 6.2 s? ===
+
+  the ES8311 has no MICBIAS pin. VMID, ADCVREF and DACVREF are three 1 uF
+
+  filtering caps, the 0x00 reset powers the analog down and discharges them,
+
+  and charging them back is the six seconds. 0x0D[1:0] is the documented
+
+  charge-speed control. All eight reference drivers write 1 (normal). So do
+
+  we. Nobody has tried 3 (fast). A regressed steady-state floor would make
+
+  it not worth having, so both numbers are printed.
+
+  --- A: 0x0D as the driver writes it (VMIDSEL=1, normal) ---
+
+  t=543    floor=0
+
+  t=1055   floor=0
+
+  t=1567   floor=0
+
+  t=2079   floor=0
+
+  t=2591   floor=0
+
+  t=3103   floor=2
+
+  t=3615   floor=3
+
+  t=4127   floor=2
+
+  t=4639   floor=24
+
+  t=5151   floor=65
+
+  t=5663   floor=342
+
+  t=6175   floor=921
+
+  t=6687   floor=903
+
+  t=7199   floor=573
+
+  => woke after 5151 ms, steady floor 573
+
+  --- B: VMIDSEL=3, fast speed charge ---
+
+  0x0D: 0x01 -> 0x03  (VMIDSEL 3)
+
+  t=544    floor=0
+
+  t=1056   floor=0
+
+  t=1568   floor=0
+
+  t=2080   floor=0
+
+  t=2592   floor=0
+
+  t=3104   floor=1
+
+  t=3616   floor=5
+
+  t=4128   floor=44
+
+  t=4640   floor=69
+
+  t=5152   floor=92
+
+  t=5664   floor=70
+
+  t=6176   floor=1404
+
+  => woke after 4128 ms, steady floor 1404
+
+  --- C: VMIDSEL=3 + IBIAS_SW level3 (0x10=0x1f) ---
+
+  0x0D: 0x01 -> 0x03  (VMIDSEL 3)
+
+  t=545    floor=0
+
+  t=1057   floor=0
+
+  t=1569   floor=0
+
+  t=2081   floor=0
+
+  t=2593   floor=0
+
+  t=3105   floor=0
+
+  t=3617   floor=1
+
+  t=4129   floor=27
+
+  t=4641   floor=48
+
+  t=5153   floor=14
+
+  t=5665   floor=32
+
+  t=6177   floor=643
+
+  t=6689   floor=1003
+
+  => woke after 4641 ms, steady floor 1003
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A codec
+
+        whose clock tree did not lock cannot run its modulator and
+
+        returns zeros or a stuck constant here
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=1369  [-389..395] tone_rms=1376   peak=15587  PASS
+
+  sweep.11025: slab pre-reset  tx=8 rx=8
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=1125  [-521..343] tone_rms=2614   peak=26825  PASS
+
+  sweep.12000: slab pre-reset  tx=8 rx=8
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=109   [-105..192] tone_rms=2319   peak=22793  PASS
+
+  sweep.16000: slab pre-reset  tx=8 rx=8
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=107   [-59..193] tone_rms=2102   peak=20714  PASS
+
+  sweep.22050: slab pre-reset  tx=8 rx=8
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=96    [-232..116] tone_rms=4083   peak=32767  PASS
+
+  sweep.24000: slab pre-reset  tx=8 rx=8
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=99    [-189..124] tone_rms=2477   peak=23065  PASS
+
+  sweep.32000: slab pre-reset  tx=8 rx=8
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=95    [-253..223] tone_rms=4583   peak=18207  PASS
+
+  sweep.44100: slab pre-reset  tx=8 rx=8
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+  sweep.44100: start
+
+  sweep.44100: warmup
+
+  sweep.44100: baseline
+
+  sweep.44100: amp
+
+  sweep.44100: settle
+
+  sweep.44100: timed
+
+  sweep.44100: stop
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=385   [-781..556] tone_rms=9645   peak=32767  PASS
+
+  sweep.48000: slab pre-reset  tx=8 rx=8
+
+  sweep.48000: reset
+
+  sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.48000: cfg-tx
+
+  sweep.48000: cfg-codec
+
+  sweep.48000: cfg-rx
+
+  sweep.48000: regs
+
+  sweep.48000: prequeue
+
+  sweep.48000: start
+
+  sweep.48000: warmup
+
+  sweep.48000: baseline
+
+  sweep.48000: amp
+
+  sweep.48000: settle
+
+  sweep.48000: timed
+
+  sweep.48000: stop
+
+SWEEP 48000  regs=OK  lrck=47995  OK  adc=alive floor=302   [-277..352] tone_rms=15067  peak=32767  PASS
+
+=== sweep: 0 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+
+SWEEP route playback  PASS
+
+SWEEP route capture   PASS
+
+SWEEP route both      PASS
+
+=== routes: 0 of 3 FAILED ===
+
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+=== SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
+    What that means: the clock registers land on the chip, the frame clock
+
+    is right, the ADC is running, and the route registers are what the
+
+    driver intended. What it does NOT mean: nothing here measures audio
+
+    quality or the codec's internal OSR. The speaker is judged by ear.
+
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+[monitor captured 15312 chars; last 0.5s silent]

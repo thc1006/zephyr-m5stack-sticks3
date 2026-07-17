@@ -1,0 +1,121 @@
+# HW-019 attempt 1 - 2026-07-12, StickS3 on COM35 (ESP32-S3-PICO-1-N8R8,
+# MAC 98:88:e0:0e:dc:64, a THIRD physical device: independent of the boards used
+# for HW-006/HW-016 and HW-018). Image: hw019-sweep-7391bbc.bin, built from 7391bbc.
+#
+# VERDICT: the sweep FAILED, and the fault is in the TEST, not the codec.
+#
+# sweep_one() raised the amplifier and then k_msleep(AMP_SETTLE_MS = 20) with the
+# full-duplex stream running: nobody feeding TX, nobody draining RX. Both halves of
+# that bill came due, and both are predicted to the decimal from AMP_SETTLE_MS,
+# BLOCK_FRAMES (256) and the 2-block pre-queue, with nothing fitted:
+#
+#   * RX queues blocks nobody reads, so the timed loop finishes in fewer than 40
+#     block-times and the measured frame clock comes out HIGH in exact proportion
+#     to the rate.  predicted / observed:
+#         8000  +1.59% / +1.68%      16000 +3.23% / +3.41%
+#        11025  +2.20% / +2.33%      22050 +4.50% / +4.78%
+#        12000  +2.40% / +2.54%      24000 +4.92% / +5.21%
+#     (2% tolerance, so everything above 8 kHz was failed by the measurement.)
+#
+#   * TX runs dry. Two pre-queued blocks hold 2 * 256 / rate seconds of audio, which
+#     falls under the 20 ms settle at 32 kHz. Predicted to underrun into I2S ERROR
+#     (-EIO) at 32000, 44100 and 48000 and at no lower rate. Observed: exactly those
+#     three, and no others.
+#
+# THE CONTROL IS IN THIS LOG. The restore measurement runs the same code with no
+# sleep in it, and read `lrck measured 16000 Hz, want 16000  OK` -- on this board,
+# through this driver, at a rate the per-rate loop had just called BAD (16546).
+#
+# WHAT THIS RUN DOES ESTABLISH, on silicon:
+#   * regs=OK at all NINE rates: the identical clock-register set the 256fs argument
+#     rests on is written and reads back at every rate from 8 kHz to 48 kHz.
+#   * ALL THREE ROUTE TRANSITIONS PASS: playback-only, capture-only and both, with
+#     0x01/0x09/0x0A/0x0D/0x0E/0x12/0x14 read back off the real chip. Those values
+#     had never touched silicon before this run.
+#   * adc=alive from 8 kHz to 24 kHz: the codec's clock tree locks and the modulator
+#     runs. (32 kHz and up died before their line was printed -- a second test flaw,
+#     now fixed: the diagnostic line is printed even when a phase errors.)
+#
+# WHAT IT DOES NOT ESTABLISH: the frame clock at 11025 Hz and above. That measurement
+# was invalid. HW-019b re-runs it with the settle draining the stream instead of
+# sleeping in it.
+#
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM35 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200[38;5;3m
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ct[m[38;5;3mrl+T followed by Ctrl+H[m
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x403773aa[38;5;9m
+xtensa-esp32-elf-addr2line -fiaC -e D:\dev\2026\hw\hw019-sweep-7391bbc.elf 0x403773aa: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??[m
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fc90190,len:0x2cec
+load:0x40374000,len:0xc17c[38;5;9m
+xtensa-esp32-elf-addr2line -fiaC -e D:\dev\2026\hw\hw019-sweep-7391bbc.elf 0x40374000: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??
+[mload:0x50000000,len:0x24
+SHA-256 comparison failed:
+Calculated: ae546c1748aa34311e17e5cbc2387b3e3f10668217fc1d31543e04b1820abaf6
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+Attempting to boot anyway...
+entry 0x4037a924
+[38;5;9mxtensa-esp32-elf-addr2line -fiaC -e D:\dev\2026\hw\hw019-sweep-7391bbc.elf 0x4037a924: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??[m
+I (soc_init): ESP Simple boot
+I (soc_init): compile time Jul 12 2026 06:41:52
+W (soc_init): Unicore bootloader
+I (soc_init): chip revision: v0.2
+I (flash_init): Boot SPI Speed : 80MHz
+I (flash_init): SPI Mode       : DIO
+I (flash_init): SPI Flash Size : 8MB
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d208h ( 53768)
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=0437ch ( 17276)
+I (boot): libc heap size 145 kB.
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+I (spi_flash): detected chip: gd
+I (spi_flash): flash io: dio
+*** Booting Zephyr OS build v4.4.0 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+[00:00:00.395,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== ES8311 sample-rate sweep ===
+regs  : the clock registers read back off the chip over I2C
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+        which is not derived from the I2S clock
+adc   : the microphone noise floor with the amplifier off. A codec
+        whose clock tree did not lock cannot run its modulator and
+        returns zeros or a stuck constant here
+tone  : the captured level with the amplifier on. Reported, not
+        asserted: this speaker couples weakly into this microphone.
+        Judge the speaker by ear; the pitch rises across the sweep
+        because the tone table was made for 16 kHz
+
+SWEEP 8000   regs=OK  lrck=8134   OK  adc=alive floor=66    [-128..52] tone_rms=607    peak=5930   PASS
+SWEEP 11025  regs=OK  lrck=11282  BAD adc=alive floor=72    [-138..134] tone_rms=996    peak=10856  FAIL
+SWEEP 12000  regs=OK  lrck=12305  BAD adc=alive floor=83    [-103..125] tone_rms=2772   peak=32767  FAIL
+SWEEP 16000  regs=OK  lrck=16546  BAD adc=alive floor=81    [-108..114] tone_rms=1425   peak=11391  FAIL
+SWEEP 22050  regs=OK  lrck=23104  BAD adc=alive floor=89    [-123..99] tone_rms=2206   peak=16031  FAIL
+SWEEP 24000  regs=OK  lrck=25251  BAD adc=alive floor=61    [-144..109] tone_rms=3479   peak=32767  FAIL
+SWEEP 32000  FAIL tone i/o=-5 (block 0)
+SWEEP 44100  FAIL tone i/o=-5 (block 0)
+SWEEP 48000  FAIL tone i/o=-5 (block 0)
+
+=== sweep: 8 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+SWEEP route playback  PASS
+SWEEP route capture   PASS
+SWEEP route both      PASS
+=== routes: 0 of 3 FAILED ===
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+*** SWEEP FAILED: 8 of 9 rate(s), 0 of 3 route(s) ***
+
+*** ES8311 RATE SWEEP FAILED ***
+[monitor captured 8429 chars]
