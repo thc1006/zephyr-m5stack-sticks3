@@ -213,6 +213,23 @@ static int audio_codec_probe(void)
 }
 
 /*
+ * Build the ES8311 codec config from the SoC's I2S config. The I2S_OPT_*_CLK role flags are
+ * endpoint-relative: the SoC I2S is the CONTROLLER (it drives BCLK and LRCK), so the codec is the
+ * TARGET -- it receives them. Keeping this in ONE place is what stops the call sites from drifting;
+ * passing the SoC's CONTROLLER role to the codec is what the es8311 driver rejects with -ENOTSUP.
+ * mclk_freq is 0 because the codec makes its master clock from BCLK, not from an MCLK input pin.
+ */
+static void audio_codec_cfg_from_i2s(struct audio_codec_cfg *codec_cfg,
+				     const struct i2s_config *i2s_cfg, audio_route_t route)
+{
+	codec_cfg->mclk_freq = 0U;
+	codec_cfg->dai_type = AUDIO_DAI_TYPE_I2S;
+	codec_cfg->dai_route = route;
+	codec_cfg->dai_cfg.i2s = *i2s_cfg;
+	codec_cfg->dai_cfg.i2s.options = I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET;
+}
+
+/*
  * Program I2S and the codec for `rate`: everything that has to be redone when the
  * sample rate changes, and nothing that must happen only once. The rate sweep
  * reprograms the chain per rate and restores it through this, so it must not probe
@@ -250,16 +267,7 @@ static int audio_configure_chain(uint32_t rate)
 		return ret;
 	}
 
-	/*
-	 * mclk_freq is the frequency of the clock fed to the codec's MCLK *input*
-	 * pin. The codec takes its master clock from BCLK instead, so there is no
-	 * MCLK input to describe and the driver requires zero here. The old value
-	 * (256 * Fs) was the codec's *internal* clock, which is not on any pin.
-	 */
-	codec_cfg.mclk_freq = 0U;
-	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
-	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
-	codec_cfg.dai_cfg.i2s = i2s_cfg;
+	audio_codec_cfg_from_i2s(&codec_cfg, &i2s_cfg, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 
 	ret = audio_codec_configure(codec_dev, &codec_cfg);
 	if (ret < 0) {
@@ -1298,10 +1306,7 @@ static int sweep_one(uint32_t rate)
 	 * mclk_freq is the codec's MCLK *input*, which this board does not drive:
 	 * the codec derives its master clock from BCLK, so the driver requires 0.
 	 */
-	codec_cfg.mclk_freq = 0U;
-	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
-	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
-	codec_cfg.dai_cfg.i2s = i2s_cfg;
+	audio_codec_cfg_from_i2s(&codec_cfg, &i2s_cfg, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 
 	SWEEP_STEP(rate, "cfg-codec");
 	ret = audio_codec_configure(codec_dev, &codec_cfg);
@@ -1636,10 +1641,7 @@ static int sweep_one_route(const char *name, audio_route_t route, unsigned int i
 	i2s_cfg.block_size = BLOCK_SIZE;
 	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
 
-	codec_cfg.mclk_freq = 0U;
-	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
-	codec_cfg.dai_route = route;
-	codec_cfg.dai_cfg.i2s = i2s_cfg;
+	audio_codec_cfg_from_i2s(&codec_cfg, &i2s_cfg, route);
 
 	ret = audio_codec_configure(codec_dev, &codec_cfg);
 	if (ret < 0) {
