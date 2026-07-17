@@ -6,7 +6,8 @@ Accepted (2026-06-05). Superseded the "open our own ES8311 PR" framing of task #
 issue #7.
 
 **Amended 2026-07-11 — the decision is now GO.** The upstream effort this ADR chose
-to engage was abandoned (every ES8311 PR closed, none merged), which triggers this
+to engage has no open PR left (every ES8311 PR is closed and unmerged, and no open
+successor was found), which triggers this
 ADR's own documented fallback: open a fresh clean-split PR. Read the
 "Update 2026-07-11" section at the bottom before acting on anything below it.
 
@@ -136,17 +137,32 @@ moot.
 
 ### Decision: GO
 
-Submit our own PR: the codec driver + the `everest,es8311` binding + the ztest, as
-one focused PR with no board and no sample, per
-`docs/issues/0007-es8311-upstream-readiness.md`. Lead with the capture/ADC route —
-it is HW-verified on real silicon (HW-016d) and #107660 never had it. As a courtesy,
-leave a short note on the closed #107660 so the previous author and its reviewers see
-it coming.
+Submit our own PR: the codec driver + `Kconfig.es8311` + the `everest,es8311`
+binding + a node in `tests/drivers/build_all/audio/i2c_devices.overlay`, with no
+board and no sample, per `docs/issues/0007-es8311-upstream-readiness.md`. As a
+courtesy, leave a short note on the closed #107660 so the previous author and its
+reviewers see it coming.
+
+**Amended 2026-07-12, two scope corrections found while preparing the submission:**
+
+- **The ztest and the emulator stay out of the first PR.** There is no codec test
+  anywhere under `tests/drivers/audio/` and no codec emulator in the tree, so both
+  are new surface in an area that has no maintainer, only collaborators. Offer them
+  and land them as a follow-up; the build-only overlay is what every other codec
+  ships and it is what makes CI compile the driver.
+- **Do not sell the capture route as `route_input()` / direction-aware
+  `start()`/`stop()` API fit.** The Context section above says the API models
+  capture that way, which is true of the API but not of our driver: it implements
+  neither callback. Capture is enabled by `configure(AUDIO_ROUTE_CAPTURE)` and is on
+  from then on, as in the in-tree wm8904 and da7212. The differentiator is real, but
+  it is `configure()` plus `AUDIO_PROPERTY_INPUT_VOLUME` and
+  `AUDIO_PROPERTY_INPUT_MUTE`, hardware-verified at HW-016d. Claiming callbacks we
+  do not implement would be caught in the first review pass.
 
 ### Consequence for the gate script
 
 `scripts/check_es8311_upstream_gate.sh` required a live *successor* PR to appear
-before it would open. That deadlocks: once an effort is abandoned no successor ever
+before it would open. That deadlocks: once an effort stops, no successor ever
 appears, so the gate could never open, and "nobody is doing it" would be read as a
 reason to keep waiting rather than a reason to act. It now reports GO / ENGAGE /
 HOLD. Inverting that condition introduced a mirror of the original false-merge bug —

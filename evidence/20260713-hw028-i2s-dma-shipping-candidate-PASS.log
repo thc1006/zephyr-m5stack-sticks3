@@ -1,0 +1,731 @@
+HW-028  The shipping candidate for PR #113311: both commits, on hardware, twice --
+        once at the normal block size and once at a block size that forces the DMA
+        to chunk. Both clean.
+
+        M5Stack StickS3 (ESP32-S3-PICO-1), Zephyr 4.4.0, 2026-07-13.
+        Upstream: issue #113310, PR #113311 (2 commits, head 4cc7a99).
+
+        Supersedes the mutation table in HW-024 and extends HW-027.
+
+WHAT IS UNDER TEST
+------------------
+Two commits, applied together by scripts/patch_zephyr_dma_quiesce.sh and
+scripts/patch_zephyr_i2s_leak.sh:
+
+  1. drivers/dma/dma_esp32_gdma.c -- reset the channel in dma_esp32_stop(), because
+     GDMA_INLINK_STOP_CHn is (R/W/SC), a self-clearing command strobe with no
+     acknowledge. STOP is a request. The channel goes on writing after it returns.
+     HW-027 is the measurement that proves that.
+
+  2. drivers/i2s/i2s_esp32.c -- return the DMA's in-flight mem-slab block, stop the
+     RX unit before the DMA on BOTH the GDMA and non-GDMA paths, use dma_stop()'s
+     return value, and hand ownership of the block to the receive queue explicitly.
+
+     ESP32 and ESP32-S2 deliberately do NOT free the block: that half is gated behind
+     #if SOC_GDMA_SUPPORTED. I cannot run those parts, and the whole subject of this
+     series is a stop that looked sufficient and was not.
+
+PROVENANCE OF THE SECOND RUN  (this is the part I got wrong before, so it is written down)
+-----------------------------------------------------------------------------------------
+The second run below claims 4096-byte blocks. A log that merely asserts what it is,
+is not evidence. So, the chain, each link checkable after the fact:
+
+  source     scripts/../chunk.sh asserted `#define BLOCK_FRAMES 256U` occurred exactly
+             once, then replaced it with 1024U. AUDIO_FRAME_BYTES is 4, so
+             BLOCK_SIZE went 1024 -> 4096 bytes.
+
+  image      the resulting ELF, read back with nm -S:
+
+                 build-stress   _k_mem_slab_buf_rx_slab   0x2000   = 8 x 1024
+                 build-chunk    _k_mem_slab_buf_rx_slab   0x8000   = 8 x 4096
+
+             The block size is baked into the image and can be read out of it. It does
+             not depend on trusting the build script.
+
+  flash      that exact build-chunk/zephyr/zephyr.bin was copied to build/chunk.bin and
+             written to COM35 with esptool --after watchdog-reset write-flash.
+
+  capture    monitor_capture_windows.py COM35 -> the second log below.
+
+4096 > I2S_ESP32_DMA_BUFFER_MAX_SIZE (4092), so i2s_esp32_rx_callback() takes its
+chunking path: chunk 0 = 4092 bytes, chunk 1 = 4 bytes. That is the case where
+mem_block is INDEXED (dst = mem_block + chunk_idx * 4092) rather than merely held,
+and a 4-byte tail chunk is the nastiest boundary the driver offers.
+
+I checked this after the fact, not before, because I had already written "4096-byte
+chunked" into a commit message that was pushed. Twice this week I have reported a
+mutation from a build that never contained it. It was in this one. But the habit that
+catches that is checking, not remembering.
+
+RESULT
+------
+  build                            canary    mem-slab    STOP/DRAIN tail
+  both commits, 1024-byte blocks   0 of 8    flat 8/8    35 of 35 drained
+  both commits, 4096-byte blocks   0 of 8    flat 8/8    35 of 35 drained
+
+100 cycles each: 20 with TX deliberately starved into its tx_disable path, 23 ending
+in a graceful I2S_TRIGGER_STOP and 12 in an I2S_TRIGGER_DRAIN instead of a DROP. Both
+of those reach I2S_STATE_STOPPING by different routes through TX; DROP goes straight
+to READY under irq_lock and never gets there at all.
+
+The canary stamps every free RX block with a known pattern after the stream is stopped,
+waits 50 ms, and counts how many came back written to. On stock upstream it is 1 of 8.
+
+================================================================================
+RUN 1 of 2 -- both commits, 1024-byte blocks (the normal size)
+================================================================================
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x403773aa
+
+xtensa-esp32-elf-addr2line -fiaC -e \\wsl.localhost\Ubuntu\home\thc1006\zephyrproject-m5sticks3\build-stress\zephyr\zephyr.elf 0x403773aa: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90190,len:0x2cec
+
+load:0x40374000,len:0xc17c
+
+xtensa-esp32-elf-addr2line -fiaC -e \\wsl.localhost\Ubuntu\home\thc1006\zephyrproject-m5sticks3\build-stress\zephyr\zephyr.elf 0x40374000: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 33ecc8e0891aaca1f772160215f3f8c904fbecf87e87718ebcf6b9f0dfe78040
+
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037a924
+
+xtensa-esp32-elf-addr2line -fiaC -e \\wsl.localhost\Ubuntu\home\thc1006\zephyrproject-m5sticks3\build-stress\zephyr\zephyr.elf 0x4037a924: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Jul 13 2026 04:14:57
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d398h ( 54168)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=04ea4h ( 20132)
+
+I (boot): libc heap size 146 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S stress: 100 cycles; TX starved every 5, STOP every 3, DRAIN every 7
+
+slab  : free blocks per direction, read BEFORE each cycle. It must stay
+
+        at 8. Falling means the driver is losing the DMA's in-flight
+
+        block on every DROP; rising above 8 means a block was freed
+
+        twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its tx_disable
+
+        path -- one of the places the leak fix could double-free.
+
+STOP  : and DRAIN. BOTH reach I2S_STATE_STOPPING (the driver falls through
+
+        from one case to the other); DROP goes straight to READY under
+
+        irq_lock and never gets there at all. STOPPING is where the RX
+
+        callback hands its block to the queue while still pointing at it,
+
+        so a DROP-only stress cannot see that path.
+
+DRAIN : not a duplicate of STOP. STOP sets tx_stop_without_draining, so TX
+
+        stops after its in-flight block; DRAIN does not, so TX keeps pulling
+
+        blocks off its queue and re-arming DMA until it is empty -- and every
+
+        one of those restarts overlaps an RX ownership hand-off.
+
+tail  : a STOP or DRAIN that drains NOTHING is a FAILURE, not a note. The
+
+        STOPPING branch always queues its final block before it stops, so an
+
+        empty tail read means it never ran. The slab census cannot see that:
+
+        this test printed 'drained 0' for 27 cycles and then printed PASSED.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stop      tx=6 rx=7
+
+    c3.stopped   tx=7 rx=7
+
+    c3.tail-read tx=7 rx=7
+
+    c3.tail-done tx=7 rx=8
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=7 rx=8
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+  stress   6: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress   7: slab tx=8 rx=8   graceful DRAIN + tail read
+
+             DRAIN drained 5 tail blocks
+
+  stress   8: slab tx=8 rx=8
+
+  stress   9: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress  10: slab tx=8 rx=8   TX starved on purpose
+
+  stress  12: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  14: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  15: slab tx=8 rx=8   TX starved on purpose
+
+  stress  18: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  20: slab tx=8 rx=8   TX starved on purpose
+
+  stress  21: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  24: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  25: slab tx=8 rx=8   TX starved on purpose
+
+  stress  27: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  28: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  30: slab tx=8 rx=8   TX starved on purpose
+
+  stress  33: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  35: slab tx=8 rx=8   TX starved on purpose
+
+  stress  36: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  39: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  40: slab tx=8 rx=8   TX starved on purpose
+
+  stress  42: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  45: slab tx=8 rx=8   TX starved on purpose
+
+  stress  48: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  49: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  50: slab tx=8 rx=8   TX starved on purpose
+
+  stress  51: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  54: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  55: slab tx=8 rx=8   TX starved on purpose
+
+  stress  56: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  57: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  60: slab tx=8 rx=8   TX starved on purpose
+
+  stress  63: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  65: slab tx=8 rx=8   TX starved on purpose
+
+  stress  66: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  69: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  70: slab tx=8 rx=8   TX starved on purpose
+
+  stress  72: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  75: slab tx=8 rx=8   TX starved on purpose
+
+  stress  77: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  78: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  80: slab tx=8 rx=8   TX starved on purpose
+
+  stress  81: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  84: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  85: slab tx=8 rx=8   TX starved on purpose
+
+  stress  87: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  90: slab tx=8 rx=8   TX starved on purpose
+
+  stress  91: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  93: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  95: slab tx=8 rx=8   TX starved on purpose
+
+  stress  96: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  98: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  99: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress 100: slab tx=8 rx=8   TX starved on purpose
+
+  final census: tx=8 rx=8 of 8
+
+=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, 23 ended with
+
+    a graceful I2S_TRIGGER_STOP and 12 with an I2S_TRIGGER_DRAIN instead of a
+
+    DROP. BOTH reach I2S_STATE_STOPPING, by different routes through TX, and
+
+    all 35 of them drained a tail block (0 came back empty). The slab held
+
+    8/8 free the whole way and the canary was clean. No leak; no block freed
+
+    twice on the tx_disable path or on the STOPPING queue hand-off; and no
+
+    stream stranded in STOPPING by a bit clock that stopped with TX. ===
+
+*** I2S SLAB STRESS PASSED ***
+
+[monitor captured 19757 chars; last 1.5s silent]
+
+================================================================================
+RUN 2 of 2 -- both commits, 4096-byte blocks -> the DMA chunks (4092 + 4)
+             image verified by nm -S: _k_mem_slab_buf_rx_slab = 0x8000 = 8 x 4096
+================================================================================
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x403773aa
+
+xtensa-esp32-elf-addr2line -fiaC -e \\wsl.localhost\Ubuntu\home\thc1006\zephyrproject-m5sticks3\build-chunk\zephyr\zephyr.elf 0x403773aa: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90190,len:0x2cec
+
+load:0x40374000,len:0xc17c
+
+xtensa-esp32-elf-addr2line -fiaC -e \\wsl.localhost\Ubuntu\home\thc1006\zephyrproject-m5sticks3\build-chunk\zephyr\zephyr.elf 0x40374000: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 6095a380ec79656a0153e7fbba959ce0967d25afeaa709a5cae9b686a986728c
+
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037a924
+
+xtensa-esp32-elf-addr2line -fiaC -e \\wsl.localhost\Ubuntu\home\thc1006\zephyrproject-m5sticks3\build-chunk\zephyr\zephyr.elf 0x4037a924: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Jul 13 2026 03:51:10
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d3a0h ( 54176)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=054a4h ( 21668)
+
+I (boot): libc heap size 80 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.402,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S stress: 100 cycles; TX starved every 5, STOP every 3, DRAIN every 7
+
+slab  : free blocks per direction, read BEFORE each cycle. It must stay
+
+        at 8. Falling means the driver is losing the DMA's in-flight
+
+        block on every DROP; rising above 8 means a block was freed
+
+        twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its tx_disable
+
+        path -- one of the places the leak fix could double-free.
+
+STOP  : and DRAIN. BOTH reach I2S_STATE_STOPPING (the driver falls through
+
+        from one case to the other); DROP goes straight to READY under
+
+        irq_lock and never gets there at all. STOPPING is where the RX
+
+        callback hands its block to the queue while still pointing at it,
+
+        so a DROP-only stress cannot see that path.
+
+DRAIN : not a duplicate of STOP. STOP sets tx_stop_without_draining, so TX
+
+        stops after its in-flight block; DRAIN does not, so TX keeps pulling
+
+        blocks off its queue and re-arming DMA until it is empty -- and every
+
+        one of those restarts overlaps an RX ownership hand-off.
+
+tail  : a STOP or DRAIN that drains NOTHING is a FAILURE, not a note. The
+
+        STOPPING branch always queues its final block before it stops, so an
+
+        empty tail read means it never ran. The slab census cannot see that:
+
+        this test printed 'drained 0' for 27 cycles and then printed PASSED.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.canary  stamped 8 free rx blocks, waited 50 ms, 0 came back written to
+
+  stress   3: slab tx=8 rx=8   graceful STOP + tail read
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.stop      tx=6 rx=7
+
+    c3.stopped   tx=7 rx=7
+
+    c3.tail-read tx=7 rx=7
+
+    c3.tail-done tx=7 rx=8
+
+             STOP drained 1 tail block
+
+    c3.drop      tx=7 rx=8
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+  stress   6: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress   7: slab tx=8 rx=8   graceful DRAIN + tail read
+
+             DRAIN drained 5 tail blocks
+
+  stress   8: slab tx=8 rx=8
+
+  stress   9: slab tx=8 rx=8   graceful STOP + tail read
+
+             STOP drained 1 tail block
+
+  stress  10: slab tx=8 rx=8   TX starved on purpose
+
+  stress  12: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  14: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  15: slab tx=8 rx=8   TX starved on purpose
+
+  stress  18: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  20: slab tx=8 rx=8   TX starved on purpose
+
+  stress  21: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  24: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  25: slab tx=8 rx=8   TX starved on purpose
+
+  stress  27: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  28: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  30: slab tx=8 rx=8   TX starved on purpose
+
+  stress  33: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  35: slab tx=8 rx=8   TX starved on purpose
+
+  stress  36: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  39: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  40: slab tx=8 rx=8   TX starved on purpose
+
+  stress  42: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  45: slab tx=8 rx=8   TX starved on purpose
+
+  stress  48: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  49: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  50: slab tx=8 rx=8   TX starved on purpose
+
+  stress  51: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  54: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  55: slab tx=8 rx=8   TX starved on purpose
+
+  stress  56: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  57: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  60: slab tx=8 rx=8   TX starved on purpose
+
+  stress  63: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  65: slab tx=8 rx=8   TX starved on purpose
+
+  stress  66: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  69: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  70: slab tx=8 rx=8   TX starved on purpose
+
+  stress  72: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  75: slab tx=8 rx=8   TX starved on purpose
+
+  stress  77: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  78: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  80: slab tx=8 rx=8   TX starved on purpose
+
+  stress  81: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  84: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  85: slab tx=8 rx=8   TX starved on purpose
+
+  stress  87: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  90: slab tx=8 rx=8   TX starved on purpose
+
+  stress  91: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  93: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  95: slab tx=8 rx=8   TX starved on purpose
+
+  stress  96: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress  98: slab tx=8 rx=8   graceful DRAIN + tail read
+
+  stress  99: slab tx=8 rx=8   graceful STOP + tail read
+
+  stress 100: slab tx=8 rx=8   TX starved on purpose
+
+  final census: tx=8 rx=8 of 8
+
+=== STRESS PASSED: 100 cycles -- 20 with TX starved on purpose, 23 ended with
+
+    a graceful I2S_TRIGGER_STOP and 12 with an I2S_TRIGGER_DRAIN instead of a
+
+    DROP. BOTH reach I2S_STATE_STOPPING, by different routes through TX, and
+
+    all 35 of them drained a tail block (0 came back empty). The slab held
+
+    8/8 free the whole way and the canary was clean. No leak; no block freed
+
+    twice on the tx_disable path or on the STOPPING queue hand-off; and no
+
+    stream stranded in STOPPING by a bit clock that stopped with TX. ===
+
+*** I2S SLAB STRESS PASSED ***
+
+[monitor captured 20628 chars; last 1.5s silent]

@@ -1,0 +1,432 @@
+# HW-019 (FINAL) - ES8311 rate sweep + route transitions, re-run against the CORRECT
+# I2S patch. 2026-07-12, COM35 (a 3rd physical StickS3, MAC 98:88:e0:0e:dc:64).
+#
+# The earlier HW-019 PASS was obtained against the NAIVE i2s fix, which HW-021 later
+# showed corrupts the mem-slab free list. It did not fire during that run, but evidence
+# taken on a driver that is scribbling on freed memory is not evidence I will stand on.
+# This is the same sweep against the quiesce fix (evidence/20260712-hw021-*-PASS.log).
+#
+# Same numbers, on a driver that is not corrupting memory:
+#   9/9 rates, frame clock measured within 5 Hz of target at every one
+#   (8000/7999 ... 48000/47996), clock registers identical at every rate, ADC alive
+#   at every rate; 3/3 route transitions; restore measured at 16000 Hz.
+#   8 kHz WORKS -- Espressif's undocumented 512 kHz BCLK floor is not a real constraint.
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x403773aa
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90190,len:0x2cec
+
+load:0x40374000,len:0xc17c
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 6657c8613e831d4cfc98e94a8fd101d3b3de7e0db586b90cae68d6d2515c5b24
+
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037a924
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Jul 12 2026 20:16:01
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d4c8h ( 54472)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=046dch ( 18140)
+
+I (boot): libc heap size 145 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A codec
+
+        whose clock tree did not lock cannot run its modulator and
+
+        returns zeros or a stuck constant here
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=83    [-137..201] tone_rms=781    peak=6367   PASS
+
+  sweep.11025: slab pre-reset  tx=8 rx=8
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=85    [-142..162] tone_rms=1848   peak=23123  PASS
+
+  sweep.12000: slab pre-reset  tx=8 rx=8
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=89    [-167..198] tone_rms=2620   peak=28379  PASS
+
+  sweep.16000: slab pre-reset  tx=8 rx=8
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=89    [-146..237] tone_rms=1404   peak=9674   PASS
+
+  sweep.22050: slab pre-reset  tx=8 rx=8
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=92    [-204..99] tone_rms=3510   peak=32767  PASS
+
+  sweep.24000: slab pre-reset  tx=8 rx=8
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=100   [-166..123] tone_rms=2294   peak=15464  PASS
+
+  sweep.32000: slab pre-reset  tx=8 rx=8
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=97    [-176..128] tone_rms=4158   peak=13566  PASS
+
+  sweep.44100: slab pre-reset  tx=8 rx=8
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+  sweep.44100: start
+
+  sweep.44100: warmup
+
+  sweep.44100: baseline
+
+  sweep.44100: amp
+
+  sweep.44100: settle
+
+  sweep.44100: timed
+
+  sweep.44100: stop
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=112   [-120..115] tone_rms=9933   peak=19248  PASS
+
+  sweep.48000: slab pre-reset  tx=8 rx=8
+
+  sweep.48000: reset
+
+  sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.48000: cfg-tx
+
+  sweep.48000: cfg-codec
+
+  sweep.48000: cfg-rx
+
+  sweep.48000: regs
+
+  sweep.48000: prequeue
+
+  sweep.48000: start
+
+  sweep.48000: warmup
+
+  sweep.48000: baseline
+
+  sweep.48000: amp
+
+  sweep.48000: settle
+
+  sweep.48000: timed
+
+  sweep.48000: stop
+
+SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=122   [-240..207] tone_rms=14123  peak=32767  PASS
+
+=== sweep: 0 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+
+SWEEP route playback  PASS
+
+SWEEP route capture   PASS
+
+SWEEP route both      PASS
+
+=== routes: 0 of 3 FAILED ===
+
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+=== SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
+    What that means: the clock registers land on the chip, the frame clock
+
+    is right, the ADC is running, and the route registers are what the
+
+    driver intended. What it does NOT mean: nothing here measures audio
+
+    quality or the codec's internal OSR. The speaker is judged by ear.
+
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+[monitor captured 12067 chars; last 0.5s silent]

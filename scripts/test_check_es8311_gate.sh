@@ -2,21 +2,33 @@
 # Copyright (c) 2026 Hsiu-Chi Tsai
 # SPDX-License-Identifier: Apache-2.0
 #
-# Offline integration test for scripts/check_es8311_upstream_gate.sh.
-# Puts a mock `gh` on PATH (no network, no auth) and asserts the VERDICT across
-# the five scenarios the gate has to get right:
-#   1. base merged + a live third-party ES8311 PR  -> ENGAGE (do not compete)
-#   2. base merged + nobody driving ES8311         -> GO     (submit ours)
-#   3. base NOT merged (only our board PR merged)  -> HOLD   (no in-tree consumer)
-#   4. gh failing entirely                         -> HOLD   (never a false merge)
-#   5. base merged but the *search* fails          -> HOLD   (never a false "nobody")
+# Offline test for scripts/check_es8311_upstream_gate.sh. A mock `gh` and a mock
+# readiness check go on PATH, so nothing here touches the network or the tree.
 #
-# 4 and 5 are the two fail-open traps, and they are mirror images: 4 would read a
-# gh outage as "merged", 5 would read a rate-limited search as "nobody is driving
-# it". Both must degrade to HOLD.
+# Both the printed verdict AND the exit status are asserted. Checking only the
+# text would miss a script that says HOLD and exits 0, which is what the first
+# version did: a verdict that lives only in stdout cannot be acted on.
+#
+#   0 GO   1 HOLD   2 ENGAGE   3 ALREADY_OPEN   4 PREP
+#
+# The scenarios are the ways this gate has been, or could be, wrong:
+#
+#   ours_open  We open the real ES8311 driver PR. The old gate excluded every PR
+#              authored by us, so it found ours, discarded it, and said GO again:
+#              "submit your own PR" - a second one. This is the bug that made the
+#              rewrite necessary.
+#   saturated  gh search returns exactly the limit. A truncated result set is not
+#              evidence of absence and must not be read as a clear lane.
+#   notready   The lane is clear but the code is not. Reporting that as GO is what
+#              let a readiness checklist claim "checkpatch clean" for a month while
+#              the driver carried a 137-column line.
+#   ghdown     gh cannot answer at all.
+#   searchfail The search specifically fails while pr view still works.
+#   engage     Somebody else has an open ES8311 PR.
+#   clear      Nothing open, code ready.
 #
 # Usage: bash scripts/test_check_es8311_gate.sh
-set -euo pipefail
+set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 gate="$here/check_es8311_upstream_gate.sh"
@@ -26,65 +38,75 @@ mkdir -p "$td/bin"
 
 cat > "$td/bin/gh" <<'MOCK'
 #!/usr/bin/env bash
-# Fake gh; $SCEN selects the scenario. Mirrors the shape the real gh returns.
-get_json_field() { local p=""; while [ $# -gt 0 ]; do [ "$1" = "--json" ] && p="$2"; shift; done; echo "$p"; }
+# Fake gh; $SCEN selects the scenario.
 prview() {
-  local pr="$1"; shift; local f; f=$(get_json_field "$@")
   [ "$SCEN" = "ghdown" ] && return 1
-  local state="OPEN" merged="null"
-  case "$SCEN:$pr" in
-    # every scenario except "nobase" has the base board already merged
-    engage:107655|go:107655|empty:107655|searchfail:107655)
-                     state="MERGED"; merged="2026-06-11T21:14:01Z" ;;
-    nobase:110205)   state="MERGED"; merged="2026-06-11T21:14:01Z" ;;
-    *:107660)        state="CLOSED" ;;
-  esac
-  case "$f" in
-    state) echo "$state" ;;
-    mergedAt) echo "$merged" ;;
-    reviewDecision) echo "APPROVED" ;;
-    title) echo "fake title for $pr" ;;
-  esac
+  # The gate has gh do the extraction with -q, so the mock returns what that would
+  # print: one tab-separated line.
+  printf 'MERGED\t2026-06-11T21:14:01Z\tfake title\n'
 }
 search() {
-  # The real `gh search` exits 0 with EMPTY output when there are genuinely no
-  # matches, and non-zero when it could not run at all. The gate must tell those
-  # two apart, so the mock reproduces both.
   [ "$SCEN" = "ghdown" ] && return 1
   [ "$SCEN" = "searchfail" ] && return 1
-  # "empty" = no open es8311 PR at all, not even ours. This is the state we land in
-  # once our board PR #110205 merges, so the empty-input path must be exercised.
-  [ "$SCEN" = "empty" ] && return 0
-  printf '110205\tthc1006\t2026-07-11\tM5Stack StickS3\n'
-  [ "$SCEN" = "engage" ] && printf '109999\tsomebody\t2026-07-10\tES8311 codec driver, take 2\n'
+  case "$SCEN" in
+    engage)
+      printf '109999\tsomebody\t2026-07-10\tES8311 codec driver, take 2\n'
+      printf '110205\tthc1006\t2026-07-11\tM5Stack StickS3\n'
+      ;;
+    ours_open)
+      # The real ES8311 driver PR, opened by us. NOT the board PR.
+      printf '123456\tthc1006\t2026-07-20\tdrivers: audio: add Everest ES8311 codec driver\n'
+      printf '110205\tthc1006\t2026-07-11\tM5Stack StickS3\n'
+      ;;
+    saturated)
+      # Exactly the limit the gate asks for: the result set is truncated.
+      for i in $(seq 1 100); do printf '%d\tsomebody\t2026-07-10\tnoise\n' "$((900000 + i))"; done
+      ;;
+    *)
+      printf '110205\tthc1006\t2026-07-11\tM5Stack StickS3\n'
+      ;;
+  esac
   return 0
 }
 case "$1 $2" in
-  "pr view") shift 2; prview "$@" ;;
+  "pr view")   prview ;;
   "search prs") search ;;
   *) exit 0 ;;
 esac
 MOCK
 chmod +x "$td/bin/gh"
 
+printf '#!/usr/bin/env bash\nexit 0\n' > "$td/ready_ok.sh"
+printf '#!/usr/bin/env bash\necho "  FAIL  mock: the code is not ready"\nexit 1\n' > "$td/ready_bad.sh"
+chmod +x "$td/ready_ok.sh" "$td/ready_bad.sh"
+
 pass=0 fail=0
-check() { # SCEN EXPECT_REGEX label
-  local out verdict
-  out=$(SCEN="$1" PATH="$td/bin:$PATH" bash "$gate")
-  verdict=$(echo "$out" | grep VERDICT)
-  if echo "$verdict" | grep -qE "$2"; then
-    printf 'PASS  %-11s %s\n' "$1" "$3"; pass=$((pass+1))
-  else
-    printf 'FAIL  %-11s %s\n      got: %s\n' "$1" "$3" "$verdict"; fail=$((fail+1))
-  fi
+check() { # SCEN READINESS EXPECT_REGEX EXPECT_RC label
+	local out verdict rc ready
+	ready="$td/ready_ok.sh"
+	[ "$2" = "notready" ] && ready="$td/ready_bad.sh"
+
+	out=$(SCEN="$1" ES8311_READINESS_CHECK="$ready" PATH="$td/bin:$PATH" bash "$gate") \
+		&& rc=0 || rc=$?
+	verdict=$(echo "$out" | grep VERDICT)
+
+	if echo "$verdict" | grep -qE "$3" && [ "$rc" = "$4" ]; then
+		printf 'PASS  %-11s rc=%s  %s\n' "$1" "$rc" "$5"
+		pass=$((pass + 1))
+	else
+		printf 'FAIL  %-11s %s\n      want: %s rc=%s\n      got : %s rc=%s\n' \
+			"$1" "$5" "$3" "$4" "$verdict" "$rc"
+		fail=$((fail + 1))
+	fi
 }
 
-check engage     'VERDICT: ENGAGE' 'base merged + live 3rd-party PR -> engage'
-check go         'VERDICT: GO'     'base merged + nobody on it     -> submit ours'
-check empty      'VERDICT: GO'     'search returns nothing at all  -> submit ours'
-check nobase     'VERDICT: HOLD'   'base not merged                -> no consumer'
-check ghdown     'VERDICT: HOLD'   'gh down                        -> no false merge'
-check searchfail 'VERDICT: HOLD'   'search failed                  -> no false nobody'
+check clear      ready    'VERDICT: GO'           0 'lane clear + code ready -> submit'
+check clear      notready 'VERDICT: PREP'         4 'lane clear + code NOT ready -> not GO'
+check ours_open  ready    'VERDICT: ALREADY_OPEN' 3 'our own driver PR is open -> do not open a second'
+check engage     ready    'VERDICT: ENGAGE'       2 'a third party has one open -> do not compete'
+check saturated  ready    'VERDICT: HOLD'         1 'search truncated -> absence is not proven'
+check ghdown     ready    'VERDICT: HOLD'         1 'gh down -> never act on missing data'
+check searchfail ready    'VERDICT: HOLD'         1 'search failed -> never act on missing data'
 
 echo "----------------------------------------"
 echo "PASS=$pass FAIL=$fail"

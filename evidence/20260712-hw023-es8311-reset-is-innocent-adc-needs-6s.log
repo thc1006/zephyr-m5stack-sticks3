@@ -1,0 +1,2341 @@
+HW-023  ES8311: "the software reset deafens the ADC below ~22 kHz" is WRONG, and the
+        driver's whole design premise rested on it.
+
+        M5Stack StickS3 (3rd unit, COM35), Zephyr 4.4.0, 2026-07-12.
+
+        There is no low-sample-rate cutoff. There never was. The ADC takes about six
+        seconds of WALL CLOCK to wake up after the codec's analog state is disturbed, and
+        the rate sweep had been reading its own elapsed time as a frequency response.
+
+        The conclusion "do not reset this part" survives. Every reason given for it does
+        not. And the architecture it was used to justify -- "therefore configure() programs
+        every register it depends on" -- was never actually implemented: thirteen registers
+        are never written at all.
+
+WHAT WAS CLAIMED
+----------------
+evidence/20260712-hw019-reset-then-a-deaf-adc-SUPERSEDED.log concluded:
+
+    "the software reset deafens the ADC below ~22 kHz; root cause unknown"
+
+and drivers/audio/es8311.c, dts/bindings/audio/everest,es8311.yaml and upstream PR
+#113312 were all written around it. The evidence was this, and it is a clean-looking
+curve:
+
+    8000: tone_rms=0    16000: 10    24000: 424    32000: 3721    48000: 15372
+
+A reviewer objected that the claim was over-broad: what had actually been measured was
+`reset + a configure() that never writes 0x0B 0x0C 0x0F 0x10 0x11 0x18 0x19 0x1A 0x33
+0x34 0x35`, so the reset might have broken nothing and merely taken away a state the
+driver was silently depending on. He was right that the claim was unsupported. His
+mechanism was wrong, and so was mine -- but chasing it is what found the real one.
+
+1. THE REVIEWER'S HYPOTHESIS -- REFUTED
+---------------------------------------
+Same sweep, plus the 0x00 reset AND a write of every register configure() never writes,
+with 0x10 = 0x1F and 0x11 = 0x7F set to the values ESP-ADF (the firmware these boards
+ship with) uses. 0x10 and 0x11 were read back on silicon to prove the writes landed, and
+0xFA was checked to prove the register file was not being held down.
+
+    Fs      no reset              reset + EVERY missing register
+    8000    floor=93  rms=777     floor=0    rms=0
+    16000   floor=101 rms=1381    floor=0    rms=9
+    24000   floor=83  rms=2830    floor=4    rms=341
+    32000   floor=81  rms=3383    floor=21   rms=2765
+    48000   floor=116 rms=14459   floor=116  rms=14990
+
+Indistinguishable from reset-only. Writing every missing register does not rescue the
+ADC. That closes the hypothesis. It should also have closed the question -- and it did
+not, because of what those numbers look like once you stop reading them as a frequency
+axis.
+
+2. THE CONFOUND -- THE SWEEP HAS ONLY EVER RUN IN ONE ORDER
+-----------------------------------------------------------
+8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000. Every run, since the sweep
+was written. That is increasing sample rate. It is also, unavoidably, increasing time
+since the reset, at about two seconds per rate.
+
+So "deaf below 22 kHz" and "deaf for the first ten seconds" fit the same nine numbers,
+and no run ever made could tell them apart. Reversing the table separates them, and there
+is no third outcome:
+
+    reset, then sweep BACKWARDS -- 48 kHz measured FIRST, 8 kHz LAST
+
+    48000  floor=0    tone_rms=1        <- always alive before. now DEAF.
+    44100  floor=0    tone_rms=3
+    32000  floor=0    tone_rms=6
+    24000  floor=0    tone_rms=19
+    22050  floor=1    tone_rms=80
+    16000  floor=5    tone_rms=278
+    12000  floor=33   tone_rms=1027
+    11025  floor=118  tone_rms=2007
+    8000   floor=103  tone_rms=923      <- always deaf before. now ALIVE, and back at
+                                           the no-reset baseline (93 / 777).
+
+The deafness follows the clock. It does not follow the rate.
+
+This also rules out the codec's own power-up stage timers (0x0B, 0x0C), which are counted
+in LRCK periods: if the wake were a fixed LRCK count, 48 kHz -- the fastest frame clock,
+measured first -- would have reached it soonest. It was the deafest. The effect is
+wall-clock, so it is an analog time constant, not a digital counter.
+
+3. HOW LONG, AND IS IT THE ANALOG BIAS?
+---------------------------------------
+Reset, configure once, START once, one fixed rate. Nothing reconfigured, nothing
+restarted, so the only thing changing is the codec.
+
+    t (ms)   A: reset only    B: reset + 0x10=0x1f, 0x11=0x7f
+    543         0                0
+    3103        0                0
+    3615        1                1
+    4639        6                5
+    5663       35               37
+    6175      101               85     <- awake (the settled floor here is 81..116)
+    7199      110              118
+    9759      113              108
+
+    A: ADC reached a real noise floor after 6175 ms
+    B: ADC reached a real noise floor after 6175 ms
+
+The curves lie on top of each other. 0x10 = 0x1F -- maximum IBIAS_SW, the value ESP-ADF
+writes and this driver never does -- changes nothing. About 6.2 seconds, and no register
+found so far shortens it.
+
+4. SO CAN THE DRIVER GET A DETERMINISTIC REGISTER STATE FOR FREE?
+-----------------------------------------------------------------
+"The reset is harmless, so just reset in init()" does NOT follow, and would be a
+regression. A warm reboot does not reach the codec's power, so a warm-booted board's
+microphone works immediately today. Put a reset in init() and every warm reboot buys six
+seconds of deaf microphone it did not previously cost. That is an enormous number for an
+audio codec.
+
+But a reset is only ever a SHORTCUT to a known state. Writing the registers is the
+explicit route -- and it is free, IF writing them does not itself disturb the analog.
+That is the only question that matters, and it is the one this measures.
+
+Each arm proves the chip is awake BEFORE it touches it, then disturbs it exactly one way,
+then looks immediately. "awake after N ms" is therefore also how long the PREVIOUS arm's
+damage took to clear -- which is the number that catches an arm whose own reading lied.
+
+    arm                            awake after   floor, measured immediately
+    D0 configure only (control)       512 ms     103      FREE
+    D1 + digital registers            512 ms     123      FREE
+    D2 + analog registers             512 ms     109      FREE
+    D3 0xFA pulse + everything        513 ms     1024     (see below)
+    D4 0x00 reset + everything       4096 ms     0        COSTS THE SIX SECONDS
+
+D2 is the answer. Writing EVERY register the driver depends on -- the digital ones
+(0x18 0x19 0x1A ALC, 0x33 DAC offset, 0x34 0x35 DRC, 0x44 0x45 routing/CSM, and 0xFA)
+AND the analog ones (0x0B 0x0C power-up timers, 0x0F low-power modes, 0x10 VMID/IBIAS_SW,
+0x11 VSEL) -- with no reset of any kind, reads back a real noise floor immediately. And
+D3's precondition then woke in 513 ms, which proves D2 left the part healthy.
+
+D4 is the known-bad control and it behaves: floor 0, and it is the only arm that did.
+
+D3's own reading is NOT trustworthy and is recorded here as a caution. Its floor of 1024
+was a transient -- the 0xFA pulse pops -- and the proof is that D4's precondition then
+took 4096 ms to see a floor at all, so the chip was actually asleep. A peak-RMS liveness
+test can be fooled by a click. It was the NEXT arm's precondition guard that caught it,
+which is exactly why that guard exists: two earlier versions of this probe had no guard,
+silently measured a codec that a previous arm -- or a previous BOOT -- had left asleep,
+and reported it as a result.
+
+Pulsing 0xFA bit 0 therefore also costs a settle. That does not matter, because the
+driver does not need it: WRITING 0xFA = 0x00 is in the D1 and D2 sets and is free.
+
+PARTIALLY SUPERSEDED BY HW-026 -- READ THIS FIRST
+------------------------------------------------
+Everything MEASURED below stands. The EXPLANATION offered for the six seconds -- that the
+reset discharges three 1 uF analog reference capacitors and recharging them is the cost --
+is REFUTED by evidence/20260713-hw026-es8311-cold-boot-is-not-deaf.log. A genuine cold
+power-on charges those same capacitors from zero and the ADC is ALIVE at the earliest
+moment it can be sampled (2.2 s), while at that same 2.2 s after a reset the floor is 0.
+The reset does something a cold start does not, and what that is remains unknown. The
+conclusion -- do not reset this part -- is unchanged and is stronger for it.
+
+CONCLUSION
+----------
+The conclusion "do not reset the ES8311" stands. Every reason previously given for it
+does not.
+
+  - There is no sample-rate dependence. The claim of a cutoff below 22 kHz was an
+    artefact of a sweep that only ever ran in one order.
+  - The reset is not harmful. It costs an analog settle of about 6.2 seconds, on capture
+    only, and that is the whole of it.
+  - The settle is not the codec's bias registers and not its power-up timers. It is
+    wall-clock and it is consistent with a board-level RC on the microphone bias: cycling
+    the codec's L3B analog supply, with no reset at all, reproduces it exactly.
+  - The driver does not need a reset. Writing every register it depends on gives a fully
+    deterministic state at zero cost, on a live part, measured.
+
+And the sting: the driver's stated architecture -- "configure() must not rely on reset
+defaults, and it does not: every route programs both directions in full" -- is false as
+written. Thirteen registers are never written at all, including 0x44 bit 7 (ADC2DAC_SEL,
+a PLAYBACK control written only on the capture path) and 0xFA, whose bit 0 HOLDS the
+entire register file at its defaults for as long as it is set and which the driver can
+therefore never recover from. The fix is not to add a reset. It is to actually do what
+the driver has been claiming it does.
+
+WHY NONE OF THIS WAS EVER NOTICED
+---------------------------------
+A warm reset -- west flash, the monitor's reset-on-connect, sys_reboot(), the watchdog --
+resets the SoC and does not reach the codec's power. The analog has therefore been
+settled for minutes by the time any of these tests run. The six seconds are only paid on
+a true cold power-on, and every hardware pass this project has recorded (HW-006, HW-016d,
+HW-016e, HW-019, HW-022) either ran warm or was driven by a human pressing a button well
+after boot.
+
+WHAT IS STILL NOT KNOWN
+-----------------------
+- The mechanism of the six seconds. "Probably the microphone bias network's RC" is a
+  hypothesis consistent with every measurement here, not a finding: it has not been
+  checked against the schematic and no attempt has been made to shorten it.
+- Whether a cold-booted board's microphone really is silent for the first few seconds.
+  Every measurement here is consistent with it, and cycling the L3B rail reproduces it,
+  but that is a proxy. Confirming it needs a physical unplug and replug, which has not
+  been done.
+- Whether the six seconds affect PLAYBACK as well as capture. The acoustic loopback
+  cannot separate a deaf microphone from a dead speaker, and no test here does.
+
+================================================================================
+1. CONTROL: the shipping sweep, no reset. Re-measured on this board, not quoted.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A codec
+
+        whose clock tree did not lock cannot run its modulator and
+
+        returns zeros or a stuck constant here
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=93    [-225..154] tone_rms=777    peak=5475   PASS
+
+  sweep.11025: slab pre-reset  tx=8 rx=8
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=88    [-215..143] tone_rms=2115   peak=25996  PASS
+
+  sweep.12000: slab pre-reset  tx=8 rx=8
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=111   [-171..92] tone_rms=2863   peak=25936  PASS
+
+  sweep.16000: slab pre-reset  tx=8 rx=8
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=101   [-214..77] tone_rms=1381   peak=11198  PASS
+
+  sweep.22050: slab pre-reset  tx=8 rx=8
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=90    [-41..161] tone_rms=2418   peak=21663  PASS
+
+  sweep.24000: slab pre-reset  tx=8 rx=8
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=23999  OK  adc=alive floor=83    [-160..84] tone_rms=2830   peak=22235  PASS
+
+  sweep.32000: slab pre-reset  tx=8 rx=8
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=81    [-40..146] tone_rms=3383   peak=13197  PASS
+
+  sweep.44100: slab pre-reset  tx=8 rx=8
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+  sweep.44100: start
+
+  sweep.44100: warmup
+
+  sweep.44100: baseline
+
+  sweep.44100: amp
+
+  sweep.44100: settle
+
+  sweep.44100: timed
+
+  sweep.44100: stop
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=107   [-88..152] tone_rms=9384   peak=32767  PASS
+
+  sweep.48000: slab pre-reset  tx=8 rx=8
+
+  sweep.48000: reset
+
+  sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.48000: cfg-tx
+
+  sweep.48000: cfg-codec
+
+  sweep.48000: cfg-rx
+
+  sweep.48000: regs
+
+  sweep.48000: prequeue
+
+  sweep.48000: start
+
+  sweep.48000: warmup
+
+  sweep.48000: baseline
+
+  sweep.48000: amp
+
+  sweep.48000: settle
+
+  sweep.48000: timed
+
+  sweep.48000: stop
+
+SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=116   [-105..116] tone_rms=14459  peak=32387  PASS
+
+=== sweep: 0 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+
+SWEEP route playback  PASS
+
+SWEEP route capture   PASS
+
+SWEEP route both      PASS
+
+=== routes: 0 of 3 FAILED ===
+
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+=== SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
+    What that means: the clock registers land on the chip, the frame clock
+
+    is right, the ADC is running, and the route registers are what the
+
+    driver intended. What it does NOT mean: nothing here measures audio
+
+    quality or the codec's internal OSR. The speaker is judged by ear.
+
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+[monitor captured 13648 chars; last 0.5s silent]
+
+================================================================================
+2. REFUTED: the same sweep + 0x00 reset + every register configure() never writes
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.398,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== HW-023: 0x00 reset + EVERY register configure() never writes ===
+
+  baseline on this board, this image, no reset: 8k floor=93 tone_rms=777
+
+  if the reset is innocent and the missing registers are the cause,
+
+  the sweep below comes back to that. If it does not, the reset is guilty.
+
+  0x10 reads back 0x1f (wrote 0x1f)  0x11 reads back 0x7f (wrote 0x7f)
+
+  0xFA = 0x00 (bit 0 set would HOLD the register file at defaults)
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A codec
+
+        whose clock tree did not lock cannot run its modulator and
+
+        returns zeros or a stuck constant here
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=0     [-1..0] tone_rms=0      peak=1      PASS
+
+  sweep.11025: slab pre-reset  tx=8 rx=8
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=0     [-1..0] tone_rms=0      peak=3      PASS
+
+  sweep.12000: slab pre-reset  tx=8 rx=8
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=0     [-1..0] tone_rms=1      peak=17     PASS
+
+  sweep.16000: slab pre-reset  tx=8 rx=8
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=0     [-1..0] tone_rms=9      peak=86     PASS
+
+  sweep.22050: slab pre-reset  tx=8 rx=8
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=1     [-3..1] tone_rms=61     peak=413    PASS
+
+  sweep.24000: slab pre-reset  tx=8 rx=8
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=4     [-8..6] tone_rms=341    peak=1843   PASS
+
+  sweep.32000: slab pre-reset  tx=8 rx=8
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=21    [-35..34] tone_rms=2765   peak=8265   PASS
+
+  sweep.44100: slab pre-reset  tx=8 rx=8
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+  sweep.44100: start
+
+  sweep.44100: warmup
+
+  sweep.44100: baseline
+
+  sweep.44100: amp
+
+  sweep.44100: settle
+
+  sweep.44100: timed
+
+  sweep.44100: stop
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=97    [-107..90] tone_rms=9027   peak=21399  PASS
+
+  sweep.48000: slab pre-reset  tx=8 rx=8
+
+  sweep.48000: reset
+
+  sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.48000: cfg-tx
+
+  sweep.48000: cfg-codec
+
+  sweep.48000: cfg-rx
+
+  sweep.48000: regs
+
+  sweep.48000: prequeue
+
+  sweep.48000: start
+
+  sweep.48000: warmup
+
+  sweep.48000: baseline
+
+  sweep.48000: amp
+
+  sweep.48000: settle
+
+  sweep.48000: timed
+
+  sweep.48000: stop
+
+SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=116   [-177..73] tone_rms=14990  peak=32767  PASS
+
+=== sweep: 0 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+
+SWEEP route playback  PASS
+
+SWEEP route capture   PASS
+
+SWEEP route both      PASS
+
+=== routes: 0 of 3 FAILED ===
+
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+=== SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
+    What that means: the clock registers land on the chip, the frame clock
+
+    is right, the ADC is running, and the route registers are what the
+
+    driver intended. What it does NOT mean: nothing here measures audio
+
+    quality or the codec's internal OSR. The speaker is judged by ear.
+
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+[monitor captured 13957 chars; last 0.0s silent]
+
+================================================================================
+3. THE CONFOUND: the same reset, with the rate table REVERSED
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== HW-023b: reset, then sweep the rates BACKWARDS ===
+
+  the deafness has only ever been measured in one order, and that order
+
+  is both increasing rate AND increasing time since the reset.
+
+  if it follows the RATE: 48000 alive first, 8000 deaf last (unchanged).
+
+  if it follows the CLOCK: 48000 DEAF first, 8000 ALIVE last.
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A codec
+
+        whose clock tree did not lock cannot run its modulator and
+
+        returns zeros or a stuck constant here
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+  sweep.48000: slab pre-reset  tx=8 rx=8
+
+  sweep.48000: reset
+
+  sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.48000: cfg-tx
+
+  sweep.48000: cfg-codec
+
+  sweep.48000: cfg-rx
+
+  sweep.48000: regs
+
+  sweep.48000: prequeue
+
+  sweep.48000: start
+
+  sweep.48000: warmup
+
+  sweep.48000: baseline
+
+  sweep.48000: amp
+
+  sweep.48000: settle
+
+  sweep.48000: timed
+
+  sweep.48000: stop
+
+SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=0     [-1..0] tone_rms=1      peak=2      PASS
+
+  sweep.44100: slab pre-reset  tx=8 rx=8
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+  sweep.44100: start
+
+  sweep.44100: warmup
+
+  sweep.44100: baseline
+
+  sweep.44100: amp
+
+  sweep.44100: settle
+
+  sweep.44100: timed
+
+  sweep.44100: stop
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=0     [-1..0] tone_rms=3      peak=6      PASS
+
+  sweep.32000: slab pre-reset  tx=8 rx=8
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=0     [-1..0] tone_rms=6      peak=18     PASS
+
+  sweep.24000: slab pre-reset  tx=8 rx=8
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=0     [-1..0] tone_rms=19     peak=105    PASS
+
+  sweep.22050: slab pre-reset  tx=8 rx=8
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=1     [-2..2] tone_rms=80     peak=385    PASS
+
+  sweep.16000: slab pre-reset  tx=8 rx=8
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=5     [-10..10] tone_rms=278    peak=2293   PASS
+
+  sweep.12000: slab pre-reset  tx=8 rx=8
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=33    [-66..43] tone_rms=1027   peak=10915  PASS
+
+  sweep.11025: slab pre-reset  tx=8 rx=8
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=118   [-236..185] tone_rms=2007   peak=21227  PASS
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=103   [-172..147] tone_rms=923    peak=8406   PASS
+
+=== sweep: 0 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+
+SWEEP route playback  PASS
+
+SWEEP route capture   PASS
+
+SWEEP route both      PASS
+
+=== routes: 0 of 3 FAILED ===
+
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+=== SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
+    What that means: the clock registers land on the chip, the frame clock
+
+    is right, the ADC is running, and the route registers are what the
+
+    driver intended. What it does NOT mean: nothing here measures audio
+
+    quality or the codec's internal OSR. The speaker is judged by ear.
+
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+[monitor captured 13974 chars; last 0.0s silent]
+
+================================================================================
+4. HOW LONG: noise floor against time since reset, with and without ESP-ADF's analog
+   bias registers. One configure, one START, one fixed rate.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== HW-023c: how long does the ADC take to wake after the 0x00 reset? ===
+
+  the driver waits 10 ms. the no-reset noise floor on this board is 81..116.
+
+  one configure, one START, one rate -- only the codec changes.
+
+  --- A: reset, nothing else ---
+
+  t=543    ms  floor=0
+
+  t=1055   ms  floor=0
+
+  t=1567   ms  floor=0
+
+  t=2079   ms  floor=0
+
+  t=2591   ms  floor=0
+
+  t=3103   ms  floor=0
+
+  t=3615   ms  floor=1
+
+  t=4127   ms  floor=2
+
+  t=4639   ms  floor=6
+
+  t=5151   ms  floor=15
+
+  t=5663   ms  floor=35
+
+  t=6175   ms  floor=101
+
+  t=6687   ms  floor=118
+
+  t=7199   ms  floor=110
+
+  t=7711   ms  floor=119
+
+  t=8223   ms  floor=112
+
+  t=8735   ms  floor=102
+
+  t=9247   ms  floor=116
+
+  t=9759   ms  floor=113
+
+  t=10271  ms  floor=104
+
+  t=10783  ms  floor=97
+
+  t=11295  ms  floor=3098
+
+  t=11807  ms  floor=869
+
+  t=12319  ms  floor=200
+
+  t=12831  ms  floor=113
+
+  t=13343  ms  floor=104
+
+  t=13855  ms  floor=118
+
+  t=14367  ms  floor=110
+
+  t=14879  ms  floor=101
+
+  t=15391  ms  floor=102
+
+  t=15903  ms  floor=92
+
+  t=16415  ms  floor=109
+
+  t=16927  ms  floor=122
+
+  t=17439  ms  floor=121
+
+  t=17951  ms  floor=114
+
+  t=18463  ms  floor=106
+
+  t=18975  ms  floor=111
+
+  t=19487  ms  floor=92
+
+  t=19999  ms  floor=106
+
+  t=20511  ms  floor=130
+
+  t=21023  ms  floor=127
+
+  t=21535  ms  floor=135
+
+  t=22047  ms  floor=126
+
+  t=22559  ms  floor=125
+
+  t=23071  ms  floor=96
+
+  t=23583  ms  floor=98
+
+  t=24095  ms  floor=127
+
+  t=24607  ms  floor=110
+
+  t=25119  ms  floor=113
+
+  t=25631  ms  floor=114
+
+  t=26143  ms  floor=129
+
+  t=26655  ms  floor=113
+
+  t=27167  ms  floor=127
+
+  t=27679  ms  floor=123
+
+  t=28191  ms  floor=105
+
+  t=28703  ms  floor=109
+
+  t=29215  ms  floor=100
+
+  t=29727  ms  floor=121
+
+  t=30239  ms  floor=129
+
+  t=30751  ms  floor=90
+
+  t=31263  ms  floor=96
+
+  t=31775  ms  floor=106
+
+  t=32287  ms  floor=106
+
+  t=32799  ms  floor=99
+
+  t=33311  ms  floor=109
+
+  t=33823  ms  floor=112
+
+  t=34335  ms  floor=97
+
+  t=34847  ms  floor=112
+
+  t=35359  ms  floor=112
+
+  t=35871  ms  floor=127
+
+  t=36383  ms  floor=115
+
+  t=36895  ms  floor=115
+
+  t=37407  ms  floor=108
+
+  t=37919  ms  floor=103
+
+  t=38431  ms  floor=112
+
+  t=38943  ms  floor=127
+
+  t=39455  ms  floor=108
+
+  t=39967  ms  floor=101
+
+  t=40479  ms  floor=98
+
+  => ADC reached a real noise floor after 6175 ms
+
+  --- B: reset + 0x10=0x1f / 0x11=0x7f  (ESP-ADF's analog bias) ---
+
+  (0x10 reads back 0x1f, wrote 0x1f)
+
+  t=543    ms  floor=0
+
+  t=1055   ms  floor=0
+
+  t=1567   ms  floor=0
+
+  t=2079   ms  floor=0
+
+  t=2591   ms  floor=0
+
+  t=3103   ms  floor=0
+
+  t=3615   ms  floor=1
+
+  t=4127   ms  floor=3
+
+  t=4639   ms  floor=5
+
+  t=5151   ms  floor=16
+
+  t=5663   ms  floor=37
+
+  t=6175   ms  floor=85
+
+  t=6687   ms  floor=118
+
+  t=7199   ms  floor=118
+
+  t=7711   ms  floor=142
+
+  t=8223   ms  floor=770
+
+  t=8735   ms  floor=451
+
+  t=9247   ms  floor=112
+
+  t=9759   ms  floor=108
+
+  t=10271  ms  floor=1063
+
+  t=10783  ms  floor=4360
+
+  t=11295  ms  floor=508
+
+  t=11807  ms  floor=283
+
+  t=12319  ms  floor=215
+
+  t=12831  ms  floor=126
+
+  t=13343  ms  floor=107
+
+  t=13855  ms  floor=115
+
+  t=14367  ms  floor=112
+
+  t=14879  ms  floor=116
+
+  t=15391  ms  floor=105
+
+  t=15903  ms  floor=116
+
+  t=16415  ms  floor=82
+
+  t=16927  ms  floor=119
+
+  t=17439  ms  floor=92
+
+  t=17951  ms  floor=111
+
+  t=18463  ms  floor=101
+
+  t=18975  ms  floor=82
+
+  t=19487  ms  floor=98
+
+  t=19999  ms  floor=93
+
+  t=20511  ms  floor=98
+
+  t=21023  ms  floor=83
+
+  t=21535  ms  floor=95
+
+  t=22047  ms  floor=110
+
+  t=22559  ms  floor=129
+
+  t=23071  ms  floor=108
+
+  t=23583  ms  floor=128
+
+  t=24095  ms  floor=109
+
+  t=24607  ms  floor=92
+
+  t=25119  ms  floor=88
+
+  t=25631  ms  floor=96
+
+  t=26143  ms  floor=103
+
+  t=26655  ms  floor=105
+
+  t=27167  ms  floor=98
+
+  t=27679  ms  floor=117
+
+  t=28191  ms  floor=97
+
+  t=28703  ms  floor=106
+
+  t=29215  ms  floor=92
+
+  t=29727  ms  floor=98
+
+  t=30239  ms  floor=117
+
+  t=30751  ms  floor=107
+
+  t=31263  ms  floor=104
+
+  t=31775  ms  floor=111
+
+  t=32287  ms  floor=110
+
+  t=32799  ms  floor=103
+
+  t=33311  ms  floor=105
+
+  t=33823  ms  floor=110
+
+  t=34335  ms  floor=183
+
+  t=34847  ms  floor=116
+
+  t=35359  ms  floor=126
+
+  t=35871  ms  floor=142
+
+  t=36383  ms  floor=114
+
+  t=36895  ms  floor=118
+
+  t=37407  ms  floor=100
+
+  t=37919  ms  floor=98
+
+  t=38431  ms  floor=86
+
+  t=38943  ms  floor=86
+
+  t=39455  ms  floor=82
+
+  t=39967  ms  floor=75
+
+  t=40479  ms  floor=86
+
+  => ADC reached a real noise floor after 6175 ms
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A codec
+
+        whose clock tree did not lock cannot run its modulator and
+
+        returns zeros or a stuck constant here
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=61    [-133..93] tone_rms=868    peak=5967   PASS
+
+  sweep.11025: slab pre-reset  tx=8 rx=8
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=96    [-143..135] tone_rms=2205   peak=26327  PASS
+
+  sweep.12000: slab pre-reset  tx=8 rx=8
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=92    [-122..206] tone_rms=2888   peak=26171  PASS
+
+  sweep.16000: slab pre-reset  tx=8 rx=8
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=101   [-179..227] tone_rms=1382   peak=12324  PASS
+
+  sweep.22050: slab pre-reset  tx=8 rx=8
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=99    [-184..87] tone_rms=3119   peak=29137  PASS
+
+  sweep.24000: slab pre-reset  tx=8 rx=8
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=97    [-140..105] tone_rms=2069   peak=9824   PASS
+
+  sweep.32000: slab pre-reset  tx=8 rx=8
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=103   [-97..116] tone_rms=4834   peak=30440  PASS
+
+  sweep.44100: slab pre-reset  tx=8 rx=8
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+  sweep.44100: start
+
+  sweep.44100: warmup
+
+  sweep.44100: baseline
+
+  sweep.44100: amp
+
+  sweep.44100: settle
+
+  sweep.44100: timed
+
+  sweep.44100: stop
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=109   [-100..179] tone_rms=9093   peak=32767  PASS
+
+  sweep.48000: slab pre-reset  tx=8 rx=8
+
+  sweep.48000: reset
+
+  sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.48000: cfg-tx
+
+  sweep.48000: cfg-codec
+
+  sweep.48000: cfg-rx
+
+  sweep.48000: regs
+
+  sweep.48000: prequeue
+
+  sweep.48000: start
+
+  sweep.48000: warmup
+
+  sweep.48000: baseline
+
+  sweep.48000: amp
+
+  sweep.48000: settle
+
+  sweep.48000: timed
+
+  sweep.48000: stop
+
+SWEEP 48000  regs=OK  lrck=47995  OK  adc=alive floor=150   [-247..187] tone_rms=14949  peak=32767  PASS
+
+=== sweep: 0 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+
+SWEEP route playback  PASS
+
+SWEEP route capture   PASS
+
+SWEEP route both      PASS
+
+=== routes: 0 of 3 FAILED ===
+
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+=== SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
+    What that means: the clock registers land on the chip, the frame clock
+
+    is right, the ADC is running, and the route registers are what the
+
+    driver intended. What it does NOT mean: nothing here measures audio
+
+    quality or the codec's internal OSR. The speaker is judged by ear.
+
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+[monitor captured 13505 chars; last 1.5s silent]
+
+================================================================================
+5. THE ANSWER: is a deterministic register state free? Five arms, each of which must
+   prove the chip is awake before it is allowed to touch it.
+================================================================================
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== HW-023d: can the driver get a deterministic register state for free? ===
+
+  the settled noise floor on this board is 81..116. an arm that reads back a
+
+  real floor IMMEDIATELY after its writes is one the driver can afford.
+
+  'awake after N ms' is how long the PREVIOUS arm's damage took to clear.
+
+  D0 configure only (control)  awake after 512   ms  ->  floor=103   FREE (no settle cost)
+
+  D1 + digital registers       awake after 512   ms  ->  floor=123   FREE (no settle cost)
+
+  D2 + analog registers        awake after 512   ms  ->  floor=109   FREE (no settle cost)
+
+  D3 0xFA pulse + everything   awake after 513   ms  ->  floor=1024  FREE (no settle cost)
+
+  D4 0x00 reset + everything   awake after 4096  ms  ->  floor=0     COSTS THE SIX SECONDS
+
+  D4 is the known-bad control: if it does NOT cost the six seconds, this
+
+  harness is not measuring what HW-023c measured and nothing above is safe.
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A codec
+
+        whose clock tree did not lock cannot run its modulator and
+
+        returns zeros or a stuck constant here
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=7999   OK  adc=alive floor=0     [-1..0] tone_rms=1      peak=12     PASS
+
+  sweep.11025: slab pre-reset  tx=8 rx=8
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11024  OK  adc=alive floor=0     [-1..0] tone_rms=11     peak=113    PASS
+
+  sweep.12000: slab pre-reset  tx=8 rx=8
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=11999  OK  adc=alive floor=1     [-3..3] tone_rms=58     peak=622    PASS
+
+  sweep.16000: slab pre-reset  tx=8 rx=8
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=15999  OK  adc=alive floor=6     [-9..15] tone_rms=352    peak=3222   PASS
+
+  sweep.22050: slab pre-reset  tx=8 rx=8
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22049  OK  adc=alive floor=40    [-72..40] tone_rms=1799   peak=14408  PASS
+
+  sweep.24000: slab pre-reset  tx=8 rx=8
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=23998  OK  adc=alive floor=118   [-118..131] tone_rms=2322   peak=18292  PASS
+
+  sweep.32000: slab pre-reset  tx=8 rx=8
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=31998  OK  adc=alive floor=80    [-161..82] tone_rms=4046   peak=19038  PASS
+
+  sweep.44100: slab pre-reset  tx=8 rx=8
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+  sweep.44100: start
+
+  sweep.44100: warmup
+
+  sweep.44100: baseline
+
+  sweep.44100: amp
+
+  sweep.44100: settle
+
+  sweep.44100: timed
+
+  sweep.44100: stop
+
+SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=108   [-91..129] tone_rms=9218   peak=32767  PASS
+
+  sweep.48000: slab pre-reset  tx=8 rx=8
+
+  sweep.48000: reset
+
+  sweep.48000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.48000: cfg-tx
+
+  sweep.48000: cfg-codec
+
+  sweep.48000: cfg-rx
+
+  sweep.48000: regs
+
+  sweep.48000: prequeue
+
+  sweep.48000: start
+
+  sweep.48000: warmup
+
+  sweep.48000: baseline
+
+  sweep.48000: amp
+
+  sweep.48000: settle
+
+  sweep.48000: timed
+
+  sweep.48000: stop
+
+SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=125   [-50..244] tone_rms=14914  peak=32767  PASS
+
+=== sweep: 0 of 9 rate(s) FAILED ===
+
+-- route transitions: the unused converter must power DOWN --
+
+SWEEP route playback  PASS
+
+SWEEP route capture   PASS
+
+SWEEP route both      PASS
+
+=== routes: 0 of 3 FAILED ===
+
+SWEEP restore: lrck measured 16000 Hz, want 16000  OK
+
+=== SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
+
+    What that means: the clock registers land on the chip, the frame clock
+
+    is right, the ADC is running, and the route registers are what the
+
+    driver intended. What it does NOT mean: nothing here measures audio
+
+    quality or the codec's internal OSR. The speaker is judged by ear.
+
+*** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
+
+[monitor captured 15886 chars; last 1.5s silent]

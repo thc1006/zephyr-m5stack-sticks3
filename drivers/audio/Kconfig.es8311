@@ -4,10 +4,25 @@
 config AUDIO_CODEC_ES8311
 	bool "Everest Semiconductor ES8311 audio codec"
 	default y
+	# The upstream copy carries no such dependency, because upstream sources this
+	# file from inside `if AUDIO_CODEC`. Out of tree it is sourced at the top
+	# level, so it has to state it.
 	depends on AUDIO_CODEC
 	depends on DT_HAS_EVEREST_ES8311_ENABLED
 	select I2C
 	help
 	  Enable support for the Everest Semiconductor ES8311 mono audio codec
-	  (I2C control, I2S/PCM data). Used on the M5Stack StickS3 for the speaker
-	  amplifier and microphone path.
+	  (I2C control, I2S/PCM data).
+
+config EMUL_ES8311
+	bool "Everest ES8311 audio codec emulator"
+	default y
+	depends on EMUL
+	# Depend on the driver, not just on the devicetree node: the emulator logs
+	# through CONFIG_AUDIO_CODEC_LOG_LEVEL, which only exists once the audio
+	# codec subsystem is on. Keying off DT_HAS_EVEREST_ES8311_ENABLED alone let
+	# EMUL_ES8311 be selected without AUDIO_CODEC, which fails to build.
+	depends on AUDIO_CODEC_ES8311
+	help
+	  I2C emulator for the Everest ES8311 audio codec, for native_sim driver
+	  unit tests.

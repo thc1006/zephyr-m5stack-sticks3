@@ -1,0 +1,224 @@
+# HW-021c - the CORRECT fix. 2026-07-12, COM35. PASS.
+#
+# Quiesce the hardware before returning the block: on the GDMA path, stop the I2S unit
+# (i2s_hal_rx_stop / i2s_hal_tx_stop) before dma_stop(), and clear dma_pending. Only
+# then is the in-flight block safe to hand back. Plus the TX callback must NULL
+# mem_block after freeing it, or the stop-path free is a double free on tx_disable.
+#
+# RESULT:
+#   * canary: 0 of 8 free RX blocks touched after being handed back (was 1 of 8)
+#   * 100 reconfigure/START/DROP cycles, slab FLAT at 8/8 free the whole way
+#   * 20 of those cycles deliberately starve TX, driving the driver down its
+#     tx_disable path -- the one place the fix could double-free
+#   * final census tx=8 rx=8 of 8
+#
+# scripts/patch_zephyr_i2s_leak.sh reproduces this driver byte for byte.
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x403773aa
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90190,len:0x2cec
+
+load:0x40374000,len:0xc17c
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 19ce72ec1054dae38efb8e39f728359c5816874d670a453ae621e5ac5bef0b16
+
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037a924
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Jul 12 2026 20:11:50
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0cf7ch ( 53116)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=044ech ( 17644)
+
+I (boot): libc heap size 146 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S START/DROP stress: 100 cycles, TX starved every 5 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- the one place the leak fix could double-free.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.CANARY  stamped 8 free rx blocks, waited 50 ms, 0 came back CLOBBERED
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.CANARY  stamped 8 free rx blocks, waited 50 ms, 0 came back CLOBBERED
+
+  stress   3: slab tx=8 rx=8
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.drop      tx=6 rx=7
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+  stress   5: slab tx=8 rx=8   TX starved on purpose
+
+  stress   6: slab tx=8 rx=8
+
+  stress   7: slab tx=8 rx=8
+
+  stress   8: slab tx=8 rx=8
+
+  stress   9: slab tx=8 rx=8
+
+  stress  10: slab tx=8 rx=8   TX starved on purpose
+
+  stress  15: slab tx=8 rx=8   TX starved on purpose
+
+  stress  20: slab tx=8 rx=8   TX starved on purpose
+
+  stress  25: slab tx=8 rx=8   TX starved on purpose
+
+  stress  30: slab tx=8 rx=8   TX starved on purpose
+
+  stress  35: slab tx=8 rx=8   TX starved on purpose
+
+  stress  40: slab tx=8 rx=8   TX starved on purpose
+
+  stress  45: slab tx=8 rx=8   TX starved on purpose
+
+  stress  50: slab tx=8 rx=8   TX starved on purpose
+
+  stress  55: slab tx=8 rx=8   TX starved on purpose
+
+  stress  60: slab tx=8 rx=8   TX starved on purpose
+
+  stress  65: slab tx=8 rx=8   TX starved on purpose
+
+  stress  70: slab tx=8 rx=8   TX starved on purpose
+
+  stress  75: slab tx=8 rx=8   TX starved on purpose
+
+  stress  80: slab tx=8 rx=8   TX starved on purpose
+
+  stress  85: slab tx=8 rx=8   TX starved on purpose
+
+  stress  90: slab tx=8 rx=8   TX starved on purpose
+
+  stress  95: slab tx=8 rx=8   TX starved on purpose
+
+  stress 100: slab tx=8 rx=8   TX starved on purpose
+
+  final census: tx=8 rx=8 of 8
+
+=== STRESS PASSED: 100 cycles, 20 of them with TX starved on purpose,
+
+    and the slab held 8/8 free the whole way. No leak, and no block
+
+    freed twice on the tx_disable path. ===
+
+*** I2S SLAB STRESS PASSED ***
+
+[monitor captured 8182 chars; last 1.5s silent]

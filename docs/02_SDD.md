@@ -239,6 +239,13 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   needed. `configure()` handles the playback (DAC), capture (ADC) and combined
   `PLAYBACK_CAPTURE` routes. This driver is also the standalone upstream
   candidate (task #21).
+- Codec board policy + contracts: three board choices are devicetree properties on
+  the `es8311` node — `everest,mono-dac-source`, `everest,mic-pga-gain-db`,
+  `everest,output-mode` — and the StickS3 node sets none, taking the HW-verified
+  defaults (left slot / 30 dB / headphone). Two contracts the driver enforces: the
+  codec is always the I2S clock **TARGET** (the SoC drives BCLK/LRCK, so the codec cfg
+  must pass `TARGET | TARGET`, not the host's CONTROLLER role), and `configure()`
+  leaves the DAC muted — `start_output()` is the first unmute.
 - Playback data path: SoC I2S0 as master (16 kHz / 16-bit, standard I2S) →
   ES8311 DAC → AW8737 speaker amp. (`audio_beep()` is the HW-006-verified playback
   primitive; the AUDIO page itself is a mic meter and does not beep.)
@@ -284,9 +291,17 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   (the LCD rail). The amp is driven high ONLY for the duration of a beep
   (anti-pop, speaker muted at rest). The mic and speaker share the L3B rail
   (PYG2), so capture needs L3B powered (already up for the LCD).
-- Test: `tests/drivers/audio/es8311` (native_sim ztest, 11/11) covers chip-ID
-  read, the playback and capture configure sequences + write ordering,
-  volume/mute, unsupported-route/format rejection, and I2C-error propagation.
+- Clock: the codec derives its master clock from BCLK, not from an MCLK pin (the
+  board does not wire one). With a 16-bit stereo frame that is 256 * Fs at every
+  rate, so one register set serves 8 kHz - 48 kHz. The driver therefore rejects a
+  non-zero `mclk_freq` (it would describe a clock on no pin) and word sizes other
+  than 16 bits (24- or 32-bit frames would put the master clock at 384 * Fs or
+  512 * Fs and silently mis-clock the codec). Both constraints are in the binding.
+- Test: `tests/drivers/audio/es8311` (native_sim ztest, 72/72) covers chip-ID
+  read (a foreign id is fatal), the playback and capture configure sequences +
+  write ordering, the route transitions (the unused converter is powered DOWN),
+  a failed `configure()` leaving no route, volume/mute,
+  unsupported-route/format rejection, and I2C-error propagation.
 
 ### 4.10 BLE telemetry (gated `CONFIG_APP_BLE`)
 

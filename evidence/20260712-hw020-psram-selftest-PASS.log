@@ -1,0 +1,84 @@
+# HW-020 - PSRAM strengthened self-test: PASS
+# 2026-07-12, M5StickS3 on COM35 (ESP32-S3-PICO-1-N8R8, MAC 98:88:e0:0e:dc:64).
+# Image built from c6c6256. A THIRD physical device, independent of HW-018's board.
+#
+# This re-runs what HW-018 could not. HW-018 passed against the ORIGINAL self-test,
+# whose pattern was buf[i] = (uint8_t)(i ^ 0xA5): truncating to a byte makes it repeat
+# every 256 bytes, so a stuck A8 would alias 0x0000 and 0x0100, both cells would hold
+# 0xA5, and both would be EXPECTED to hold 0xA5. The test passed with the fault
+# present, while its own comment claimed it "catches stuck address lines". Only A0-A7
+# were ever covered.
+#
+# The rewritten self-test writes 32-bit words carrying the full index, verifies, writes
+# the complement, verifies again, and then runs an explicit power-of-two address-alias
+# sweep (write a marker at every 2^n offset, then check none of them aliased).
+#
+# RESULT: passes on silicon.
+#   ROM  : Found 8MB PSRAM device / Speed: 40MHz / octal, vendor 0x0d (AP),
+#          64 Mbit, good-die Pass
+#   App  : psram: octal SPIRAM mapped; 65536 B of the external heap verified
+#          (pattern, complement, address alias)
+#   No *** PSRAM SELF-TEST FAILED *** banner; the device stays alive afterwards.
+#
+# SCOPE, honestly: 64 KiB of an 8 MiB part (0.78%). It proves the ROM detects the
+# octal device, the external heap allocation lands in SPIRAM (esp_ptr_external_ram),
+# the data lines carry a position-dependent pattern and its complement, and the
+# low address lines do not alias within the tested window. It does not exercise the
+# whole part.
+#
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037736a
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fc90640,len:0x2798
+load:0x40374000,len:0xc628
+load:0x50000000,len:0x24
+SHA-256 comparison failed:
+Calculated: 5c1da3909cde97e962032b2056188a2c355ba882d86ab0b9f3e0cdc306cb63fc
+Expected: 00000000d0110000000000000000000000000000000000000000000000000000
+Attempting to boot anyway...
+entry 0x4037a718
+I (soc_init): ESP Simple boot
+I (soc_init): compile time Jul 12 2026 08:02:45
+W (soc_init): Unicore bootloader
+I (soc_init): chip revision: v0.2
+I (flash_init): Boot SPI Speed : 80MHz
+I (flash_init): SPI Mode       : DIO
+I (flash_init): SPI Flash Size : 8MB
+I (boot): DRAM[2C: lma=00000020h vma=3fc90640h size=02798h ( 10136)
+I (boot): IRAM[2C: lma=000027c0h vma=40374000h size=0c628h ( 50728)
+I (boot): RTC_DATA[6C: lma=0000edf0h vma=50000000h size=00024h (    36)
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=093d8h ( 37848)
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=03150h ( 12624)
+I (boot): libc heap size 236 kB.
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+I (spi_flash): detected chip: gd
+I (spi_flash): flash io: dio
+I (octal_psram): vendor id    : 0x0d (AP)
+I (octal_psram): dev id       : 0x02 (generation 3)
+I (octal_psram): density      : 0x03 (64 Mbit)
+I (octal_psram): good-die     : 0x01 (Pass)
+I (octal_psram): Latency      : 0x01 (Fixed)
+I (octal_psram): VCC          : 0x01 (3V)
+I (octal_psram): SRF          : 0x01 (Fast Refresh)
+I (octal_psram): BurstType    : 0x01 (Hybrid Wrap)
+I (octal_psram): BurstLen     : 0x01 (32 Byte)
+I (octal_psram): Readlatency  : 0x02 (10 cycles@Fixed)
+I (octal_psram): DriveStrength: 0x00 (1/1)
+I (esp_psram): Found 8MB PSRAM device
+I (esp_psram): Speed: 40MHz
+*** Booting Zephyr OS build v4.4.0 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.337,000] <inf> psram: octal SPIRAM mapped; 65536 B of the external heap verified (pattern, complement, address
+[39;120Hs alias)
+[00:00:00.342,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+[00:00:00.342,000] <inf> gfx: Display ready (135x240)
+
+[monitor captured 5472 chars; last 1.0s silent]

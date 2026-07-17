@@ -104,6 +104,45 @@ uint16_t audio_rec_peak(void);
 /* Length of the held clip in milliseconds (0 if nothing is recorded). */
 uint32_t audio_rec_len_ms(void);
 
+#ifdef CONFIG_APP_AUDIO_RATE_SWEEP
+/*
+ * Hardware validation for the ES8311 driver: reprogram I2S + the codec at every
+ * sample rate the driver claims to support, read the clock registers back off
+ * the chip, measure the frame clock against the kernel cycle counter, and check
+ * the ADC is alive. Prints one line per rate, then restores the application's own
+ * 16 kHz configuration and measures THAT before handing the device back.
+ *
+ * Returns 0 only if every rate passed AND the restore is measured good. A
+ * validation routine whose result lives only in stdout cannot be acted on, and a
+ * sweep that leaves the device unable to play has not passed. Blocks for a few
+ * seconds; call it once, from main.
+ */
+int audio_rate_sweep(void);
+#endif
+
+#ifdef CONFIG_APP_I2S_STRESS
+/*
+ * Hammer I2S START/DROP, taking a census of the TX and RX memory slabs before each
+ * cycle and deliberately starving TX on some of them.
+ *
+ * Zephyr's ESP32 I2S driver loses the DMA's in-flight slab block on every DROP, and
+ * i2s_buf_write() allocates with K_FOREVER -- so an exhausted slab is not an error,
+ * it is a silent, unkillable block. The census makes the leak visible; the guard
+ * makes this REPORT on an unpatched tree rather than hang in it.
+ *
+ * The canary makes something else visible: that simply handing the block back is NOT
+ * the fix. On the GDMA path the driver stops the DMA channel and never the I2S unit
+ * feeding it, so the block is still being written when it goes back on the free list.
+ * The starved cycles cover a second hazard -- the tx_disable path, where the TX
+ * callback has already freed the block, so returning it could also be a plain double
+ * free; a free count above the slab's block count is how that would show.
+ *
+ * Returns 0 only if every cycle ran and the census never moved. Blocks for a few
+ * seconds; call it once, from main.
+ */
+int audio_i2s_stress(void);
+#endif
+
 #endif /* CONFIG_APP_AUDIO */
 
 #endif /* M5STICKS3_AUDIO_H */

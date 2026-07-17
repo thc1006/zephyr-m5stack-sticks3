@@ -29,6 +29,7 @@
 #include <zephyr/device.h>
 #include <zephyr/audio/codec.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/logging/log.h>
 
@@ -174,16 +175,27 @@ static void tone_block_fill(void)
 	tone_ready = true;
 }
 
-int audio_init(void)
+/*
+ * Probe the codec, once.
+ *
+ * Idempotent, and it has to be: the rate sweep reprograms the whole chain and then
+ * restores it, and device_init() on an already-initialized device does NOT return 0.
+ * It returns -EALREADY (kernel/device.c, z_impl_device_init). device_is_ready() is
+ * the right guard rather than treating -EALREADY as success, because it also
+ * excludes a device that ran its init and failed.
+ */
+static int audio_codec_probe(void)
 {
-	struct audio_codec_cfg codec_cfg;
-	struct i2s_config i2s_cfg;
 	int ret;
+
+	if (device_is_ready(codec_dev)) {
+		return 0;
+	}
 
 	/*
 	 * The ES8311 is marked zephyr,deferred-init (it shares the L3B rail with
 	 * the LCD, which is only powered by lcd_power's regulator-boot-on at boot).
-	 * Probe it now, in main context, where L3B is up and settled -- doing it at
+	 * Probe it here, in main context, where L3B is up and settled -- doing it at
 	 * the driver's POST_KERNEL priority read chip-id before power -> -EFAULT.
 	 */
 	ret = device_init(codec_dev);
@@ -195,6 +207,121 @@ int audio_init(void)
 	if (!device_is_ready(codec_dev)) {
 		LOG_ERR("ES8311 codec not ready");
 		return -ENODEV;
+	}
+
+	return 0;
+}
+
+/*
+ * Build the ES8311 codec config from the SoC's I2S config. The I2S_OPT_*_CLK role flags are
+ * endpoint-relative: the SoC I2S is the CONTROLLER (it drives BCLK and LRCK), so the codec is the
+ * TARGET -- it receives them. Keeping this in ONE place is what stops the call sites from drifting;
+ * passing the SoC's CONTROLLER role to the codec is what the es8311 driver rejects with -ENOTSUP.
+ * mclk_freq is 0 because the codec makes its master clock from BCLK, not from an MCLK input pin.
+ */
+static void audio_codec_cfg_from_i2s(struct audio_codec_cfg *codec_cfg,
+				     const struct i2s_config *i2s_cfg, audio_route_t route)
+{
+	codec_cfg->mclk_freq = 0U;
+	codec_cfg->dai_type = AUDIO_DAI_TYPE_I2S;
+	codec_cfg->dai_route = route;
+	codec_cfg->dai_cfg.i2s = *i2s_cfg;
+	codec_cfg->dai_cfg.i2s.options = I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET;
+}
+
+/*
+ * Program I2S and the codec for `rate`: everything that has to be redone when the
+ * sample rate changes, and nothing that must happen only once. The rate sweep
+ * reprograms the chain per rate and restores it through this, so it must not probe
+ * the device or touch anything one-shot.
+ *
+ * Leaves both directions configured and stopped, which is the state every path in
+ * this file expects: i2s_configure() is called here and nowhere else, and beep,
+ * meter, record and play all just DROP/START from whatever this left behind.
+ */
+static int audio_configure_chain(uint32_t rate)
+{
+	audio_property_value_t vol = { .vol = AUDIO_VOLUME_DB };
+	struct audio_codec_cfg codec_cfg;
+	struct i2s_config i2s_cfg;
+	int ret;
+
+	/*
+	 * I2S0 TX as master (no I2S_OPT_*_CLK_TARGET => SoC drives BCLK + WS),
+	 * standard I2S, 16-bit stereo. The esp32-i2s driver derives BCLK = 32 * Fs,
+	 * and the codec makes its own master clock from BCLK, so the codec sees
+	 * 256 * Fs at every rate: one coefficient row serves them all.
+	 */
+	i2s_cfg.word_size = AUDIO_WORD_BITS;
+	i2s_cfg.channels = AUDIO_CHANNELS;
+	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
+	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
+	i2s_cfg.frame_clk_freq = rate;
+	i2s_cfg.mem_slab = &tx_slab;
+	i2s_cfg.block_size = BLOCK_SIZE;
+	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
+
+	ret = i2s_configure(i2s_dev, I2S_DIR_TX, &i2s_cfg);
+	if (ret < 0) {
+		LOG_ERR("i2s_configure(TX, %u Hz) failed (%d)", rate, ret);
+		return ret;
+	}
+
+	audio_codec_cfg_from_i2s(&codec_cfg, &i2s_cfg, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+
+	ret = audio_codec_configure(codec_dev, &codec_cfg);
+	if (ret < 0) {
+		LOG_ERR("audio_codec_configure(%u Hz) failed (%d)", rate, ret);
+		return ret;
+	}
+
+	/*
+	 * I2S0 RX, same format, for microphone capture. The esp32-i2s driver shares
+	 * BCLK/WS once both directions are configured, so capture can run full-duplex
+	 * (I2S_DIR_BOTH). Only the mem_slab and the timeout differ from TX.
+	 */
+	i2s_cfg.mem_slab = &rx_slab;
+	i2s_cfg.timeout = LOOP_IO_TIMEOUT_MS; /* bound a stalled mic read */
+	ret = i2s_configure(i2s_dev, I2S_DIR_RX, &i2s_cfg);
+	if (ret < 0) {
+		LOG_ERR("i2s_configure(RX, %u Hz) failed (%d)", rate, ret);
+		return ret;
+	}
+
+	/*
+	 * Safe low volume; leave the codec configured but the amp OFF.
+	 *
+	 * Both results are propagated. This used to log a warning and continue, and then
+	 * discard apply_properties() outright -- so an I2C failure here left the volume
+	 * and the mute unapplied while the caller was told the chain was configured, and
+	 * the rate sweep's restore would have reported success with the DAC at whatever
+	 * gain the last rate left it. That is the same swallowed-return-value shape this
+	 * branch exists to remove; it does not get an exception because it is only the
+	 * volume.
+	 */
+	ret = audio_codec_set_property(codec_dev, AUDIO_PROPERTY_OUTPUT_VOLUME,
+				       AUDIO_CHANNEL_ALL, vol);
+	if (ret < 0) {
+		LOG_ERR("set volume failed (%d)", ret);
+		return ret;
+	}
+
+	ret = audio_codec_apply_properties(codec_dev);
+	if (ret < 0) {
+		LOG_ERR("apply_properties failed (%d)", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+int audio_init(void)
+{
+	int ret;
+
+	ret = audio_codec_probe();
+	if (ret < 0) {
+		return ret;
 	}
 
 	if (!device_is_ready(i2s_dev)) {
@@ -214,63 +341,10 @@ int audio_init(void)
 		return ret;
 	}
 
-	/*
-	 * Configure I2S0 TX as master (no I2S_OPT_*_CLK_TARGET => SoC drives
-	 * BCLK + WS), standard I2S, 16 kHz / 16-bit / stereo. The esp32-i2s
-	 * driver derives MCLK = 256 * Fs = 4.096 MHz, which matches the codec
-	 * coefficient row (MCLK-from-BCLK, LRCK = MCLK/256).
-	 */
-	i2s_cfg.word_size = AUDIO_WORD_BITS;
-	i2s_cfg.channels = AUDIO_CHANNELS;
-	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
-	/* SoC is the I2S controller (master): drives BCLK + WS. */
-	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
-	i2s_cfg.frame_clk_freq = AUDIO_SAMPLE_RATE;
-	i2s_cfg.mem_slab = &tx_slab;
-	i2s_cfg.block_size = BLOCK_SIZE;
-	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
-
-	ret = i2s_configure(i2s_dev, I2S_DIR_TX, &i2s_cfg);
+	ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
 	if (ret < 0) {
-		LOG_ERR("i2s_configure(TX) failed (%d)", ret);
 		return ret;
 	}
-
-	/* Configure the ES8311 for the same 16 kHz / 16-bit I2S playback. */
-	codec_cfg.mclk_freq = AUDIO_SAMPLE_RATE * 256U; /* 4.096 MHz */
-	codec_cfg.dai_type = AUDIO_DAI_TYPE_I2S;
-	codec_cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
-	codec_cfg.dai_cfg.i2s = i2s_cfg;
-
-	ret = audio_codec_configure(codec_dev, &codec_cfg);
-	if (ret < 0) {
-		LOG_ERR("audio_codec_configure failed (%d)", ret);
-		return ret;
-	}
-
-	/*
-	 * Configure I2S0 RX with the same format for microphone capture. The
-	 * esp32-i2s driver shares BCLK/WS once both TX and RX are configured, so
-	 * audio_loopback() can run full-duplex (I2S_DIR_BOTH). Only the mem_slab
-	 * differs from the TX config above.
-	 */
-	i2s_cfg.mem_slab = &rx_slab;
-	i2s_cfg.timeout = LOOP_IO_TIMEOUT_MS; /* bound a stalled mic read */
-	ret = i2s_configure(i2s_dev, I2S_DIR_RX, &i2s_cfg);
-	if (ret < 0) {
-		LOG_ERR("i2s_configure(RX) failed (%d)", ret);
-		return ret;
-	}
-
-	/* Safe low volume; leave the codec configured but the amp OFF. */
-	audio_property_value_t vol = { .vol = AUDIO_VOLUME_DB };
-
-	ret = audio_codec_set_property(codec_dev, AUDIO_PROPERTY_OUTPUT_VOLUME,
-				       AUDIO_CHANNEL_ALL, vol);
-	if (ret < 0) {
-		LOG_WRN("set volume failed (%d); continuing", ret);
-	}
-	(void)audio_codec_apply_properties(codec_dev);
 
 	if (!tone_ready) {
 		tone_block_fill();
@@ -287,13 +361,54 @@ bool audio_ready(void)
 	return ready;
 }
 
+/*
+ * Refuse to start a stream when the I2S mem-slab has been eaten, and say why.
+ *
+ * Zephyr's ESP32 I2S driver leaks one slab block per direction on every START/DROP
+ * cycle: i2s_esp32_{rx,tx}_stop_transfer() set stream->data->mem_block -- the block
+ * the DMA is working on -- to NULL without returning it to the slab, and DROP calls
+ * exactly those. Every capture session here ends in a DROP, so eight sessions empty
+ * an eight-block slab.
+ *
+ * And it does not fail: i2s_buf_write() allocates with K_FOREVER
+ * (drivers/i2s/i2s_common.c), so an exhausted slab is an unkillable block with no
+ * error, no fault and no log line. The device simply stops, which is how it presented
+ * on hardware (HW-019) and how it would present to a user who opened the AUDIO page
+ * nine times.
+ *
+ * scripts/patch_zephyr_i2s_leak.sh fixes the driver, and the fix is NOT the obvious one:
+ * simply handing the block back crashes, because on the GDMA path *_stop_transfer()
+ * stops the DMA channel and never the I2S unit feeding it, so the block is still being
+ * written when it lands back on the free list. The leak was masking that. See HW-021
+ * (evidence/20260712-hw021-i2s-slab-quiesce-PASS.log) and CONFIG_APP_I2S_STRESS.
+ *
+ * This check is for anyone who builds without the fix: a message beats a mystery.
+ */
+static bool audio_slab_ok(const char *what)
+{
+	uint32_t tx = k_mem_slab_num_free_get(&tx_slab);
+	uint32_t rx = k_mem_slab_num_free_get(&rx_slab);
+
+	if (tx >= 2U && rx >= 2U) {
+		return true;
+	}
+
+	LOG_ERR("%s refused: I2S mem-slab exhausted (tx=%u rx=%u of %u). The ESP32 I2S "
+		"driver leaks a block per START/DROP; run scripts/patch_zephyr_i2s_leak.sh "
+		"against your Zephyr tree. Starting anyway would block forever inside "
+		"i2s_buf_write().",
+		what, tx, rx, (unsigned int)BLOCK_COUNT);
+
+	return false;
+}
+
 void audio_beep(void)
 {
 	uint32_t total_frames;
 	uint32_t blocks;
 	int ret;
 
-	if (!ready) {
+	if (!ready || !audio_slab_ok("beep")) {
 		return;
 	}
 
@@ -603,6 +718,10 @@ static void meter_session(void)
 	uint16_t wpeak = 0U;
 	uint32_t wc = 0U;
 
+	if (!audio_slab_ok("mic meter")) {
+		return;
+	}
+
 	/* Start ONE full-duplex session (amp stays OFF for capture). */
 	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
 	audio_codec_start_output(codec_dev);
@@ -716,6 +835,10 @@ static void do_record(void)
 	uint32_t empty = 0U;
 	bool logged = false;
 
+	if (!audio_slab_ok("record")) {
+		return;
+	}
+
 	rec_samples = 0U;
 	rec_peak = 0U;
 	rec_abort = false;
@@ -745,7 +868,21 @@ static void do_record(void)
 			uint16_t r;
 			int rc;
 
-			if (loop_tx(zero_block) < 0) {
+			/*
+			 * A silent break. This one ends the session and bumps `restarts`,
+			 * and it said nothing at all -- so a recording that restarted once,
+			 * every single time, looked like a recording that just worked. The
+			 * read error below has always logged; the write error never did, and
+			 * it is the one that was actually firing.
+			 */
+			rc = loop_tx(zero_block);
+			if (rc < 0) {
+				if (!logged) {
+					LOG_WRN("rec: loop_tx %d at %u ms (restarting)", rc,
+						(unsigned int)(rec_samples * 1000U /
+							       AUDIO_SAMPLE_RATE));
+					logged = true;
+				}
 				break;
 			}
 			rc = i2s_buf_read(i2s_dev, rx_buf, &size);
@@ -798,7 +935,7 @@ static void do_play(void)
 	uint32_t pos = 0U;
 	int ret;
 
-	if (rec_samples == 0U) {
+	if (rec_samples == 0U || !audio_slab_ok("playback")) {
 		return;
 	}
 	rec_state = AUDIO_REC_PLAYING;
@@ -960,5 +1097,1344 @@ uint32_t audio_rec_len_ms(void)
 {
 	return rec_samples * 1000U / AUDIO_SAMPLE_RATE;
 }
+
+#ifdef CONFIG_APP_AUDIO_RATE_SWEEP
+
+/*
+ * ES8311 sample-rate sweep: hardware validation for the codec driver (issue #7).
+ *
+ * The driver claims 8 kHz to 48 kHz on the argument that the codec's master clock
+ * is derived from BCLK, so it lands on 256 * Fs at every rate and the divider
+ * chain is a pure ratio. That is an argument. This is the measurement.
+ *
+ * Three independent things are checked at each rate.
+ *
+ * 1. The clock registers are read back off the chip over I2C. That only proves
+ *    the driver wrote what it meant to write, so it is necessary and nowhere near
+ *    sufficient.
+ *
+ * 2. The frame clock is MEASURED. In steady state the DMA drains one block per
+ *    BLOCK_FRAMES / Fs, so timing a known number of blocks with the kernel's
+ *    cycle counter gives the frame rate the hardware is really running at. The
+ *    kernel clock is not derived from the I2S clock, which is what makes this an
+ *    independent check: a mis-programmed I2S divider shows up here and nowhere
+ *    else. An acoustic loopback cannot do this, because TX and RX share the same
+ *    clock and a common error cancels out in the digital domain.
+ *
+ * 3. The ADC is checked for LIFE, with the amplifier off. A running ADC returns a
+ *    dithering noise floor; a codec whose clock tree failed to come up returns
+ *    zeros or a stuck constant.
+ *
+ *    BUT A ZERO FLOOR DOES NOT MEAN A DEAD CLOCK TREE, and reading it that way is
+ *    what manufactured this project's worst wrong conclusion. It far more often
+ *    means "less than about six seconds since the codec's analog was disturbed":
+ *    the ES8311's analog reference sits on three 1 uF capacitors and the ADC is
+ *    deaf while they charge (HW-023). The check cannot tell the two apart. It is
+ *    only meaningful once the analog has settled -- which, on a warm-booted board,
+ *    it did minutes ago, since nothing a warm reset does reaches the codec.
+ *
+ * AND THE ORDER OF THE RATE TABLE IS NOT A FREE CHOICE. It ascends, and so does
+ * time, so a settling effect and a rate effect are perfectly confounded in any run
+ * that starts from a disturbed codec. That is not hypothetical: it is exactly how
+ * "the software reset deafens the ADC below 22 kHz" was manufactured, and reversing
+ * the table is what disproved it. Do not reorder this table without saying why, and
+ * do not read a low-rate cliff off it without reversing it first.
+ *
+ * The speaker is judged by ear. The on-board speaker couples very weakly into the
+ * adjacent microphone (HW-016 established this: the 440 Hz beep barely moved the
+ * captured RMS while a clap saturated it), so an acoustic threshold here would
+ * fail for a benign reason. The tone level is reported, not asserted. What the
+ * listener is checking is that every rate makes a sound at all, and the pitch
+ * rises across the sweep because the tone table was generated for 16 kHz.
+ */
+static const uint32_t sweep_rates[] = {
+	8000U, 11025U, 12000U, 16000U, 22050U, 24000U, 32000U, 44100U, 48000U,
+};
+
+/* Clock and format registers the driver must write, identical at every rate. */
+static const struct {
+	uint8_t reg;
+	uint8_t val;
+} sweep_expect[] = {
+	{0x01U, 0xBFU}, /* clock manager: master clock taken from BCLK */
+	{0x02U, 0x18U}, /* DIV_PRE = 1, MULT_PRE = x8 */
+	{0x03U, 0x10U}, /* single speed, ADC_OSR = 16 */
+	{0x04U, 0x10U}, /* DAC_OSR = 16 */
+	{0x05U, 0x00U}, /* DIV_CLKADC = 1, DIV_CLKDAC = 1 */
+	{0x06U, 0x03U}, /* BCLK_CON clear: the codec stays the clock slave */
+	{0x07U, 0x00U},
+	{0x08U, 0xFFU},
+	{0x09U, 0x0CU}, /* serial data in: standard I2S, 16-bit */
+	{0x0AU, 0x0CU}, /* serial data out: standard I2S, 16-bit, unmuted */
+};
+
+static const struct i2c_dt_spec codec_i2c = I2C_DT_SPEC_GET(DT_NODELABEL(es8311));
+
+/*
+ * Blocks discarded while the DMA reaches steady state, blocks used for the
+ * silence baseline, and blocks timed for the frame-rate measurement. 40 timed
+ * blocks is 213 ms at 48 kHz and 1.28 s at 8 kHz, which is long enough for the
+ * cycle counter at either end.
+ */
+#define SWEEP_WARMUP_BLOCKS   4U
+#define SWEEP_BASELINE_BLOCKS 8U
+#define SWEEP_TIMED_BLOCKS    40U
+
+/* The measured frame clock must land within this much of the requested one. */
+#define SWEEP_RATE_TOLERANCE_PERCENT 2U
+
+static int16_t sweep_rx[BLOCK_FRAMES * AUDIO_CHANNELS];
+static int16_t sweep_mono[BLOCK_FRAMES];
+
+/* One full-duplex block: keep TX fed, take one RX block. */
+static int sweep_io(size_t *frames)
+{
+	size_t sz = sizeof(sweep_rx);
+	int ret;
+
+	ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = i2s_buf_read(i2s_dev, sweep_rx, &sz);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/*
+	 * The frame-clock measurement divides a known number of blocks by the elapsed
+	 * time, and "a block" means BLOCK_FRAMES frames. Nothing checked that the driver
+	 * actually returned a full one. A short read would make every block worth less
+	 * audio time than assumed and the measured rate would come out low, with no sign
+	 * of why -- which is exactly how the last measurement bug presented.
+	 */
+	if (sz != BLOCK_SIZE) {
+		printk("SWEEP i/o: short block, %u bytes of %u\n", (unsigned int)sz,
+		       (unsigned int)BLOCK_SIZE);
+		return -EIO;
+	}
+
+	*frames = sz / AUDIO_FRAME_BYTES;
+	audio_deinterleave(sweep_rx, *frames, AUDIO_MIC_SLOT, sweep_mono);
+
+	return 0;
+}
+
+/*
+ * Name each step as it is entered.
+ *
+ * A silent hang is the one failure a print-the-result sweep cannot locate. Every
+ * error path here prints, but a call that never returns prints nothing: HW-019b
+ * stopped dead after 32 kHz with no error line and no fault, and the log gave no way
+ * to tell which call had not come back. The last marker in the log now names it.
+ *
+ * Lower case and indented, so `grep '^SWEEP'` still gives the clean per-rate summary.
+ */
+#define SWEEP_STEP(r, s) printk("  sweep.%u: %s\n", (unsigned int)(r), (s))
+
+/*
+ * Put the I2S back into a state configure() will accept, whatever state it is in.
+ * DROP alone is not enough: a stream that hit an error is left in ERROR with its
+ * slab blocks still held, and only PREPARE returns them. Without this a single
+ * failing rate poisons every rate after it, and the results stop being
+ * independent.
+ */
+static void sweep_reset_i2s(void)
+{
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+}
+
+static int sweep_one(uint32_t rate)
+{
+	struct audio_codec_cfg codec_cfg;
+	struct i2s_config i2s_cfg;
+	uint32_t t0;
+	uint32_t t1;
+	uint64_t us;
+	uint32_t measured = 0U;
+	uint32_t tolerance;
+	uint32_t settle;
+	uint16_t base_rms = 0U;
+	uint16_t tone_rms = 0U;
+	uint16_t tone_peak = 0U;
+	int16_t base_lo = 0;
+	int16_t base_hi = 0;
+	bool adc_alive = false;
+	bool rate_ok = false;
+	uint32_t alive_blocks = 0U;
+	int regs_bad = 0;
+	size_t frames = 0U;
+	int ret;
+
+	/*
+	 * The slab census. i2s_buf_write() allocates its block with K_FOREVER
+	 * (drivers/i2s/i2s_common.c), NOT with the i2s_config timeout, so an exhausted
+	 * TX slab is not an error: it is an unkillable block. HW-019b hung exactly
+	 * there, silently, on the eighth rate. Print what the slab holds before and
+	 * after the reset, so a leak shows up as a number instead of as a hang.
+	 */
+	printk("  sweep.%u: slab pre-reset  tx=%u rx=%u\n", (unsigned int)rate,
+	       k_mem_slab_num_free_get(&tx_slab), k_mem_slab_num_free_get(&rx_slab));
+
+	SWEEP_STEP(rate, "reset");
+	sweep_reset_i2s();
+
+	printk("  sweep.%u: slab post-reset tx=%u rx=%u  (of %u)\n", (unsigned int)rate,
+	       k_mem_slab_num_free_get(&tx_slab), k_mem_slab_num_free_get(&rx_slab),
+	       (unsigned int)BLOCK_COUNT);
+
+	i2s_cfg.word_size = AUDIO_WORD_BITS;
+	i2s_cfg.channels = AUDIO_CHANNELS;
+	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
+	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
+	i2s_cfg.frame_clk_freq = rate;
+	i2s_cfg.mem_slab = &tx_slab;
+	i2s_cfg.block_size = BLOCK_SIZE;
+	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
+
+	SWEEP_STEP(rate, "cfg-tx");
+	ret = i2s_configure(i2s_dev, I2S_DIR_TX, &i2s_cfg);
+	if (ret < 0) {
+		printk("SWEEP %-6u FAIL i2s_configure(TX)=%d\n", rate, ret);
+		return ret;
+	}
+
+	/*
+	 * mclk_freq is the codec's MCLK *input*, which this board does not drive:
+	 * the codec derives its master clock from BCLK, so the driver requires 0.
+	 */
+	audio_codec_cfg_from_i2s(&codec_cfg, &i2s_cfg, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+
+	SWEEP_STEP(rate, "cfg-codec");
+	ret = audio_codec_configure(codec_dev, &codec_cfg);
+	if (ret < 0) {
+		printk("SWEEP %-6u FAIL audio_codec_configure=%d\n", rate, ret);
+		return ret;
+	}
+
+	SWEEP_STEP(rate, "cfg-rx");
+	i2s_cfg.mem_slab = &rx_slab;
+	i2s_cfg.timeout = LOOP_IO_TIMEOUT_MS;
+	ret = i2s_configure(i2s_dev, I2S_DIR_RX, &i2s_cfg);
+	if (ret < 0) {
+		printk("SWEEP %-6u FAIL i2s_configure(RX)=%d\n", rate, ret);
+		return ret;
+	}
+
+	SWEEP_STEP(rate, "regs");
+	/* 1. Read the clock registers back off the real codec. */
+	for (size_t i = 0; i < ARRAY_SIZE(sweep_expect); i++) {
+		uint8_t v = 0U;
+
+		ret = i2c_reg_read_byte_dt(&codec_i2c, sweep_expect[i].reg, &v);
+		if (ret < 0 || v != sweep_expect[i].val) {
+			printk("SWEEP %-6u  reg 0x%02x = 0x%02x (want 0x%02x) ret=%d\n", rate,
+			       sweep_expect[i].reg, v, sweep_expect[i].val, ret);
+			regs_bad++;
+		}
+	}
+
+	SWEEP_STEP(rate, "prequeue");
+	/* Pre-queue so TX does not underrun the moment the clocks start. */
+	for (int i = 0; i < 2; i++) {
+		ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL prequeue=%d\n", rate, ret);
+			sweep_reset_i2s();
+			return ret;
+		}
+	}
+
+	SWEEP_STEP(rate, "start");
+	ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
+	if (ret < 0) {
+		printk("SWEEP %-6u FAIL i2s_trigger(START)=%d\n", rate, ret);
+		sweep_reset_i2s();
+		return ret;
+	}
+
+	SWEEP_STEP(rate, "warmup");
+	/* Let the DMA reach steady state before anything is measured. */
+	for (uint32_t b = 0U; b < SWEEP_WARMUP_BLOCKS; b++) {
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL warmup i/o=%d\n", rate, ret);
+			goto stop;
+		}
+	}
+
+	SWEEP_STEP(rate, "baseline");
+	/*
+	 * 3. Silence baseline, amplifier still off. A running ADC returns a dithering
+	 * noise floor; a codec whose clock tree did not come up returns zeros or a stuck
+	 * constant. So does one whose analog was disturbed less than about six seconds
+	 * ago, and this cannot tell them apart -- see the header.
+	 */
+	for (uint32_t b = 0U; b < SWEEP_BASELINE_BLOCKS; b++) {
+		int16_t lo = INT16_MAX;
+		int16_t hi = INT16_MIN;
+		uint16_t rms;
+
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL baseline i/o=%d\n", rate, ret);
+			goto stop;
+		}
+
+		for (size_t i = 0U; i < frames; i++) {
+			if (sweep_mono[i] < lo) {
+				lo = sweep_mono[i];
+			}
+			if (sweep_mono[i] > hi) {
+				hi = sweep_mono[i];
+			}
+		}
+
+		rms = audio_rms_i16(sweep_mono, frames);
+		if (rms > base_rms) {
+			base_rms = rms;
+		}
+		if (hi != lo) {
+			/*
+			 * A single varying block used to be enough to call the ADC
+			 * alive, which one stale DMA buffer or two alternating garbage
+			 * samples would satisfy. Count them, and require most.
+			 */
+			alive_blocks++;
+			base_lo = lo;
+			base_hi = hi;
+		}
+	}
+
+	adc_alive = (alive_blocks * 4U) >= (SWEEP_BASELINE_BLOCKS * 3U);
+
+	/*
+	 * Unmute the DAC now -- AFTER the silence baseline above, so it stays clean. configure()
+	 * leaves the DAC muted (start_output() is the first unmute, since the 2026-07 lifecycle
+	 * split), so the tone below and the amplifier would otherwise drive silence. The next
+	 * rate's configure() re-mutes it, so each baseline is measured muted.
+	 */
+	audio_codec_start_output(codec_dev);
+
+	SWEEP_STEP(rate, "amp");
+	/* The clocks are already running, so raising the amplifier here cannot pop. */
+	ret = gpio_pin_set_dt(&amp_gpio, 1);
+	if (ret < 0) {
+		printk("SWEEP %-6u FAIL amp on=%d\n", rate, ret);
+		goto stop;
+	}
+
+	/*
+	 * Settle the amplifier by RUNNING the stream, not by sleeping inside it.
+	 *
+	 * A k_msleep() here leaves a full-duplex stream with nobody feeding TX and
+	 * nobody draining RX, and the first HW-019 run presented both halves of that
+	 * bill. Neither had anything to do with the codec.
+	 *
+	 *  - RX queues blocks nobody reads. The ones already waiting when the clock is
+	 *    read come back with no wait, so the timed loop finishes in fewer than
+	 *    SWEEP_TIMED_BLOCKS block-times and the measured rate comes out HIGH, in
+	 *    exact proportion to the sample rate: +1.7% at 8 kHz rising to +5.2% at
+	 *    24 kHz, against a 2% tolerance. Every rate but 8 kHz was failed by it.
+	 *  - TX runs dry. The two pre-queued blocks hold 2 * BLOCK_FRAMES / rate
+	 *    seconds of audio, which drops below the 20 ms settle at 32 kHz, so the
+	 *    stream underruns into I2S ERROR and the next transfer returns -EIO.
+	 *    32 kHz, 44.1 kHz and 48 kHz died there; nothing below them did.
+	 *
+	 * Both are predicted to the decimal by AMP_SETTLE_MS, BLOCK_FRAMES and the
+	 * pre-queue depth, with nothing fitted. The control is in the same log: the
+	 * restore measurement has no sleep in it and read 16000 Hz exactly, on the same
+	 * board, through the same code, at a rate the per-rate loop had just called BAD.
+	 *
+	 * Draining for the same number of block-times settles the amplifier just as
+	 * well, keeps both directions fed, and leaves the queue empty for the clock
+	 * measurement that follows.
+	 */
+	SWEEP_STEP(rate, "settle");
+	settle = (((uint32_t)AMP_SETTLE_MS * rate) / (1000U * BLOCK_FRAMES)) + 1U;
+	for (uint32_t b = 0U; b < settle; b++) {
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL settle i/o=%d (block %u)\n", rate, ret, b);
+			goto stop;
+		}
+	}
+
+	/*
+	 * 2. Measure the frame clock while the tone plays. In steady state each
+	 * iteration costs exactly one block of DMA time, so the elapsed cycles over
+	 * a known number of blocks give the rate the hardware is really running at.
+	 */
+	SWEEP_STEP(rate, "timed");
+	t0 = k_cycle_get_32();
+
+	for (uint32_t b = 0U; b < SWEEP_TIMED_BLOCKS; b++) {
+		uint16_t rms;
+		uint16_t peak;
+
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			printk("SWEEP %-6u FAIL tone i/o=%d (block %u)\n", rate, ret, b);
+			goto stop;
+		}
+
+		rms = audio_rms_i16(sweep_mono, frames);
+		peak = audio_peak_i16(sweep_mono, frames);
+		if (rms > tone_rms) {
+			tone_rms = rms;
+		}
+		if (peak > tone_peak) {
+			tone_peak = peak;
+		}
+	}
+
+	t1 = k_cycle_get_32();
+
+	us = k_cyc_to_us_floor64(t1 - t0);
+	if (us > 0U) {
+		measured = (uint32_t)(((uint64_t)SWEEP_TIMED_BLOCKS * BLOCK_FRAMES * 1000000ULL) /
+				      us);
+	}
+
+	tolerance = (rate * SWEEP_RATE_TOLERANCE_PERCENT) / 100U;
+	rate_ok = (measured + tolerance >= rate) && (measured <= rate + tolerance);
+
+stop:
+	SWEEP_STEP(rate, "stop");
+	(void)gpio_pin_set_dt(&amp_gpio, 0);
+	sweep_reset_i2s();
+
+	/*
+	 * Print the line even when a phase died. The first HW-019 run threw away the
+	 * register readback and the ADC-liveness result for every rate that errored --
+	 * which was exactly the data needed to tell a codec fault from a test fault, and
+	 * it had already been collected by the time the error happened.
+	 */
+	printk("SWEEP %-6u regs=%-3s lrck=%-6u %-3s adc=%-5s floor=%-5u [%d..%d] "
+	       "tone_rms=%-6u peak=%-6u %s\n",
+	       rate, regs_bad ? "BAD" : "OK", measured, rate_ok ? "OK" : "BAD",
+	       adc_alive ? "alive" : "DEAD", base_rms, base_lo, base_hi, tone_rms, tone_peak,
+	       (ret < 0) ? "FAIL(io)"
+			 : ((regs_bad == 0 && rate_ok && adc_alive) ? "PASS" : "FAIL"));
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (regs_bad != 0 || !rate_ok || !adc_alive) {
+		return -EIO;
+	}
+
+	return 0;
+}
+
+/*
+ * Measure the frame clock the hardware is really running at, with the amplifier
+ * off, and check it against `want`. Same method as the per-rate measurement: time
+ * a known number of DMA blocks against the kernel cycle counter, which is not
+ * derived from the I2S clock. Leaves the stream stopped and configured, which is
+ * what audio_init() leaves behind and what every other path here starts from.
+ */
+static int sweep_measure_rate(uint32_t want)
+{
+	uint32_t t0;
+	uint32_t t1;
+	uint64_t us;
+	uint32_t measured = 0U;
+	uint32_t tolerance;
+	size_t frames = 0U;
+	int ret;
+
+	sweep_reset_i2s();
+
+	for (int i = 0; i < 2; i++) {
+		ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+		if (ret < 0) {
+			goto stop;
+		}
+	}
+
+	ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
+	if (ret < 0) {
+		goto stop;
+	}
+
+	for (uint32_t b = 0U; b < SWEEP_WARMUP_BLOCKS; b++) {
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			goto stop;
+		}
+	}
+
+	t0 = k_cycle_get_32();
+
+	for (uint32_t b = 0U; b < SWEEP_TIMED_BLOCKS; b++) {
+		ret = sweep_io(&frames);
+		if (ret < 0) {
+			goto stop;
+		}
+	}
+
+	t1 = k_cycle_get_32();
+
+	us = k_cyc_to_us_floor64(t1 - t0);
+	if (us > 0U) {
+		measured = (uint32_t)(((uint64_t)SWEEP_TIMED_BLOCKS * BLOCK_FRAMES * 1000000ULL) /
+				      us);
+	}
+
+	tolerance = (want * SWEEP_RATE_TOLERANCE_PERCENT) / 100U;
+	if (measured + tolerance < want || measured > want + tolerance) {
+		printk("SWEEP restore: lrck measured %u Hz, want %u +/-%u%%  BAD\n", measured,
+		       want, SWEEP_RATE_TOLERANCE_PERCENT);
+		ret = -EIO;
+		goto stop;
+	}
+
+	printk("SWEEP restore: lrck measured %u Hz, want %u  OK\n", measured, want);
+	ret = 0;
+
+stop:
+	sweep_reset_i2s();
+	return ret;
+}
+
+/*
+ * The route-transition register values are the newest and least proven thing in the
+ * driver, and the rate sweep never touches them: it asks for PLAYBACK_CAPTURE at
+ * every rate. These are the registers that power the UNUSED converter DOWN -- what
+ * the driver used to leave exactly as it found it, so that a capture-only route kept
+ * a DAC powered up by a previous playback route, and a playback-only route left the
+ * microphone live. Until this runs, they have been checked against an emulator that
+ * cannot disagree with them and never against silicon.
+ *
+ * So configure each route on the real chip and read back what actually landed.
+ */
+static const uint8_t sweep_route_regs[] = {
+	0x01U, /* clock manager: the unused converter's clocks gated off */
+	0x09U, /* SDP in (DAC): muted when playback is not routed */
+	0x0AU, /* SDP out (ADC): muted when capture is not routed */
+	0x0DU, /* analog: the unused converter's bias and references dropped */
+	0x0EU, /* ADC power */
+	0x12U, /* DAC power */
+	0x14U, /* microphone mux: nothing selected when capture is not routed */
+};
+
+/* Indexed [route][register], in the order above. */
+static const uint8_t sweep_route_vals[3][ARRAY_SIZE(sweep_route_regs)] = {
+	/* 0x01  0x09  0x0A  0x0D  0x0E  0x12  0x14 */
+	{ 0xB5U, 0x0CU, 0x4CU, 0x31U, 0x62U, 0x00U, 0x00U }, /* playback only */
+	{ 0xBAU, 0x4CU, 0x0CU, 0x09U, 0x02U, 0x02U, 0x1AU }, /* capture only  */
+	{ 0xBFU, 0x0CU, 0x0CU, 0x01U, 0x02U, 0x00U, 0x1AU }, /* both          */
+};
+
+static int sweep_one_route(const char *name, audio_route_t route, unsigned int idx)
+{
+	struct audio_codec_cfg codec_cfg;
+	struct i2s_config i2s_cfg;
+	int bad = 0;
+	int ret;
+
+	sweep_reset_i2s();
+
+	i2s_cfg.word_size = AUDIO_WORD_BITS;
+	i2s_cfg.channels = AUDIO_CHANNELS;
+	i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
+	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
+	i2s_cfg.frame_clk_freq = AUDIO_SAMPLE_RATE;
+	i2s_cfg.mem_slab = &tx_slab;
+	i2s_cfg.block_size = BLOCK_SIZE;
+	i2s_cfg.timeout = I2S_WRITE_TIMEOUT_MS;
+
+	audio_codec_cfg_from_i2s(&codec_cfg, &i2s_cfg, route);
+
+	ret = audio_codec_configure(codec_dev, &codec_cfg);
+	if (ret < 0) {
+		printk("SWEEP route %-9s FAIL audio_codec_configure=%d\n", name, ret);
+		return ret;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(sweep_route_regs); i++) {
+		uint8_t v = 0U;
+
+		ret = i2c_reg_read_byte_dt(&codec_i2c, sweep_route_regs[i], &v);
+		if (ret < 0 || v != sweep_route_vals[idx][i]) {
+			printk("SWEEP route %-9s reg 0x%02x = 0x%02x (want 0x%02x) ret=%d\n", name,
+			       sweep_route_regs[i], v, sweep_route_vals[idx][i], ret);
+			bad++;
+		}
+	}
+
+	printk("SWEEP route %-9s %s\n", name, bad ? "FAIL" : "PASS");
+
+	return bad ? -EIO : 0;
+}
+
+int audio_rate_sweep(void)
+{
+	unsigned int route_bad = 0U;
+	unsigned int bad = 0U;
+	int ret;
+
+	if (!ready) {
+		printk("SWEEP skipped: audio not ready\n");
+		return -ENODEV;
+	}
+
+	/*
+	 * Park the capture thread. It only touches I2S while `ready` is set, so
+	 * clearing it and letting one poll interval elapse leaves the bus to us.
+	 */
+	ready = false;
+	k_msleep(100);
+
+	printk("\n=== ES8311 sample-rate sweep ===\n");
+	printk("regs  : the clock registers read back off the chip over I2C\n");
+	printk("lrck  : the frame clock MEASURED against the kernel cycle counter,\n");
+	printk("        which is not derived from the I2S clock\n");
+	printk("adc   : the microphone noise floor with the amplifier off. A running ADC\n");
+	printk("        returns a dithering floor; a zero one means the codec's clock tree\n");
+	printk("        did not come up -- OR that its analog was disturbed less than ~6 s\n");
+	printk("        ago and its reference caps are still charging (HW-023). This cannot\n");
+	printk("        tell those apart, so a zero floor is not by itself a fault.\n");
+	printk("order : the rates ASCEND, and so does time, so a settling effect and a rate\n");
+	printk("        effect are confounded in any run that starts from a disturbed codec.\n");
+	printk("        Reading a low-rate cliff off this table without reversing it first is\n");
+	printk("        exactly how 'the reset deafens the ADC below 22 kHz' was invented.\n");
+	printk("tone  : the captured level with the amplifier on. Reported, not\n");
+	printk("        asserted: this speaker couples weakly into this microphone.\n");
+	printk("        Judge the speaker by ear; the pitch rises across the sweep\n");
+	printk("        because the tone table was made for 16 kHz\n\n");
+
+	for (size_t i = 0; i < ARRAY_SIZE(sweep_rates); i++) {
+		if (sweep_one(sweep_rates[i]) < 0) {
+			bad++;
+		}
+		k_msleep(200);
+	}
+
+	printk("\n=== sweep: %u of %u rate(s) FAILED ===\n", bad,
+	       (unsigned int)ARRAY_SIZE(sweep_rates));
+
+	/*
+	 * The route transitions, on the real chip. The sweep above ran every rate
+	 * through PLAYBACK_CAPTURE and so never wrote a single one of the power-down
+	 * values that the route fix is actually made of.
+	 */
+	printk("\n-- route transitions: the unused converter must power DOWN --\n");
+	if (sweep_one_route("playback", AUDIO_ROUTE_PLAYBACK, 0U) < 0) {
+		route_bad++;
+	}
+	if (sweep_one_route("capture", AUDIO_ROUTE_CAPTURE, 1U) < 0) {
+		route_bad++;
+	}
+	if (sweep_one_route("both", AUDIO_ROUTE_PLAYBACK_CAPTURE, 2U) < 0) {
+		route_bad++;
+	}
+	printk("=== routes: %u of 3 FAILED ===\n", route_bad);
+
+	/*
+	 * Put the chain back the way the application expects it. This is part of the
+	 * result, not cleanup after it: a sweep that leaves the device unable to play
+	 * has not passed, however many rates it ticked off.
+	 *
+	 * It restores through audio_configure_chain() and NOT through audio_init(),
+	 * because audio_init() probes the codec, and device_init() on an already
+	 * initialized device returns -EALREADY rather than 0. The first version of this
+	 * called audio_init() here, took that -EALREADY as a fatal init failure,
+	 * returned before `ready = true`, and left the microphone meter, record, play
+	 * and beep all dead -- behind a sweep that had just printed PASS for every rate.
+	 */
+	ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
+	if (ret < 0) {
+		printk("\n*** SWEEP FAILED: restore to %u Hz failed (%d); audio is DOWN ***\n\n",
+		       (unsigned int)AUDIO_SAMPLE_RATE, ret);
+		return ret;
+	}
+
+	/*
+	 * And measure it, rather than trusting the return codes that just came back
+	 * from the same driver the sweep is supposed to be validating.
+	 */
+	ret = sweep_measure_rate(AUDIO_SAMPLE_RATE);
+	if (ret < 0) {
+		printk("\n*** SWEEP FAILED: restored to %u Hz but the frame clock does not "
+		       "agree (%d); audio is DOWN ***\n\n",
+		       (unsigned int)AUDIO_SAMPLE_RATE, ret);
+		return ret;
+	}
+
+	ready = true;
+
+	if (bad > 0U || route_bad > 0U) {
+		printk("\n*** SWEEP FAILED: %u of %u rate(s), %u of 3 route(s) ***\n\n", bad,
+		       (unsigned int)ARRAY_SIZE(sweep_rates), route_bad);
+		return -EIO;
+	}
+
+	printk("\n=== SWEEP PASSED: %u rates + 3 routes, restored to %u Hz and measured ===\n"
+	       "    What that means: the clock registers land on the chip, the frame clock\n"
+	       "    is right, the ADC is running, and the route registers are what the\n"
+	       "    driver intended. What it does NOT mean: nothing here measures audio\n"
+	       "    quality or the codec's internal OSR. The speaker is judged by ear.\n\n",
+	       (unsigned int)ARRAY_SIZE(sweep_rates), (unsigned int)AUDIO_SAMPLE_RATE);
+
+	return 0;
+}
+
+#endif /* CONFIG_APP_AUDIO_RATE_SWEEP */
+
+#ifdef CONFIG_APP_I2S_STRESS
+
+/*
+ * I2S START/DROP stress. This is the test that found the leak, then found that the
+ * OBVIOUS fix for the leak is worse than the leak, and then proved the real one.
+ *
+ * THE LEAK. Zephyr's ESP32 I2S driver loses one slab block per direction on every
+ * START/DROP: i2s_esp32_{rx,tx}_stop_transfer() set stream->data->mem_block -- the
+ * block the DMA is working on -- to NULL without returning it to the slab, and DROP
+ * calls exactly those. It cannot present as an error, because i2s_buf_write()
+ * allocates with K_FOREVER: an exhausted slab is an unkillable block with no error,
+ * no fault and no log line. The census is what makes it visible, and the guard below
+ * is what makes this test REPORT on an unpatched tree instead of hanging in it.
+ *
+ * WHY THE OBVIOUS FIX IS WRONG. Just handing the block back crashes within two cycles:
+ * k_mem_slab_alloc walks a free list whose next pointer has been overwritten with
+ * captured audio. THE LEAK WAS MASKING A USE-AFTER-FREE: the block was never returned,
+ * so the stray writes went somewhere nobody would ever look.
+ *
+ * AND THE ROOT CAUSE IS NOT IN I2S AT ALL. dma_stop() returns 0 while the GDMA channel
+ * is still writing. GDMA_INLINK_STOP_CHn is (R/W/SC) -- a self-clearing command strobe
+ * with NO acknowledge -- while GDMA_INLINK_PARK_CHn is (RO) status. dma_esp32_stop()
+ * writes the first and returns. "I asked" and "it happened" are different bits.
+ *
+ * Waiting for the FSM to park does NOT fix it, which is worth knowing because it is the
+ * first thing anyone reaches for: measured over 890 stops, the FSM was ALREADY IDLE
+ * every single time and the DMA wrote into the freed block anyway. What fixes it is
+ * resetting the channel (GDMA_IN_RST_CHn: "RX FSM and RX FIFO pointer" -- the FIFO is
+ * precisely the state the park bit cannot see). Stopping the I2S unit first also stops
+ * the writes, and the fix does both, but only the reset has a register behind it; the
+ * unit stop is a timing argument. So the fix is TWO patches, and they are independent:
+ *
+ *     scripts/patch_zephyr_dma_quiesce.sh   reset the channel in dma_esp32_stop()
+ *     scripts/patch_zephyr_i2s_leak.sh      return the block; stop the unit first
+ *
+ * The canary below is what measures all of it: stamp every free RX block, hand them
+ * back, wait, take them again. One comes back written to, every cycle. With EITHER
+ * barrier in place, none do.
+ *
+ * AND THE DELIBERATE UNDERRUN. Starving TX drives the driver down its tx_disable
+ * path, where the TX DMA callback has already freed the block -- the one place where
+ * returning the in-flight block could ALSO be a plain double free. That is a second,
+ * independent hazard, and the census sees it: a free count ABOVE the slab's block
+ * count is impossible unless the free list has a cycle in it.
+ */
+
+/*
+ * Name each step, with the slab census beside it.
+ *
+ * The crash this test found lives in an ISR -- the RX DMA callback -- and an ISR that
+ * dies prints nothing. The last marker the THREAD wrote is the only thing that says
+ * where it was. And a use-after-free does not move the free COUNT, only the free LIST,
+ * so the count alone cannot see it; what the count can do is show the step at which it
+ * still looked sane.
+ */
+#define STRESS_CYCLES         ((unsigned int)CONFIG_APP_I2S_STRESS_CYCLES)
+#define STRESS_BLOCKS         4U   /* full-duplex blocks on a normal cycle */
+#define STRESS_UNDERRUN_EVERY 5U   /* starve TX on every Nth cycle */
+#define STRESS_UNDERRUN_MS    200  /* long enough for 8 blocks of TX to drain */
+
+/*
+ * A GRACEFUL STOP, on every Nth cycle. DROP can never reach this path.
+ *
+ * I2S_TRIGGER_STOP is the ONLY trigger that puts the ESP32 driver into
+ * I2S_STATE_STOPPING; DROP goes straight to READY under irq_lock and the state is never
+ * observed. So a stress that only ever DROPs -- which is what this one was -- leaves the
+ * driver's entire graceful-stop path untested, and that is exactly where the leak fix
+ * put a double free:
+ *
+ *   the RX callback k_msgq_put()s its block, so the QUEUE owns it, but mem_block goes on
+ *   pointing at it. Six lines later the STOPPING branch does `goto rx_disable`, which
+ *   lands in rx_stop_transfer(), which now returns the in-flight block to the slab --
+ *   and that block is the one the queue is holding. The i2s_buf_read() below then gets a
+ *   block that is already on the free list and frees it a second time.
+ *
+ * The slab census at the top of the next cycle is what catches it: rx climbs ABOVE
+ * BLOCK_COUNT, because one block is on the free list twice.
+ *
+ * Timing. After STOP, TX has to finish its in-flight DMA block before the RX callback's
+ * STOPPING branch will fire (it waits on !tx.transferring). One block at 16 kHz is 16 ms,
+ * so the window opens some tens of ms in; 150 ms is not tight. An earlier attempt at this
+ * used 50 ms and never reached STOPPING at all, which looked exactly like a pass.
+ */
+#define STRESS_STOP_EVERY 3U   /* graceful STOP instead of DROP on every Nth cycle */
+#define STRESS_STOP_MS    150  /* TX must drain before the RX STOPPING branch fires */
+
+/*
+ * AND DRAIN, WHICH IS NOT THE SAME PATH.
+ *
+ * I wrote, in the driver comments, the commit message, the PR body and a comment to an
+ * upstream maintainer, that "I2S_TRIGGER_STOP is the only trigger that ever reaches
+ * I2S_STATE_STOPPING". That is false, and the driver says so in three lines:
+ *
+ *     case I2S_TRIGGER_STOP:
+ *             __fallthrough;
+ *     case I2S_TRIGGER_DRAIN:
+ *
+ * I had quoted that exact __fallthrough in my own analysis and then written the opposite.
+ *
+ * DRAIN reaches STOPPING by a DIFFERENT route through TX:
+ *
+ *     STOP   -> tx_stop_without_draining = true    TX stops after its in-flight block
+ *     DRAIN  -> tx_stop_without_draining = false   TX keeps pulling blocks off the queue
+ *                                                  and restarting DMA until it is empty
+ *
+ * So under DRAIN the RX callback's ownership hand-off (k_msgq_put, then mem_block = NULL)
+ * interleaves with a TX side that is still arming new transfers, for as long as the TX
+ * queue holds blocks. That is precisely the window this patch changes, and nothing was
+ * exercising it.
+ */
+#define STRESS_DRAIN_EVERY  7U   /* graceful DRAIN on every Nth cycle */
+#define STRESS_DRAIN_QUEUE  3U   /* TX blocks queued for DRAIN to work through */
+#define STRESS_DRAIN_MS     400  /* TX must empty its queue before RX can stop */
+
+#ifdef CONFIG_APP_I2S_DMA_PARK_STATS
+/*
+ * Exported by the patched drivers/dma/dma_esp32_gdma.c. See scripts/patch_zephyr_dma_park.sh.
+ */
+extern volatile uint32_t dma_esp32_park_spins_max;
+extern volatile uint32_t dma_esp32_park_busy_stops;
+extern volatile uint32_t dma_esp32_park_total_stops;
+extern volatile uint32_t dma_esp32_park_timeouts;
+#endif
+
+static int16_t stress_rx[BLOCK_FRAMES * AUDIO_CHANNELS];
+
+/*
+ * Name each step, with the slab census beside it.
+ *
+ * The crash this test found lives in an ISR -- the RX DMA callback -- and an ISR that
+ * dies prints nothing. The last marker the THREAD wrote is the only record of where it
+ * was. And note what the census can and cannot see: a use-after-free does not move the
+ * free COUNT, only the free LIST, so the count cannot detect it; what it can do is show
+ * the last step at which the accounting still looked sane.
+ */
+static void stress_step(unsigned int cycle, const char *what)
+{
+	if (cycle > 3U) {
+		return;
+	}
+
+	printk("    c%u.%-9s tx=%u rx=%u\n", cycle, what, k_mem_slab_num_free_get(&tx_slab),
+	       k_mem_slab_num_free_get(&rx_slab));
+}
+
+#define STRESS_STEP(c, s) stress_step((unsigned int)(c), (s))
+
+static void stress_reset(void)
+{
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_PREPARE);
+	(void)i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DROP);
+}
+
+/* One full-duplex block: keep TX fed, take one RX block. */
+static int stress_io(void)
+{
+	size_t sz = sizeof(stress_rx);
+	int ret;
+
+	ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return i2s_buf_read(i2s_dev, stress_rx, &sz);
+}
+
+int audio_i2s_stress(void)
+{
+	unsigned int exhausted_at = 0U;
+	unsigned int corrupt_at = 0U;
+	unsigned int underruns = 0U;
+	unsigned int stops = 0U;
+	unsigned int stops_dry = 0U; /* graceful STOPs that drained NOTHING */
+	unsigned int drains = 0U;
+	unsigned int drains_dry = 0U; /* DRAINs that drained NOTHING */
+	unsigned int dry_at = 0U;
+	unsigned int canary_bad = 0U;
+	unsigned int done = 0U;
+	int ret;
+
+	if (!ready) {
+		printk("STRESS skipped: audio not ready\n");
+		return -ENODEV;
+	}
+
+#ifdef CONFIG_APP_I2S_DMA_PARK_STATS
+	/*
+	 * IS THE RACE REAL, OR ONLY A CONTRACT VIOLATION?
+	 *
+	 * dma_esp32_stop() writes the GDMA STOP bit and returns 0 without ever looking at
+	 * the descriptor FSM's PARK bit -- the bit its own get_status() uses to answer
+	 * "busy". So a caller that frees the buffer on a successful dma_stop() is relying
+	 * on a timing property nothing documents.
+	 *
+	 * That is a real defect in the API contract whatever the silicon does. But whether
+	 * the FSM is EVER still running when dma_stop() returns is a question of fact, and
+	 * a fix for a race nobody has observed deserves to say so. So the park wait counts
+	 * its own spins, and this prints them.
+	 *
+	 *   busy_stops = 0   the FSM had always already parked. The wait costs nothing and
+	 *                    the fix is about the contract, not about a reproduced failure.
+	 *                    Say that, rather than implying a bug was caught.
+	 *   busy_stops > 0   the window is real and measured, and freeing the block on a
+	 *                    bare dma_stop() was reaching into memory the DMA still owned.
+	 */
+	dma_esp32_park_spins_max = 0U;
+	dma_esp32_park_busy_stops = 0U;
+	dma_esp32_park_total_stops = 0U;
+	dma_esp32_park_timeouts = 0U;
+#endif
+
+	/* Park the capture thread; it only touches I2S while `ready` is set. */
+	ready = false;
+	k_msleep(100);
+
+	printk("\n=== I2S stress: %u cycles; TX starved every %u, STOP every %u, DRAIN every %u\n",
+	       STRESS_CYCLES, STRESS_UNDERRUN_EVERY, STRESS_STOP_EVERY, STRESS_DRAIN_EVERY);
+	printk("slab  : free blocks per direction, read BEFORE each cycle. It must stay\n");
+	printk("        at %u. Falling means the driver is losing the DMA's in-flight\n",
+	       (unsigned int)BLOCK_COUNT);
+	printk("        block on every DROP; rising above %u means a block was freed\n",
+	       (unsigned int)BLOCK_COUNT);
+	printk("        twice and the free list has a cycle in it.\n");
+	printk("starve: TX is left to run dry, which drives the driver down its tx_disable\n");
+	printk("        path -- one of the places the leak fix could double-free.\n");
+	printk("STOP  : and DRAIN. BOTH reach I2S_STATE_STOPPING (the driver falls through\n");
+	printk("        from one case to the other); DROP goes straight to READY under\n");
+	printk("        irq_lock and never gets there at all. STOPPING is where the RX\n");
+	printk("        callback hands its block to the queue while still pointing at it,\n");
+	printk("        so a DROP-only stress cannot see that path.\n");
+	printk("DRAIN : not a duplicate of STOP. STOP sets tx_stop_without_draining, so TX\n");
+	printk("        stops after its in-flight block; DRAIN does not, so TX keeps pulling\n");
+	printk("        blocks off its queue and re-arming DMA until it is empty -- and every\n");
+	printk("        one of those restarts overlaps an RX ownership hand-off.\n");
+	printk("tail  : a STOP or DRAIN that drains NOTHING is a FAILURE, not a note. The\n");
+	printk("        STOPPING branch always queues its final block before it stops, so an\n");
+	printk("        empty tail read means it never ran. The slab census cannot see that:\n");
+	printk("        this test printed 'drained 0' for 27 cycles and then printed PASSED.\n\n");
+
+	for (unsigned int i = 1U; i <= STRESS_CYCLES; i++) {
+		bool starve = (i % STRESS_UNDERRUN_EVERY) == 0U;
+		bool draining = !starve && (i % STRESS_DRAIN_EVERY) == 0U;
+		bool graceful = !starve && !draining && (i % STRESS_STOP_EVERY) == 0U;
+		uint32_t tx = k_mem_slab_num_free_get(&tx_slab);
+		uint32_t rx = k_mem_slab_num_free_get(&rx_slab);
+
+		if (tx > BLOCK_COUNT || rx > BLOCK_COUNT) {
+			printk("\n*** STRESS: SLAB CORRUPT at cycle %u: tx=%u rx=%u of %u.\n"
+			       "    More free blocks than exist. The free list has a cycle:\n"
+			       "    some block was returned to the slab twice. ***\n\n",
+			       i, tx, rx, (unsigned int)BLOCK_COUNT);
+			corrupt_at = i;
+			break;
+		}
+
+		if (tx < 2U || rx < 2U) {
+			printk("\n*** STRESS: SLAB EXHAUSTED at cycle %u: tx=%u rx=%u of %u.\n"
+			       "    The driver leaks one block per direction per START/DROP.\n"
+			       "    Starting anyway would block FOREVER inside i2s_buf_write(),\n"
+			       "    which allocates with K_FOREVER -- no error, no log line.\n"
+			       "    Fix: scripts/patch_zephyr_i2s_leak.sh ***\n\n",
+			       i, tx, rx, (unsigned int)BLOCK_COUNT);
+			exhausted_at = i;
+			break;
+		}
+
+		if (i <= 10U || (i % 10U) == 0U || starve || graceful || draining) {
+			printk("  stress %3u: slab tx=%u rx=%u%s\n", i, tx, rx,
+			       starve	  ? "   TX starved on purpose"
+			       : draining ? "   graceful DRAIN + tail read"
+			       : graceful ? "   graceful STOP + tail read"
+					  : "");
+		}
+
+		STRESS_STEP(i, "reset");
+		stress_reset();
+
+		STRESS_STEP(i, "configure");
+		ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
+		if (ret < 0) {
+			printk("*** STRESS: configure failed at cycle %u (%d) ***\n", i, ret);
+			goto restore;
+		}
+
+		STRESS_STEP(i, "prequeue");
+		for (int b = 0; b < 2; b++) {
+			ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+			if (ret < 0) {
+				printk("*** STRESS: prequeue failed at cycle %u (%d) ***\n", i,
+				       ret);
+				goto restore;
+			}
+		}
+
+		STRESS_STEP(i, "start");
+		ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_START);
+		if (ret < 0) {
+			printk("*** STRESS: START failed at cycle %u (%d) ***\n", i, ret);
+			goto restore;
+		}
+
+		if (starve) {
+			/*
+			 * Feed TX nothing and drain RX nothing. TX runs its two pre-queued
+			 * blocks out and finds the queue empty, which takes the driver to
+			 * tx_disable; RX fills its queue with nobody reading, which takes it
+			 * to rx_disable. Both stop paths run with a block in flight. That is
+			 * the case this whole test exists for, and an error here is the
+			 * DRIVER reporting the underrun, not a failure of the test.
+			 */
+			k_msleep(STRESS_UNDERRUN_MS);
+			underruns++;
+		} else {
+			STRESS_STEP(i, "io");
+			for (uint32_t b = 0U; b < STRESS_BLOCKS; b++) {
+				ret = stress_io();
+				if (ret < 0) {
+					printk("*** STRESS: i/o failed at cycle %u block %u "
+					       "(%d) ***\n",
+					       i, b, ret);
+					goto restore;
+				}
+			}
+		}
+
+		if (draining) {
+			unsigned int tail = 0U;
+
+			/*
+			 * DRAIN, which is NOT the same path as STOP even though both land in
+			 * I2S_STATE_STOPPING. Load the TX queue up first: DRAIN's whole job is
+			 * to play those out, so with an empty queue it degenerates into a STOP
+			 * and tests nothing new.
+			 */
+			STRESS_STEP(i, "drain-fill");
+			for (unsigned int b = 0U; b < STRESS_DRAIN_QUEUE; b++) {
+				ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+				if (ret < 0) {
+					printk("*** STRESS: drain prefill failed at cycle %u "
+					       "(%d) ***\n",
+					       i, ret);
+					goto restore;
+				}
+			}
+
+			STRESS_STEP(i, "drain");
+			ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_DRAIN);
+			if (ret < 0) {
+				printk("*** STRESS: DRAIN failed at cycle %u (%d) ***\n", i, ret);
+				goto restore;
+			}
+
+			/*
+			 * TX keeps pulling blocks off its queue and re-arming DMA until the
+			 * queue is empty, and only then stops -- so the RX side cannot reach
+			 * its STOPPING branch until all of that is done. Every one of those TX
+			 * restarts overlaps an RX ownership hand-off.
+			 */
+			k_msleep(STRESS_DRAIN_MS);
+			STRESS_STEP(i, "drained");
+
+			STRESS_STEP(i, "tail-read");
+			for (unsigned int b = 0U; b < BLOCK_COUNT + 1U; b++) {
+				size_t sz = sizeof(stress_rx);
+
+				if (i2s_buf_read(i2s_dev, stress_rx, &sz) < 0) {
+					break;
+				}
+				tail++;
+			}
+			STRESS_STEP(i, "tail-done");
+
+			if (i <= 10U || (i % 10U) == 0U) {
+				printk("             DRAIN drained %u tail block%s\n", tail,
+				       (tail == 1U) ? "" : "s");
+			}
+			drains++;
+
+			/* Asserted, for the same reason the STOP tail is. */
+			if (tail == 0U) {
+				drains_dry++;
+				if (dry_at == 0U) {
+					dry_at = i;
+				}
+			}
+		}
+
+		if (graceful) {
+			unsigned int tail = 0U;
+
+			/*
+			 * The one path DROP cannot reach. STOP is the only trigger that puts
+			 * the driver into I2S_STATE_STOPPING, and the RX callback's STOPPING
+			 * branch is where the leak fix hands the same block to the queue and
+			 * to the slab.
+			 */
+			STRESS_STEP(i, "stop");
+			ret = i2s_trigger(i2s_dev, I2S_DIR_BOTH, I2S_TRIGGER_STOP);
+			if (ret < 0) {
+				printk("*** STRESS: STOP failed at cycle %u (%d) ***\n", i, ret);
+				goto restore;
+			}
+
+			/* The STOPPING branch waits for TX to finish its in-flight block. */
+			k_msleep(STRESS_STOP_MS);
+			STRESS_STEP(i, "stopped");
+
+			/*
+			 * Drain the tail. THIS is the read that frees the queue's block -- so
+			 * if rx_stop_transfer() has already freed it, this is the second free,
+			 * and the census at the top of the next cycle sees rx above
+			 * BLOCK_COUNT.
+			 *
+			 * The loop ends on an error, which after a STOP means the queue is
+			 * empty and is the expected outcome, not a failure. It is bounded
+			 * anyway: a queue that never empties would otherwise spin here.
+			 */
+			STRESS_STEP(i, "tail-read");
+			for (unsigned int b = 0U; b < BLOCK_COUNT + 1U; b++) {
+				size_t sz = sizeof(stress_rx);
+
+				if (i2s_buf_read(i2s_dev, stress_rx, &sz) < 0) {
+					break;
+				}
+				tail++;
+			}
+			STRESS_STEP(i, "tail-done");
+
+			if (i <= 10U || (i % 10U) == 0U) {
+				printk("             STOP drained %u tail block%s\n", tail,
+				       (tail == 1U) ? "" : "s");
+			}
+			stops++;
+
+			/*
+			 * ASSERT IT. A graceful STOP that drains NOTHING is a failure, and
+			 * this line is the only thing in the harness that can see it.
+			 *
+			 * The RX callback's STOPPING branch ALWAYS k_msgq_put()s its final
+			 * block before it goes to rx_disable. So a tail read that finds the
+			 * queue empty means that branch never ran: the RX DMA never finished
+			 * the block it was holding. On this SoC that is exactly what happens
+			 * when the I2S TX unit is stopped, because the TX unit is the source
+			 * of the shared bit clock -- the clock dies with TX and the RX side is
+			 * stranded in I2S_STATE_STOPPING for good.
+			 *
+			 * THE SLAB CENSUS CANNOT SEE THAT. Nothing leaks and nothing is freed
+			 * twice; the stream simply stops existing. Worse, a stranded RX also
+			 * means the STOPPING queue hand-off never executes, so the OTHER bug
+			 * on this path is masked too. Two defects, hiding each other, behind a
+			 * flat 8/8 slab.
+			 *
+			 * That is not hypothetical. This harness ran 100 cycles against a
+			 * driver with BOTH bugs in it and printed STRESS PASSED. The only
+			 * thing that caught it was a human comparing "STOP drained 0 tail
+			 * blocks" against stock Zephyr's "drained 1" by eye. A test that
+			 * prints the evidence and does not check it is not a test.
+			 */
+			if (tail == 0U) {
+				stops_dry++;
+				if (dry_at == 0U) {
+					dry_at = i;
+				}
+			}
+		}
+
+		STRESS_STEP(i, "drop");
+		stress_reset();
+		STRESS_STEP(i, "dropped");
+
+		/*
+		 * IS THE DMA STILL WRITING INTO A BLOCK WE HAVE HANDED BACK?
+		 *
+		 * The hypothesis this test exists to settle. On the GDMA path,
+		 * i2s_esp32_rx_stop_transfer() calls dma_stop() and nothing else -- it does
+		 * not stop the I2S link, does not clear dma_pending, and does not wait for
+		 * the channel to go quiet. If the DMA writes even one more burst after
+		 * that, then returning the in-flight block to the slab (which the leak fix
+		 * does) hands the hardware a buffer that is on the free list, and the audio
+		 * lands on top of the free-list next pointer.
+		 *
+		 * So: take every block the slab has, stamp it, give them all back, wait,
+		 * take them again, and see whether anything wrote to them in between.
+		 * Nothing legitimate should. The DMA is stopped. That is the claim.
+		 */
+		/*
+		 * The canary. It is what settled WHY the obvious fix for the leak does not
+		 * work, and it is cheap, so it stays.
+		 *
+		 * Take every block the slab has, stamp it, hand them all back, wait, take
+		 * them again. Nothing legitimate should have written to them: the I2S is
+		 * DROPped and the capture thread is parked. If any come back changed, the
+		 * DMA is still writing into memory the driver has already returned to the
+		 * slab -- which is exactly what happens when *_stop_transfer() frees the
+		 * in-flight block without stopping the I2S unit first (measured: 1 of 8,
+		 * every cycle; with the unit stopped, 0 of 8).
+		 *
+		 * Skip the first word of each block: k_mem_slab_free() stores the free-list
+		 * next pointer THERE, in the block itself. Checking from offset 0 reported
+		 * all eight clobbered on the first run, which was the test lying to me, not
+		 * a finding.
+		 */
+		if (i <= 2U) {
+			void *blk[BLOCK_COUNT];
+			unsigned int n = 0U;
+			unsigned int clobbered = 0U;
+
+			while (n < BLOCK_COUNT &&
+			       k_mem_slab_alloc(&rx_slab, &blk[n], K_NO_WAIT) == 0) {
+				memset(blk[n], 0x5A, BLOCK_SIZE);
+				n++;
+			}
+			for (unsigned int b = 0U; b < n; b++) {
+				k_mem_slab_free(&rx_slab, blk[b]);
+			}
+
+			k_msleep(50);
+
+			for (unsigned int b = 0U; b < n; b++) {
+				if (k_mem_slab_alloc(&rx_slab, &blk[b], K_NO_WAIT) != 0) {
+					break;
+				}
+			}
+			for (unsigned int b = 0U; b < n; b++) {
+				const uint8_t *p = blk[b];
+
+				for (size_t k = sizeof(void *); k < BLOCK_SIZE; k++) {
+					if (p[k] != 0x5AU) {
+						clobbered++;
+						break;
+					}
+				}
+			}
+			for (unsigned int b = 0U; b < n; b++) {
+				k_mem_slab_free(&rx_slab, blk[b]);
+			}
+
+			printk("    c%u.canary  stamped %u free rx blocks, waited 50 ms, "
+			       "%u came back written to\n",
+			       i, n, clobbered);
+			if (clobbered != 0U) {
+				printk("    c%u.canary  => the DMA is STILL WRITING into memory "
+				       "the driver gave back to the slab. Run "
+				       "scripts/patch_zephyr_i2s_leak.sh\n",
+				       i);
+				canary_bad += clobbered;
+			}
+		}
+
+		done = i;
+	}
+
+restore:
+	stress_reset();
+
+	printk("\n  final census: tx=%u rx=%u of %u\n", k_mem_slab_num_free_get(&tx_slab),
+	       k_mem_slab_num_free_get(&rx_slab), (unsigned int)BLOCK_COUNT);
+
+	ret = audio_configure_chain(AUDIO_SAMPLE_RATE);
+	if (ret < 0) {
+		printk("\n*** STRESS FAILED: could not restore audio (%d) ***\n\n", ret);
+		return ret;
+	}
+	ready = true;
+
+	if (canary_bad != 0U) {
+		printk("\n*** STRESS FAILED: the DMA wrote into %u block(s) that the driver "
+		       "had\n    already returned to the slab. Freeing the in-flight block "
+		       "without\n    stopping the I2S unit first is not safe. ***\n\n",
+		       canary_bad);
+		return -EIO;
+	}
+
+	if (corrupt_at != 0U) {
+		printk("\n*** STRESS FAILED: the slab free list was corrupted at cycle %u.\n"
+		       "    A block was freed twice. ***\n\n",
+		       corrupt_at);
+		return -EIO;
+	}
+
+	if (exhausted_at != 0U) {
+		printk("\n*** STRESS FAILED: the slab leaked out after %u cycle(s).\n"
+		       "    This is the unpatched Zephyr ESP32 I2S driver. ***\n\n",
+		       exhausted_at);
+		return -ENOMEM;
+	}
+
+	if (done != STRESS_CYCLES) {
+		printk("\n*** STRESS FAILED: stopped after %u of %u cycles ***\n\n", done,
+		       STRESS_CYCLES);
+		return -EIO;
+	}
+
+#ifdef CONFIG_APP_I2S_DMA_PARK_STATS
+	printk("\n=== GDMA descriptor-FSM park, measured ===\n");
+	printk("  dma_stop() calls              %u\n", dma_esp32_park_total_stops);
+	printk("  ...that returned with the FSM still running   %u\n", dma_esp32_park_busy_stops);
+	printk("  worst-case spins waiting for PARK             %u\n", dma_esp32_park_spins_max);
+	printk("  park timeouts                                 %u\n", dma_esp32_park_timeouts);
+	if (dma_esp32_park_busy_stops == 0U) {
+		printk("  => the FSM had ALWAYS already parked. The wait costs nothing here,\n");
+		printk("     and this fix is about the API contract, not a reproduced failure.\n");
+		printk("     dma_stop() still must not claim success it has not observed.\n\n");
+	} else {
+		printk("  => THE WINDOW IS REAL. dma_stop() returned %u times while the DMA was\n",
+		       dma_esp32_park_busy_stops);
+		printk("     still running. Freeing the block on a bare dma_stop() was handing\n");
+		printk("     the slab memory the hardware had not finished with.\n\n");
+	}
+	if (dma_esp32_park_timeouts != 0U) {
+		printk("*** STRESS FAILED: the GDMA descriptor FSM never parked %u time(s).\n"
+		       "    The block was NOT returned to the slab, which is the only safe\n"
+		       "    answer, but the channel is wedged. ***\n\n",
+		       dma_esp32_park_timeouts);
+		return -EIO;
+	}
+#endif
+
+	if (stops_dry != 0U || drains_dry != 0U) {
+		printk("\n*** STRESS FAILED: %u of %u graceful STOPs and %u of %u DRAINs drained\n"
+		       "    NOTHING (first at cycle %u). The RX callback's STOPPING branch always\n"
+		       "    hands its final block to the receive queue before it stops, so an\n"
+		       "    empty tail read means that branch never ran and the RX DMA never\n"
+		       "    finished the block it was holding. On this SoC that is what stopping\n"
+		       "    the I2S TX unit does: the TX unit is the source of the shared bit\n"
+		       "    clock, and the RX side is then stranded in I2S_STATE_STOPPING for\n"
+		       "    good.\n"
+		       "\n"
+		       "    The slab is FLAT and the canary is CLEAN and it is still broken. ***\n\n",
+		       stops_dry, stops, drains_dry, drains, dry_at);
+		return -EIO;
+	}
+
+	printk("\n=== STRESS PASSED: %u cycles -- %u with TX starved on purpose, %u ended with\n"
+	       "    a graceful I2S_TRIGGER_STOP and %u with an I2S_TRIGGER_DRAIN instead of a\n"
+	       "    DROP. BOTH reach I2S_STATE_STOPPING, by different routes through TX, and\n"
+	       "    all %u of them drained a tail block (0 came back empty). The slab held\n"
+	       "    %u/%u free the whole way and the canary was clean. No leak; no block freed\n"
+	       "    twice on the tx_disable path or on the STOPPING queue hand-off; and no\n"
+	       "    stream stranded in STOPPING by a bit clock that stopped with TX. ===\n\n",
+	       STRESS_CYCLES, underruns, stops, drains, stops + drains,
+	       (unsigned int)BLOCK_COUNT, (unsigned int)BLOCK_COUNT);
+
+	return 0;
+}
+
+#endif /* CONFIG_APP_I2S_STRESS */
 
 #endif /* CONFIG_APP_AUDIO */

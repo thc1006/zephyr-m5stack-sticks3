@@ -45,6 +45,95 @@ config APP_AUDIO
 	  unchanged; enable it via -DEXTRA_CONF_FILE=overlay-audio.conf, which
 	  turns on the codec, I2S, and DMA Kconfigs.
 
+config APP_AUDIO_RATE_SWEEP
+	bool "ES8311 sample-rate sweep at boot (driver validation)"
+	depends on APP_AUDIO
+	default n
+	help
+	  Run a one-shot sample-rate sweep right after audio_init(): for each rate
+	  the ES8311 driver claims to support (8 kHz to 48 kHz), reprogram I2S and
+	  the codec, read the clock registers back off the chip over I2C, and play
+	  a tone through the speaker while capturing it on the microphone. One line
+	  per rate is printed with the register verdict and the captured level.
+
+	  This exists to hardware-validate the driver's claim that one register set
+	  serves every sample rate (the codec's master clock is derived from BCLK,
+	  so it is 256 * Fs at every rate and the divider chain is a pure ratio).
+
+	  It is a bring-up and validation aid, not part of the demo: leave it off
+	  for normal builds.
+
+config APP_I2S_STRESS
+	bool "I2S START/DROP stress test at boot (mem-slab leak validation)"
+	depends on APP_AUDIO
+	default n
+	help
+	  Run a one-shot I2S stress test right after audio_init(): reconfigure,
+	  START and DROP the full-duplex stream many times over, taking a census of
+	  the TX and RX memory slabs before each cycle, and deliberately underrunning
+	  TX on some of them.
+
+	  This exists because Zephyr's ESP32 I2S driver leaks one slab block per
+	  direction on every START/DROP: i2s_esp32_{rx,tx}_stop_transfer() drop the
+	  block the DMA is working on without returning it to the slab. It does not
+	  present as an error -- i2s_buf_write() allocates with K_FOREVER, so an
+	  exhausted slab is an unkillable block with no log line -- so the census is
+	  what makes it visible, and the guard is what keeps this test from hanging
+	  on an unpatched tree instead of reporting.
+
+	  It also proves that the OBVIOUS fix for the leak is wrong. Simply handing the
+	  block back crashes within two cycles: on the SOC_GDMA_SUPPORTED path,
+	  *_stop_transfer() calls dma_stop() and never stops the I2S unit feeding the
+	  DMA, so the block is still being written when it lands back on the free list,
+	  and the next allocation dereferences captured audio as a pointer. The canary
+	  in this test measures it -- stamp every free RX block, hand them back, wait,
+	  take them again, and exactly one comes back written to, every cycle. The leak
+	  had been masking that: the block was never returned, so the stray writes went
+	  where nobody would look.
+
+	  The deliberate underruns cover a second, independent hazard. They drive the
+	  driver down its tx_disable path, where the TX DMA callback has already freed
+	  the block -- the one place where returning it could also be a plain double
+	  free. The census sees that too: a free count above the slab's block count
+	  means the free list has a cycle in it.
+
+	  Run it against a patched tree (expect a flat census and a clean canary) and
+	  against an unpatched one (expect the leak, reported rather than hung).
+	  Validation aid; leave it off for normal builds.
+
+config APP_I2S_STRESS_CYCLES
+	int "How many START/DROP cycles the stress test runs"
+	depends on APP_I2S_STRESS
+	default 100
+
+config APP_I2S_DMA_PARK_STATS
+	bool "Report how often dma_stop() returned while the GDMA was still running"
+	depends on APP_I2S_STRESS
+	default n
+	help
+	  Print the counters exported by a dma_esp32_gdma.c patched with
+	  scripts/patch_zephyr_dma_park.sh, and fail the stress if the descriptor
+	  FSM ever refuses to park.
+
+	  This exists to answer one question with a number instead of an argument.
+	  dma_esp32_stop() writes the GDMA STOP bit and returns 0 without ever
+	  reading the descriptor FSM's PARK bit -- the bit its own get_status()
+	  uses to answer "busy". So every caller that frees or reuses a buffer on
+	  the strength of a successful dma_stop(), which is what the Zephyr DMA API
+	  entitles it to do, is relying on a timing property that nothing documents.
+
+	  That is a defect in the contract whatever the silicon does. But whether
+	  the FSM is EVER still running when dma_stop() returns is a question of
+	  fact, and a fix for a race nobody has observed should say so rather than
+	  imply it caught something. So the wait counts its own spins:
+
+	    busy_stops = 0   the FSM had always already parked. The wait costs
+	                     nothing, and the fix is about the contract only.
+	    busy_stops > 0   the window is real and measured.
+
+	  Needs the DMA patch applied; without it the counters do not exist and the
+	  build will not link.
+
 config APP_AUDIO_REC_SECONDS
 	int "Record->playback clip length (seconds)"
 	depends on APP_AUDIO
@@ -133,8 +222,20 @@ config APP_PSRAM
 	  console (app/src/psram.c).
 
 	  Enabling the PSRAM (CONFIG_ESP_SPIRAM / CONFIG_SPIRAM_MODE_OCT) consumes
-	  GPIO33-37 and is mutually exclusive with Wi-Fi: SPIRAM breaks the Wi-Fi
-	  driver on the R8 silicon (empty scan / OOM), hence depends on !APP_WIFI.
+	  GPIO33-37, and PSRAM together with Wi-Fi is UNSUPPORTED AND UNVALIDATED in
+	  this project, hence depends on !APP_WIFI.
+
+	  That is deliberately weaker than what this text used to say. It claimed
+	  "SPIRAM breaks the Wi-Fi driver on the R8 silicon", which is a claim about
+	  the hardware, and the evidence does not reach that far. zephyr#74246 reports
+	  Wi-Fi failing (empty scan / OOM) with SPIRAM on, but the root cause discussed
+	  there is an allocation-policy one: Wi-Fi allocations land in SPIRAM when the
+	  internal heap is small, and the reporter got scanning back by raising the
+	  internal heap to around 100 KB, which is roughly what overlay-psram.conf
+	  already sets (CONFIG_HEAP_MEM_POOL_SIZE=98304). We have never tested the
+	  combination, so what is true is that we do not support it, not that the
+	  silicon cannot do it.
+
 	  Off by default (the standard build does not use PSRAM and boots without
 	  it); enable via -DEXTRA_CONF_FILE=overlay-psram.conf. Uses no binary blobs.
 

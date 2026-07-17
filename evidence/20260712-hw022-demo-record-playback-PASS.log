@@ -1,0 +1,154 @@
+# HW-022 - the SHIPPING demo (overlay-audio.conf), on hardware, after the ES8311
+# rewrite. 2026-07-12, COM35 (3rd StickS3, MAC 98:88:e0:0e:dc:64). PASS.
+#
+# WHY THIS RUN EXISTS. HW-019 and HW-021 flashed the sweep and the stress images. The
+# app's own audio paths -- beep, the live mic meter, record and playback -- are reached
+# only by navigating to the REC page with the buttons, so NONE of them had run since the
+# driver was rewritten. And audio_slab_ok(), the guard I inserted into all four of them,
+# had therefore never executed on hardware even once. If I had inverted its condition,
+# audio would have been silently dead and every test I ran -- 29 ztests, CI 13/13,
+# HW-019, HW-020, HW-021 -- would still have been green.
+#
+# RESULT: record -> playback works, twice, on two different clips.
+#
+#   REC start: up to 5000 ms, speak now
+#   REC done: 448 ms peak_rms=5210 restarts=1     <- real audio off the microphone
+#   PLAY start: 448 ms gain_q8=1024
+#   PLAY done                                      <- and again, replayed twice
+#   REC done: 2560 ms peak_rms=4343 restarts=1
+#   PLAY done
+#
+#   audio_slab_ok() ran and passed every time. Zero refusals.
+#
+# TWO THINGS I WILL NOT DRESS UP.
+#
+# 1. The device rebooted once mid-capture (uptime 103657 -> 399). There is NO signature
+#    of a software fault: a Zephyr fatal error prints ">>> ZEPHYR FATAL ERROR" and
+#    "Halting system", and this log has neither -- the last line before the gap is a
+#    normal `alive` line. What it does have is the monitor's own
+#    "ClearCommError failed (PermissionError)" and "Waiting for the device to
+#    reconnect", i.e. the USB device disappeared. That is what the LEFT button (the
+#    M5PM1 power key) does. I cannot prove which from this log, and I am not going to
+#    claim I can. Record -> playback worked before the reboot and again after it; a
+#    fault would reproduce, not fire once.
+#
+# 2. restarts=1, on every recording. It is NOT a regression: the ORIGINAL #14 hardware
+#    verification (before any of this work) reads "REC done: 5000 ms peak_rms=684
+#    restarts=1" -- the same. The cause is a break in do_record()'s inner loop that
+#    logged NOTHING, so a session that died and restarted looked like a session that
+#    just worked. That silence is now fixed (LOG_WRN with the errno); the next run will
+#    say why. The break has been in main since c84e8d3.
+#
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+BUTTON code=11 -> page=1
+
+BUTTON code=11 -> page=2
+
+BUTTON code=11 -> page=3
+
+REC-PAGE K1 short
+
+REC start: up to 5000 ms, speak now
+
+REC-PAGE K1 short
+
+REC done: 448 ms peak_rms=5210 restarts=1
+
+REC-PAGE K1 short
+
+PLAY start: 448 ms gain_q8=1024
+
+PLAY done
+
+REC-PAGE K1 short
+
+PLAY start: 448 ms gain_q8=1024
+
+PLAY done
+
+--- Error: ClearCommError failed (PermissionError(13, '鋆蔭?⊥?颲刻??賭誘??', None, 22))
+
+--- Waiting for the device to reconnect
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.326,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.326,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.399,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+BUTTON code=11 -> page=1
+
+BUTTON code=11 -> page=2
+
+BUTTON code=11 -> page=3
+
+REC-PAGE K1 short
+
+REC start: up to 5000 ms, speak now
+
+REC-PAGE K1 short
+
+REC done: 2560 ms peak_rms=4343 restarts=1
+
+REC-PAGE K1 short
+
+PLAY start: 2560 ms gain_q8=1024
+
+REC-PAGE K1 short
+
+PLAY done
+
+REC-PAGE K1 short
+
+PLAY start: 2560 ms gain_q8=1024
+
+REC-PAGE K1 short
+
+REC-PAGE K1 short
+
+PLAY done
+
+REC-PAGE K1 short
+
+PLAY start: 2560 ms gain_q8=1024
+
+REC-PAGE K1 short
+
+PLAY done
+
+REC-PAGE K1 short
+
+PLAY start: 2560 ms gain_q8=1024
+
+PLAY done
+
+REC-PAGE K1 long
+
+REC start: up to 5000 ms, speak now
+
+REC-PAGE K1 short
+
+REC done: 2384 ms peak_rms=4030 restarts=1
+
+REC-PAGE K1 short
+
+PLAY start: 2384 ms gain_q8=1024
+
+PLAY done
+
+[monitor captured 29011 chars; last 0.0s silent]

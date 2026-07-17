@@ -95,13 +95,34 @@ west build -p always -b native_sim -d build_test \
 ./build_test/zephyr/zephyr.exe
 ```
 
-Result 2026-06-02: 11/11 pass. Covers chip-ID read (and the wrong-ID
-warn-and-continue path), the 16 kHz / 16-bit playback configure sequence + write
-ordering, the capture (ADC) configure sequence for PLAYBACK_CAPTURE and the
-capture-only route (ADC powered, DAC left untouched), volume/mute set,
-unsupported-route/format/property rejection, and I2C-error propagation. The ADC
-register values are reference-derived and pin the driver contract; they are
-silicon-validated at HW-016 (below).
+Result 2026-06-02: 11/11 pass. Grown to 72/72 across the 2026-07 adversarial reviews. Covers chip-ID read (a foreign chip id
+is rejected with `-ENODEV` and the device is left not-ready), the 16 kHz / 16-bit
+playback configure sequence + write ordering, the capture (ADC) configure sequence,
+**the route transitions** (a route programs BOTH directions and powers the one it
+does not carry DOWN - the earlier test asserted that a capture-only route left the
+DAC *untouched*, which was not a test of correct behaviour but a pin holding the bug
+in place: this driver deliberately never resets the codec, so a DAC a previous route
+powered up stayed up), **a dirty register file** (the early tests all started from
+an all-zero emulator, which is a chip in exactly the state the driver would like to
+find it in, so the suite structurally could not see the one defect class the no-reset
+design creates; four tests now seed a dirty chip first, and three of them fail on the
+driver as it stood before HW-023), **a failed `configure()` disarming start but never stop** (the
+I2C failure is walked across every transfer, not just the first; `start_output()`
+must not unmute, and `stop_output()` MUST still attempt the mute -- the first version
+gated the mute on the route too, which was a fail-open: a configure() that died on
+its first write changes nothing on the chip, so the old route's DAC was left powered,
+unmuted and driving the amplifier while the off switch had been disconnected. The
+test that asserted "writes nothing" was pinning that bug, not testing behaviour),
+**the quiesce ordering** (the mutes and the DAC power-down must precede the first
+write to the clock manager: gating the clock of a live DAC freezes its modulator on
+the last sample, which is a DC step into the amplifier), every supported sample rate emitting an identical clock-register set, the
+rejected rates / word sizes / non-zero `mclk_freq`, volume/mute set,
+unsupported-route/format/property rejection, `apply_properties()` holding its lock
+across its writes, and I2C-error propagation. The route-power and chip-id cases are
+**mutation-tested**: back either fix out of the driver and exactly the matching case
+goes red. The ADC register values are reference-derived and pin the driver contract;
+they are silicon-validated at HW-016, and the route-transition values at HW-019
+(PASS, 2026-07-12: all seven route registers read back off the real part).
 
 Honesty limits: each emulator is a dumb byte-store, NOT an independent oracle —
 it cannot catch a register *meaning* error shared by driver+emulator (mitigated
@@ -273,7 +294,7 @@ Pass criteria:
 - I2S playback or loopback works at one sample rate.
 
 Result (2026-06-01): PASS. The in-repo ES8311 codec driver (Zephyr audio codec
-API, native_sim ztest 9/9) configures the codec at 16 kHz / 16-bit
+API, native_sim ztest 72/72) configures the codec at 16 kHz / 16-bit
 (MCLK-from-BCLK) and a 440 Hz beep plays from the speaker on entering the AUDIO
 page - user-confirmed. The AW8737 amp is enabled via the M5PM1 MFD gpio child
 (masked write), and the LCD stayed lit when the amp toggled (L3B rail preserved).

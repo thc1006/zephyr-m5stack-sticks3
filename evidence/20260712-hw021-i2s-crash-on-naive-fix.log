@@ -1,0 +1,214 @@
+# HW-021b - why the OBVIOUS fix for the leak is WRONG. 2026-07-12, COM35.
+#
+# This is the patch I submitted upstream (zephyr#113311) and then had to withdraw.
+# It simply returns the in-flight block in *_stop_transfer(). On hardware it CRASHES
+# within two cycles:
+#
+#   FATAL EXCEPTION: EXCCAUSE 28 (load prohibited)
+#   PC   k_mem_slab_alloc      (kernel/mem_slab.c:245)
+#   from i2s_esp32_rx_callback (drivers/i2s/i2s_esp32.c)
+#   VADDR 0x220022   <- 0x0022, 0x0022: two int16 audio samples, not a pointer
+#
+# mem_slab.c:245 is `slab->free_list = *(char **)(slab->free_list);`. The free list's
+# next pointer has been overwritten with captured audio.
+#
+# THE CANARY MEASURES IT EXACTLY. Stamp all eight free RX blocks with 0x5A, hand them
+# back, wait 50 ms, take them again: EXACTLY ONE comes back with a stray write in it,
+# every cycle. (The first version of the canary said all eight, which was MY BUG:
+# k_mem_slab_free() stores the free-list next pointer in the first word of the block
+# itself, so checking from offset 0 counts the slab doing its job as damage.)
+#
+# So the DMA is still writing into memory the driver has already returned to the slab.
+# On the SOC_GDMA_SUPPORTED path, *_stop_transfer() calls dma_stop() and NOTHING else --
+# it never stops the I2S unit feeding the DMA, unlike the non-GDMA branch three lines
+# below it. THE LEAK HAS BEEN MASKING THAT: the block was never given back, so the
+# stray writes landed in memory nobody would look at again.
+[?9001h[?1004h[?25l[2J[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x403773aa
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90190,len:0x2cec
+
+load:0x40374000,len:0xc17c
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 8f82dbbea3c51b8305a0c8efa3d3dc8e4bc4c4ee837e5a7e2ce7a0f18d05d0de
+
+Expected: 0000000030110000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037a924
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Jul 12 2026 20:07:53
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90190h size=02cech ( 11500)
+
+I (boot): IRAM[2C: lma=00002d14h vma=40374000h size=0c17ch ( 49532)
+
+I (boot): RTC_DATA[6C: lma=0000ee98h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0cf54h ( 53076)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=044ech ( 17644)
+
+I (boot): libc heap size 146 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build v4.4.0 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.325,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.325,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+=== I2S START/DROP stress: 100 cycles, TX starved every 5 ===
+
+slab : free blocks per direction, read BEFORE each cycle. It must stay
+
+       at 8. Falling means the driver is losing the DMA's in-flight
+
+       block on every DROP; rising above 8 means a block was freed
+
+       twice and the free list has a cycle in it.
+
+starve: TX is left to run dry, which drives the driver down its
+
+       tx_disable path -- the one place the leak fix could double-free.
+
+  stress   1: slab tx=8 rx=8
+
+    c1.reset     tx=8 rx=8
+
+    c1.configure tx=8 rx=8
+
+    c1.prequeue  tx=8 rx=8
+
+    c1.start     tx=6 rx=8
+
+    c1.io        tx=6 rx=7
+
+    c1.drop      tx=6 rx=7
+
+    c1.dropped   tx=8 rx=8
+
+    c1.CANARY  stamped 8 free rx blocks, waited 50 ms, 1 came back CLOBBERED
+
+    c1.CANARY  => the DMA is STILL WRITING into memory the driver already gave back to the slab. dma_stop() alone does n
+
+[39;120Hnot quiesce it.
+
+  stress   2: slab tx=8 rx=8
+
+    c2.reset     tx=8 rx=8
+
+    c2.configure tx=8 rx=8
+
+    c2.prequeue  tx=8 rx=8
+
+    c2.start     tx=6 rx=8
+
+    c2.io        tx=6 rx=7
+
+    c2.drop      tx=6 rx=7
+
+    c2.dropped   tx=8 rx=8
+
+    c2.CANARY  stamped 8 free rx blocks, waited 50 ms, 1 came back CLOBBERED
+
+    c2.CANARY  => the DMA is STILL WRITING into memory the driver already gave back to the slab. dma_stop() alone does n
+
+[39;120Hnot quiesce it.
+
+  stress   3: slab tx=8 rx=8
+
+    c3.reset     tx=8 rx=8
+
+    c3.configure tx=8 rx=8
+
+    c3.prequeue  tx=8 rx=8
+
+    c3.start     tx=6 rx=8
+
+    c3.io        tx=6 rx=7
+
+    c3.drop      tx=6 rx=7
+
+    c3.dropped   tx=8 rx=8
+
+  stress   4: slab tx=8 rx=8
+
+[00:00:00.930,000] <err> os:  ** FATAL EXCEPTION[K
+
+[00:00:00.930,000] <err> os:  ** CPU 0 EXCCAUSE 28 (load prohibited)[K
+
+[00:00:00.930,000] <err> os:  **  PC 0x403776e6 VADDR 0x570057
+
+[00:00:00.930,000] <err> os:  **  PS 0x60120[K
+
+[00:00:00.930,000] <err> os:  **    (INTLEVEL:0 EXCM: 0 UM:1 RING:0 WOE:1 OWB:1 CALLINC:2)[K
+
+[00:00:00.930,000] <err> os:  **  A0 0x82008101  SP 0x3fc98d80  A2 0x3fc92ce8  A3 0x3fc9c140[K
+
+[00:00:00.930,000] <err> os:  **  A4 0  A5 0  A6 0  A7 0
+
+[00:00:00.930,000] <err> os:  **  A8 0x570057  A9 0x3fc98d50 A10 0 A11 0x60123[K
+
+[00:00:00.930,000] <err> os:  ** A12 0x3fc92ce8 A13 0x3fc9be20 A14 0 A15 0[K
+
+[00:00:00.930,000] <err> os:  ** LBEG 0x40056f5c LEND 0x40056f72 LCOUNT 0xffffffff[K
+
+[00:00:00.930,000] <err> os:  ** SAR 0x3
+
+[00:00:00.930,000] <err> os:  **  THREADPTR 0x270[K
+
+[00:00:00.930,000] <err> os: >>> ZEPHYR FATAL ERROR 0: CPU exception on CPU 0[K
+
+[00:00:00.930,000] <err> os: Current thread: 0x3fc9bdc0 (unknown)
+
+[00:00:00.993,000] <err> os: Halting system[K
+
+[monitor captured 4793 chars; last 28.5s silent]

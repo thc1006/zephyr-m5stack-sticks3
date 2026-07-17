@@ -38,3 +38,4 @@ docs/adr/0003-claude-code-agent-workflow.md
 __pycache__/
 .pytest_cache/
 .venv/
+.playwright-mcp/

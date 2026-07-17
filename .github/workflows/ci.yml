@@ -16,6 +16,13 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege. There was no permissions block here at all, so every job ran
+# with the default GITHUB_TOKEN scope, which is read/write on a push to this repo,
+# and a third-party action pinned to a moving branch ran inside that scope. Nothing
+# in this workflow writes to the repository.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -23,20 +30,24 @@ concurrency:
 env:
   ZEPHYR_REV: v4.4.0
   # ghcr.io/zephyrproject-rtos/ci image whose bundled SDK is 1.0.1.
-  CI_IMAGE: ghcr.io/zephyrproject-rtos/ci:v0.29.1
+  # Pinned by digest, not by tag: a tag can be re-pointed at different content
+  # without anything in this repo changing.
+  CI_IMAGE: ghcr.io/zephyrproject-rtos/ci:v0.29.1@sha256:37e841452087905085ffcd82ed44a223f3e7eb86bf9316443a313ae07e09cfe0
   # The image bundles the SDK at this path; point cmake straight at it.
   SDK_DIR: /opt/toolchains/zephyr-sdk-1.0.1
 
 jobs:
   repo-integrity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - name: Repository integrity checks
         run: bash verify.sh
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -44,6 +55,13 @@ jobs:
         include:
           - { name: default, overlay: "", dtc: "", blob: false }
           - { name: audio, overlay: "overlay-audio.conf", dtc: "", blob: false }
+          # The sweep lives behind #ifdef CONFIG_APP_AUDIO_RATE_SWEEP, which
+          # defaults to n. Without this entry the compiler never sees it, and a
+          # green CI would say nothing about ~250 lines of new code.
+          - { name: audio-rate-sweep, overlay: "overlay-audio.conf;overlay-audio-rate-sweep.conf", dtc: "", blob: false }
+          # Same reason: the I2S slab stress lives behind a Kconfig that defaults to n,
+          # so without an entry here nothing ever compiles it.
+          - { name: i2s-stress, overlay: "overlay-audio.conf;overlay-i2s-stress.conf", dtc: "", blob: false }
           - { name: ir, overlay: "overlay-ir.conf", dtc: "", blob: false }
           - { name: psram, overlay: "overlay-psram.conf", dtc: "", blob: false }
           - { name: ble, overlay: "overlay-ble.conf", dtc: "", blob: true }
@@ -51,12 +69,18 @@ jobs:
           - { name: demo, overlay: "overlay-ble.conf;overlay-audio.conf;overlay-ir.conf", dtc: "", blob: true }
     steps:
       - name: Free runner disk
-        uses: jlumbroso/free-disk-space@main
+        # Pinned to the v1.3.1 commit. This action runs sudo rm -rf across the
+        # runner and prunes the Docker runtime that every later step uses, so a
+        # moving @main reference is a supply-chain hole, not a convenience.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
         with:
           tool-cache: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           path: repo
+          # checkout stores the token in .git/config by default, and the container
+          # below mounts this directory. Nothing here needs to talk to git again.
+          persist-credentials: false
       - name: Build (${{ matrix.name }})
         run: |
           docker run --rm \
@@ -65,9 +89,17 @@ jobs:
             -e OVERLAY="${{ matrix.overlay }}" \
             -e DTC="${{ matrix.dtc }}" \
             -e BLOB="${{ matrix.blob }}" \
+            -e NAME="${{ matrix.name }}" \
             -v "${{ github.workspace }}/repo:/repo:ro" \
+            -v "${{ github.workspace }}/build-artifacts:/out" \
             "$CI_IMAGE" \
             bash -c 'set -eo pipefail
+              # The linker map and the resolved .config are what a reviewer needs to
+              # check a claim after the fact: the 8 MB ext_dram_seg the PSRAM work
+              # rests on is read off exactly these, and they were being deleted with
+              # the container. The trap copies them out whether the build passes or
+              # fails, without swallowing the build result.
+              trap "mkdir -p /out/$NAME; cp -f build/zephyr/.config build/zephyr/zephyr.map /out/$NAME/ 2>/dev/null || true" EXIT
               mkdir -p /work && cd /work
               west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
               cd ws && west update --narrow -o=--depth=1 && west zephyr-export
@@ -81,47 +113,187 @@ jobs:
               west build "${args[@]}"
             '
 
+      - name: Hand the build evidence back to the runner
+        # The container writes as root, and the upload step does not run as root.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/build-artifacts" || true
+
+      - name: Keep the build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-${{ matrix.name }}
+          path: build-artifacts
+          retention-days: 14
+          if-no-files-found: warn
+
   twister:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Free runner disk
-        uses: jlumbroso/free-disk-space@main
+        # Pinned to the v1.3.1 commit. This action runs sudo rm -rf across the
+        # runner and prunes the Docker runtime that every later step uses, so a
+        # moving @main reference is a supply-chain hole, not a convenience.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
         with:
           tool-cache: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           path: repo
+          # checkout stores the token in .git/config by default, and the container
+          # below mounts this directory. Nothing here needs to talk to git again.
+          persist-credentials: false
       - name: Twister (native_sim)
         run: |
+          # The output directory is bind-mounted OUT of the container. It used to
+          # live inside a `docker run --rm` filesystem with nothing mounted, so the
+          # moment twister finished, every per-test log, generated .config, harness
+          # output and failure file was deleted. --inline-logs kept some console
+          # text; it did not keep the artifacts a reviewer would need to check a
+          # claim afterwards, and PR #19's evidence for an 8 MB ext_dram_seg rests
+          # on exactly the kind of build output that was being thrown away.
+          #
+          # twister is pointed at a directory INSIDE the mount, never at the mount
+          # point itself. On startup it moves any existing outdir aside
+          # (twister_main.clean_previous_results -> shutil.move), and a bind mount
+          # point cannot be moved or removed from inside the container: it fails with
+          # EBUSY, "Device or resource busy".
+          mkdir -p "${{ github.workspace }}/twister-artifacts"
           docker run --rm \
             -e ZEPHYR_REV="$ZEPHYR_REV" \
             -e ZEPHYR_SDK_INSTALL_DIR="$SDK_DIR" \
             -v "${{ github.workspace }}/repo:/repo:ro" \
+            -v "${{ github.workspace }}/twister-artifacts:/out" \
             "$CI_IMAGE" \
             bash -c 'set -eo pipefail
               mkdir -p /work && cd /work
               west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
               cd ws && west update --narrow -o=--depth=1 && west zephyr-export
               export ZEPHYR_EXTRA_MODULES=/repo
-              west twister -p native_sim --inline-logs -v -T /repo/tests
+              west twister -p native_sim --inline-logs -v -T /repo/tests -O /out/twister-out
             '
+
+      - name: Hand the artifacts back to the runner
+        # The container writes as root, and the upload step does not run as root.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/twister-artifacts" || true
+
+      - name: Keep the twister artifacts
+        # if: always() - the run that FAILS is the one whose artifacts are worth
+        # having, and the old workflow destroyed exactly those.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: twister-out
+          path: twister-artifacts
+          retention-days: 14
+          # error, not warn: twister always writes an outdir, so "no files" means the
+          # evidence chain broke and the job must say so instead of going green.
+          # (The build job keeps `warn`: a build that legitimately failed has no map.)
+          if-no-files-found: error
+
+  upstream-main:
+    # The driver's UPSTREAM form is not built by anything above.
+    #
+    # Every other job pins v4.4.0. The file that would actually be reviewed carries a
+    # DEVICE_API(audio_codec, ...) declaration that does not exist on v4.4.0, so the
+    # "compiles against upstream main, zero warnings" claim in the PR came from one
+    # run, on one laptop, that nothing could reproduce -- and an upstream API change
+    # would have made it false with nothing anywhere going red. This job is that
+    # claim, executable: it grafts the driver into a real Zephyr tree exactly as the
+    # PR will (Kconfig + CMakeLists in their CI-enforced sorted position, the binding,
+    # and a node in the build_all overlay, which is the only thing that makes CI
+    # compile a codec at all), then builds and checkpatches it.
+    #
+    # Pinned to a main COMMIT, not to the main branch: chasing a moving branch buys a
+    # green run today and a red one tomorrow for reasons that have nothing to do with
+    # this repo. Bump it deliberately.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ZEPHYR_MAIN_REV: 0a9cc79d760f387df304892f6e0bba92b62adeaf # main @ 2026-07-11
+    steps:
+      - name: Free runner disk
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          path: repo
+          persist-credentials: false
+      - name: Graft the driver into upstream main and build it
+        run: |
+          mkdir -p "${{ github.workspace }}/upstream-artifacts"
+          docker run --rm \
+            -e ZEPHYR_MAIN_REV="$ZEPHYR_MAIN_REV" \
+            -e ZEPHYR_SDK_INSTALL_DIR="$SDK_DIR" \
+            -v "${{ github.workspace }}/repo:/repo:ro" \
+            -v "${{ github.workspace }}/upstream-artifacts:/out" \
+            "$CI_IMAGE" \
+            bash -c 'set -eo pipefail
+              mkdir -p /work && cd /work
+              # Clone and check out the SHA by hand rather than through west init
+              # --mr, which wants a branch or a tag.
+              git clone --filter=blob:none https://github.com/zephyrproject-rtos/zephyr.git zephyr
+              git -C zephyr checkout --detach "$ZEPHYR_MAIN_REV"
+              west init -l zephyr
+              west update --narrow -o=--depth=1
+              west zephyr-export
+
+              bash /repo/scripts/graft_es8311_upstream.sh /work/zephyr
+
+              cd /work/zephyr
+              # checkpatch on exactly the file that would be submitted.
+              ./scripts/checkpatch.pl --no-tree -f drivers/audio/es8311.c
+
+              west twister -p native_sim -T tests/drivers/build_all/audio \
+                --inline-logs -v -O /out/twister-out
+
+              # A green twister does NOT mean the driver was compiled: if the DT node
+              # or the Kconfig line failed to land, the codec is simply absent and the
+              # build_all test passes without it. Prove the object exists.
+              if ! find /out/twister-out -name "es8311.c.obj" | grep -q .; then
+                echo "FAIL: build_all passed but es8311.c was never compiled"
+                exit 1
+              fi
+              echo "es8311.c.obj built against upstream main $ZEPHYR_MAIN_REV"
+            '
+
+      - name: Hand the artifacts back to the runner
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/upstream-artifacts" || true
+
+      - name: Keep the upstream build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: upstream-main-build
+          path: upstream-artifacts
+          retention-days: 14
+          if-no-files-found: error
 
   compliance:
     # PRs only: the checks run over the PR's own commits (base..head). On a push
     # to main the range is the squash-merge commit, which has no body and no
     # Signed-off-by, so Gitlint/Identity would false-fail there.
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Free runner disk
-        uses: jlumbroso/free-disk-space@main
+        # Pinned to the v1.3.1 commit. This action runs sudo rm -rf across the
+        # runner and prunes the Docker runtime that every later step uses, so a
+        # moving @main reference is a supply-chain hole, not a convenience.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
         with:
           tool-cache: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           path: repo
+          # checkout stores the token in .git/config by default, and the container
+          # below mounts this directory. Nothing here needs to talk to git again.
+          persist-credentials: false
           fetch-depth: 0
       - name: Compliance (subset that fits an out-of-tree module repo)
         run: |
