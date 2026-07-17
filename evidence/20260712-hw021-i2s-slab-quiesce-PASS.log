@@ -95,7 +95,6 @@ Board: m5stack_sticks3
 
 [00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
 
-
 === I2S START/DROP stress: 100 cycles, TX starved every 5 ===
 
 slab : free blocks per direction, read BEFORE each cycle. It must stay
@@ -109,7 +108,6 @@ slab : free blocks per direction, read BEFORE each cycle. It must stay
 starve: TX is left to run dry, which drives the driver down its
 
        tx_disable path -- the one place the leak fix could double-free.
-
 
   stress   1: slab tx=8 rx=8
 
@@ -213,9 +211,7 @@ starve: TX is left to run dry, which drives the driver down its
 
   stress 100: slab tx=8 rx=8   TX starved on purpose
 
-
   final census: tx=8 rx=8 of 8
-
 
 === STRESS PASSED: 100 cycles, 20 of them with TX starved on purpose,
 
@@ -223,70 +219,6 @@ starve: TX is left to run dry, which drives the driver down its
 
     freed twice on the tx_disable path. ===
 
-
 *** I2S SLAB STRESS PASSED ***
-
-alive uptime_ms=12849 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5162 imu=1 accel=[3.884112 0.060455 9.007860]
-
-alive uptime_ms=13899 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5162 imu=1 accel=[3.873337 0.070032 9.010852]
-
-alive uptime_ms=14910 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5164 imu=1 accel=[3.905062 0.043096 8.970748]
-
-alive uptime_ms=15920 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.893090 0.051476 8.997085]
-
-alive uptime_ms=16931 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.866753 0.067039 8.976734]
-
-alive uptime_ms=17942 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5158 imu=1 accel=[3.852388 0.033519 9.020430]
-
-alive uptime_ms=18952 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5160 imu=1 accel=[3.872140 0.044892 8.987508]
-
-alive uptime_ms=19963 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.859570 0.038906 9.012050]
-
-alive uptime_ms=20973 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5160 imu=1 accel=[3.909850 0.093975 8.958178]
-
-alive uptime_ms=21984 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5164 imu=1 accel=[3.891295 0.067039 9.003670]
-
-alive uptime_ms=22995 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5168 imu=1 accel=[3.875133 0.084996 8.990501]
-
-alive uptime_ms=24005 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5164 imu=1 accel=[3.879323 0.053272 9.008458]
-
-alive uptime_ms=25016 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5158 imu=1 accel=[3.886506 0.044294 9.016838]
-
-alive uptime_ms=26026 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.905062 0.077813 8.977333]
-
-alive uptime_ms=27037 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.814079 0.050279 9.080286]
-
-alive uptime_ms=28048 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5164 imu=1 accel=[3.895484 0.068236 8.994093]
-
-alive uptime_ms=29058 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5160 imu=1 accel=[3.862563 0.074222 9.011451]
-
-alive uptime_ms=30069 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5172 imu=1 accel=[3.896682 0.057462 8.986910]
-
-alive uptime_ms=31079 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5166 imu=1 accel=[3.901470 0.049082 8.985114]
-
-alive uptime_ms=32090 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5158 imu=1 accel=[3.869746 0.076616 9.009655]
-
-alive uptime_ms=33101 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5166 imu=1 accel=[3.876330 0.065842 8.989304]
-
-alive uptime_ms=34111 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.877527 0.049082 9.014444]
-
-alive uptime_ms=35122 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5162 imu=1 accel=[3.859570 0.025738 9.021627]
-
-alive uptime_ms=36132 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.886506 0.065842 8.974340]
-
-alive uptime_ms=37143 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.868549 0.068835 9.016240]
-
-alive uptime_ms=38154 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5166 imu=1 accel=[3.857775 0.061652 9.021627]
-
-alive uptime_ms=39164 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5162 imu=1 accel=[3.869746 0.065842 9.017437]
-
-alive uptime_ms=40175 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5162 imu=1 accel=[3.881119 0.064645 8.970748]
-
-alive uptime_ms=41185 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5164 imu=1 accel=[3.860169 0.052674 9.030007]
-
-alive uptime_ms=42196 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5160 imu=1 accel=[3.881717 0.063448 8.994093]
-
-alive uptime_ms=43207 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5164 imu=1 accel=[3.861366 0.056864 8.998282]
-
 
 [monitor captured 8182 chars; last 1.5s silent]

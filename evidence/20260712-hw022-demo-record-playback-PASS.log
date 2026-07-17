@@ -49,115 +49,31 @@
 
 --- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
 
-alive uptime_ms=79261 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.934990 2.166220 8.669070]
-
-alive uptime_ms=80272 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5158 imu=1 accel=[3.912244 2.181184 8.698400]
-
-alive uptime_ms=81282 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5160 imu=1 accel=[3.944567 2.114743 8.698998]
-
-alive uptime_ms=82293 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5164 imu=1 accel=[3.929004 2.118933 8.767235]
-
-alive uptime_ms=83303 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5160 imu=1 accel=[3.957137 2.106961 8.740898]
-
-alive uptime_ms=84314 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5160 imu=1 accel=[3.923617 2.190162 8.611607]
-
-alive uptime_ms=85325 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5166 imu=1 accel=[3.975693 2.233858 8.634951]
-
-alive uptime_ms=86335 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5158 imu=1 accel=[3.948159 2.127911 8.798361]
-
-alive uptime_ms=87346 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5158 imu=1 accel=[3.940377 2.212309 8.712167]
-
-alive uptime_ms=88356 page=0 KEY1=1 KEY2=1 bat=4168 soc=100 vin=5162 imu=1 accel=[3.941574 2.179987 8.729525]
-
-alive uptime_ms=89367 page=0 KEY1=1 KEY2=1 bat=4176 soc=100 vin=5160 imu=1 accel=[3.916434 2.243435 8.687027]
-
-alive uptime_ms=90378 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5162 imu=1 accel=[3.920624 2.287729 8.633156]
-
-alive uptime_ms=91388 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5166 imu=1 accel=[3.953546 2.232661 8.666077]
-
-alive uptime_ms=92399 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5164 imu=1 accel=[3.972700 2.178790 8.721744]
-
-alive uptime_ms=93409 page=0 KEY1=1 KEY2=1 bat=4174 soc=100 vin=5164 imu=1 accel=[3.930800 2.179388 8.743891]
-
-alive uptime_ms=94420 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5166 imu=1 accel=[4.802316 0.187950 8.594249]
-
-alive uptime_ms=95431 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5158 imu=1 accel=[1.355758 -6.258634 7.965153]
-
-alive uptime_ms=96441 page=0 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5164 imu=1 accel=[1.727469 -5.547534 8.254860]
-
 BUTTON code=11 -> page=1
-
-alive uptime_ms=96685 page=1 KEY1=0 KEY2=1 bat=4172 soc=100 vin=5164 imu=1 accel=[-1.343786 -3.378920 8.569707]
 
 BUTTON code=11 -> page=2
 
-alive uptime_ms=97022 page=2 KEY1=0 KEY2=1 bat=4176 soc=100 vin=5162 imu=1 accel=[-1.811268 -3.879922 10.326506]
-
-alive uptime_ms=98073 page=2 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5162 imu=1 accel=[-6.299336 5.919245 4.198959]
-
 BUTTON code=11 -> page=3
 
-alive uptime_ms=98457 page=3 KEY1=0 KEY2=1 bat=4170 soc=100 vin=5162 imu=1 accel=[-7.066103 3.620741 4.561691]
-
-alive uptime_ms=98759 page=3 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5162 imu=1 accel=[-7.415667 3.192166 4.916643]
-
-alive uptime_ms=99022 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5160 imu=1 accel=[-6.967938 3.256213 5.737879]
-
 REC-PAGE K1 short
-
-alive uptime_ms=99035 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5160 imu=1 accel=[-6.970930 2.978477 5.381132]
 
 REC start: up to 5000 ms, speak now
 
-alive uptime_ms=99297 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5160 imu=1 accel=[-7.047547 2.296708 5.764216]
-
 REC-PAGE K1 short
-
-alive uptime_ms=99537 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5160 imu=1 accel=[-6.735693 2.203331 5.810306]
 
 REC done: 448 ms peak_rms=5210 restarts=1
 
-alive uptime_ms=99801 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5160 imu=1 accel=[-7.559323 2.360156 5.256630]
-
-alive uptime_ms=100107 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5158 imu=1 accel=[-7.204971 2.261392 5.590631]
-
-alive uptime_ms=100375 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5158 imu=1 accel=[-7.553936 2.566063 5.265010]
-
-alive uptime_ms=100642 page=3 KEY1=1 KEY2=1 bat=4172 soc=100 vin=5158 imu=1 accel=[-7.732310 2.722888 5.142303]
-
-alive uptime_ms=100910 page=3 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5158 imu=1 accel=[-7.999271 2.804294 4.777176]
-
 REC-PAGE K1 short
-
-alive uptime_ms=101139 page=3 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5158 imu=1 accel=[-7.018217 2.394274 6.030579]
 
 PLAY start: 448 ms gain_q8=1024
 
-alive uptime_ms=101406 page=3 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5158 imu=1 accel=[-7.643722 2.658842 5.078855]
-
 PLAY done
-
-alive uptime_ms=101709 page=3 KEY1=1 KEY2=1 bat=4170 soc=100 vin=5158 imu=1 accel=[-7.842446 2.834222 4.902876]
-
-alive uptime_ms=102016 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-7.697593 2.701340 5.111177]
-
-alive uptime_ms=102284 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-7.807131 2.703136 5.141704]
-
-alive uptime_ms=102551 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-8.070501 2.836616 4.953155]
 
 REC-PAGE K1 short
 
-alive uptime_ms=102779 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-7.137332 2.334417 5.370358]
-
 PLAY start: 448 ms gain_q8=1024
 
-alive uptime_ms=103047 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5152 imu=1 accel=[-7.896318 2.575641 4.775380]
-
 PLAY done
-
-alive uptime_ms=103350 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5152 imu=1 accel=[-7.813715 2.509798 4.939388]
-
-alive uptime_ms=103657 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5152 imu=1 accel=[-7.788575 2.515784 4.768796]
 
 --- Error: ClearCommError failed (PermissionError(13, '鋆蔭?⊥?颲刻??賭誘??', None, 22))
 
@@ -175,464 +91,64 @@ Board: m5stack_sticks3
 
 [00:00:00.399,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
 
-alive uptime_ms=399 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.008250 2.662433 4.932804]
-
-alive uptime_ms=1449 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.096994 4.046324 7.097827]
-
-alive uptime_ms=2459 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.571060 1.752609 8.934236]
-
-alive uptime_ms=3470 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5162 imu=1 accel=[3.574652 1.680780 8.952791]
-
-alive uptime_ms=4480 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.575849 1.695146 8.939623]
-
-alive uptime_ms=5490 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.594404 1.638282 8.988107]
-
-alive uptime_ms=6501 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.611763 1.583812 9.008458]
-
-alive uptime_ms=7511 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5150 imu=1 accel=[3.586623 1.646063 8.964164]
-
-alive uptime_ms=8522 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.578842 1.603565 8.989304]
-
-alive uptime_ms=9532 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.563279 1.643071 8.909694]
-
-alive uptime_ms=10542 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.614756 1.515575 9.004268]
-
-alive uptime_ms=11553 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.562082 1.561665 8.990501]
-
-alive uptime_ms=12564 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.644684 1.580221 8.902512]
-
-alive uptime_ms=13574 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.583032 1.563461 8.956981]
-
-alive uptime_ms=14585 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[3.562680 1.562862 9.029408]
-
-alive uptime_ms=15595 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-6.460351 4.024177 4.936395]
-
-alive uptime_ms=16606 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.003461 1.580819 4.257619]
-
 BUTTON code=11 -> page=1
-
-alive uptime_ms=16762 page=1 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-9.528614 1.427586 4.113962]
 
 BUTTON code=11 -> page=2
 
-alive uptime_ms=17073 page=2 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-9.437033 1.002003 4.212726]
-
 BUTTON code=11 -> page=3
 
-alive uptime_ms=17390 page=3 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.733117 0.441145 4.356981]
-
-alive uptime_ms=17692 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-8.430241 0.612335 4.167235]
-
-alive uptime_ms=17955 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-8.485908 0.626102 4.322264]
-
-alive uptime_ms=18217 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-8.560729 0.596174 4.337228]
-
-alive uptime_ms=18480 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5150 imu=1 accel=[-8.587664 0.355549 4.507222]
-
-alive uptime_ms=18743 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.533195 0.380091 4.361171]
-
-alive uptime_ms=19006 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.557736 0.086792 4.412648]
-
-alive uptime_ms=19268 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.593650 0.044892 4.318074]
-
-alive uptime_ms=19531 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.645726 0.016161 4.201353]
-
-alive uptime_ms=19794 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.621783 0.083201 4.354587]
-
-alive uptime_ms=20057 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.621783 0.007781 4.285153]
-
-alive uptime_ms=20320 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.657697 0.043695 4.283956]
-
-alive uptime_ms=20582 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.558335 0.205907 4.121145]
-
-alive uptime_ms=20845 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.606220 0.143057 4.228289]
-
-alive uptime_ms=21108 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.575693 0.093975 4.230084]
-
-alive uptime_ms=21371 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.615797 0.125100 4.161848]
-
-alive uptime_ms=21633 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.616994 0.077215 4.243253]
-
-alive uptime_ms=21896 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.591256 0.126297 4.282160]
-
-alive uptime_ms=22159 page=3 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.836669 0.171190 3.923617]
-
 REC-PAGE K1 short
-
-alive uptime_ms=22272 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.181835 0.213090 4.430605]
 
 REC start: up to 5000 ms, speak now
 
-alive uptime_ms=22534 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.565517 0.115523 4.263006]
-
-alive uptime_ms=22837 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.594847 0.028132 4.344411]
-
-alive uptime_ms=23101 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.619389 0.177176 4.265400]
-
-alive uptime_ms=23365 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.576292 0.062251 4.297723]
-
-alive uptime_ms=23628 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.582277 0.158022 4.318074]
-
-alive uptime_ms=23892 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.620586 0.211893 4.312687]
-
-alive uptime_ms=24156 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.519428 0.246610 4.187586]
-
-alive uptime_ms=24420 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.584073 0.281327 4.258816]
-
-alive uptime_ms=24683 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.945608 0.231047 3.757215]
-
 REC-PAGE K1 short
-
-alive uptime_ms=24881 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-9.116201 0.184957 3.643487]
 
 REC done: 2560 ms peak_rms=4343 restarts=1
 
-alive uptime_ms=25145 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.544567 0.230448 4.143890]
-
-alive uptime_ms=25452 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.641536 0.170592 4.232479]
-
-alive uptime_ms=25719 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[-8.640937 0.369316 3.963721]
-
-alive uptime_ms=25987 page=3 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[-8.709174 0.210696 3.926610]
-
 REC-PAGE K1 short
-
-alive uptime_ms=26121 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[-9.188029 0.277735 3.763799]
 
 PLAY start: 2560 ms gain_q8=1024
 
-alive uptime_ms=26388 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[-8.578087 0.244216 4.257619]
-
-alive uptime_ms=26691 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.591854 0.225061 4.219310]
-
-alive uptime_ms=26955 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.579883 0.188549 4.227092]
-
-alive uptime_ms=27219 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.572700 0.290904 4.224697]
-
-alive uptime_ms=27483 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.590059 0.121509 4.351594]
-
-alive uptime_ms=27747 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.597241 0.077813 4.267794]
-
-alive uptime_ms=28011 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.521822 0.143057 3.854183]
-
 REC-PAGE K1 short
-
-alive uptime_ms=28138 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.243487 0.137670 4.850202]
-
-alive uptime_ms=28401 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.604424 0.190943 4.265400]
-
-alive uptime_ms=28665 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.636747 0.168796 4.165439]
 
 PLAY done
 
-alive uptime_ms=28929 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.615797 0.122108 4.264801]
-
-alive uptime_ms=29236 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.351230 0.202914 4.504827]
-
-alive uptime_ms=29504 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.458972 0.602160 4.218113]
-
 REC-PAGE K1 short
-
-alive uptime_ms=29534 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.312323 0.120312 5.038751]
 
 PLAY start: 2560 ms gain_q8=1024
 
-alive uptime_ms=29801 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.653507 0.172986 4.143890]
-
-alive uptime_ms=30104 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.669668 0.170592 4.122941]
-
-alive uptime_ms=30368 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.797163 0.248406 3.481874]
-
 REC-PAGE K1 short
 
-alive uptime_ms=30487 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.301549 0.050279 4.780169]
-
-alive uptime_ms=30750 page=3 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5150 imu=1 accel=[-8.741497 0.075419 4.294730]
-
-alive uptime_ms=31014 page=3 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5150 imu=1 accel=[-8.634951 0.155029 4.072661]
-
-alive uptime_ms=31278 page=3 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5150 imu=1 accel=[-9.290384 0.013767 4.147482]
-
-alive uptime_ms=31542 page=3 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5150 imu=1 accel=[-8.002863 0.220273 4.250436]
-
 REC-PAGE K1 short
-
-alive uptime_ms=31583 page=3 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5150 imu=1 accel=[-8.970150 0.295692 4.162446]
-
-alive uptime_ms=31846 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.723539 0.083201 4.056499]
-
-alive uptime_ms=32110 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.721145 0.119115 4.136109]
 
 PLAY done
 
-alive uptime_ms=32374 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.670865 0.158620 4.070865]
-
-alive uptime_ms=32681 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.708575 0.181366 4.073858]
-
-alive uptime_ms=32949 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.624776 0.180767 4.017592]
-
-alive uptime_ms=33216 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.701991 0.261574 4.001431]
-
-alive uptime_ms=33484 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.532596 0.248406 4.173220]
-
-alive uptime_ms=33751 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.668471 0.072426 4.136708]
-
-alive uptime_ms=34019 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.520625 0.290305 3.979883]
-
 REC-PAGE K1 short
-
-alive uptime_ms=34268 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.315316 0.384879 4.528172]
 
 PLAY start: 2560 ms gain_q8=1024
 
-alive uptime_ms=34535 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[-8.575693 0.236434 4.286350]
-
-alive uptime_ms=34838 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.644528 0.141262 4.164242]
-
-alive uptime_ms=35103 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.694210 0.098165 4.146883]
-
-alive uptime_ms=35367 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.606819 0.210097 4.014001]
-
-alive uptime_ms=35631 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.649916 0.263370 4.003227]
-
-alive uptime_ms=35895 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.688224 0.353754 3.645283]
-
 REC-PAGE K1 short
-
-alive uptime_ms=36041 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.223136 0.293897 4.759818]
-
-alive uptime_ms=36304 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.703787 0.232843 4.031360]
-
-alive uptime_ms=36568 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.704984 0.201717 3.997241]
-
-alive uptime_ms=36832 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5154 imu=1 accel=[-8.736708 0.169993 3.918829]
 
 PLAY done
 
-alive uptime_ms=37096 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5154 imu=1 accel=[-8.732518 0.204111 3.955940]
-
-alive uptime_ms=37403 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5154 imu=1 accel=[-8.696005 0.153832 3.948757]
-
-alive uptime_ms=37670 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5154 imu=1 accel=[-8.745088 0.163409 3.953546]
-
-alive uptime_ms=37938 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[-8.762446 0.090383 3.975094]
-
-alive uptime_ms=38206 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[-8.752271 0.061054 3.936786]
-
-alive uptime_ms=38473 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[-8.803149 0.101158 3.945764]
-
-alive uptime_ms=38741 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[-8.760651 0.158620 3.879922]
-
-alive uptime_ms=39008 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5152 imu=1 accel=[-8.919870 0.230448 3.830240]
-
-alive uptime_ms=39276 page=3 KEY1=0 KEY2=1 bat=4182 soc=100 vin=5152 imu=1 accel=[-8.790579 0.476460 3.646480]
-
 REC-PAGE K1 short
-
-alive uptime_ms=39515 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5152 imu=1 accel=[-8.254262 0.313051 4.251034]
 
 PLAY start: 2560 ms gain_q8=1024
 
-alive uptime_ms=39782 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.803149 0.225660 3.890097]
-
-alive uptime_ms=40085 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.751672 0.164007 3.881119]
-
-alive uptime_ms=40349 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.781601 0.140663 3.787742]
-
-alive uptime_ms=40613 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.769629 0.238230 3.867352]
-
-alive uptime_ms=40878 page=3 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5156 imu=1 accel=[-8.831282 0.172387 3.903266]
-
-alive uptime_ms=41142 page=3 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5156 imu=1 accel=[-8.833676 0.055666 3.848796]
-
-alive uptime_ms=41406 page=3 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5156 imu=1 accel=[-8.838465 0.050878 3.880520]
-
-alive uptime_ms=41670 page=3 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5156 imu=1 accel=[-8.718152 0.123305 3.750032]
-
-alive uptime_ms=41934 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.819909 0.125699 3.634509]
-
 PLAY done
-
-alive uptime_ms=42198 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.839063 0.101158 3.751828]
-
-alive uptime_ms=42505 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.828888 0.104749 3.806298]
-
-alive uptime_ms=42772 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5152 imu=1 accel=[-8.903709 0.004788 3.842212]
-
-alive uptime_ms=43040 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.925856 0.006584 3.685985]
-
-alive uptime_ms=43307 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.861809 0.022147 3.709928]
-
-alive uptime_ms=43575 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.781601 0.342381 3.851789]
-
-alive uptime_ms=43842 page=3 KEY1=0 KEY2=1 bat=4188 soc=100 vin=5164 imu=1 accel=[-8.615797 0.191541 4.165439]
-
-alive uptime_ms=44110 page=3 KEY1=0 KEY2=1 bat=4188 soc=100 vin=5164 imu=1 accel=[-8.949798 0.107143 3.771581]
-
-alive uptime_ms=44378 page=3 KEY1=0 KEY2=1 bat=4188 soc=100 vin=5164 imu=1 accel=[-8.690618 0.318438 3.808093]
-
-alive uptime_ms=44645 page=3 KEY1=0 KEY2=1 bat=4188 soc=100 vin=5164 imu=1 accel=[-8.834275 0.477657 3.728484]
-
-alive uptime_ms=44913 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.798959 0.600962 3.639297]
-
-alive uptime_ms=45180 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.875576 0.185556 3.878725]
-
-alive uptime_ms=45448 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.865400 0.305868 3.841613]
-
-alive uptime_ms=45716 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-8.815120 0.293897 3.815276]
-
-alive uptime_ms=45983 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-8.751672 0.417800 3.764997]
-
-alive uptime_ms=46251 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-8.793572 0.355549 3.729681]
-
-alive uptime_ms=46518 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-8.805543 0.358542 3.791334]
-
-alive uptime_ms=46786 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-8.821705 0.481249 3.820663]
-
-alive uptime_ms=47054 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.874977 0.548288 3.776369]
-
-alive uptime_ms=47321 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.625973 0.558464 3.600390]
-
-alive uptime_ms=47589 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.790579 0.513571 3.483071]
-
-alive uptime_ms=47856 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.802551 0.609342 3.639896]
-
-alive uptime_ms=48124 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.801952 0.596174 3.705140]
-
-alive uptime_ms=48391 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.867196 0.544098 3.606974]
-
-alive uptime_ms=48659 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.965960 0.553676 3.780559]
-
-alive uptime_ms=48926 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.892336 0.334001 3.812283]
-
-alive uptime_ms=49194 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.845647 0.501001 3.668028]
-
-alive uptime_ms=49462 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.857020 0.515367 3.614157]
-
-alive uptime_ms=49729 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.879766 0.563253 3.484268]
-
-alive uptime_ms=49997 page=3 KEY1=0 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.879766 0.467482 3.650071]
 
 REC-PAGE K1 long
 
-alive uptime_ms=50048 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.208172 0.787716 4.081041]
-
 REC start: up to 5000 ms, speak now
-
-alive uptime_ms=50314 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.893533 0.469876 3.931997]
-
-alive uptime_ms=50617 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.853429 0.649447 3.515992]
-
-alive uptime_ms=50881 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[-8.849239 0.470474 3.517189]
-
-alive uptime_ms=51145 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.821705 0.489629 3.587820]
-
-alive uptime_ms=51409 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.974340 0.401041 3.505218]
-
-alive uptime_ms=51672 page=3 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[-8.982121 0.375302 3.468106]
-
-alive uptime_ms=51936 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-9.013845 0.501001 3.444164]
-
-alive uptime_ms=52200 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-8.964763 0.529733 3.475289]
-
-alive uptime_ms=52464 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-8.526012 1.168406 3.496838]
 
 REC-PAGE K1 short
 
-alive uptime_ms=52482 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-7.890332 0.696135 4.608978]
-
 REC done: 2384 ms peak_rms=4030 restarts=1
-
-alive uptime_ms=52745 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[-8.804945 0.363331 3.737462]
-
-alive uptime_ms=53051 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-8.810332 0.430969 3.852388]
-
-alive uptime_ms=53319 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-8.900117 0.424385 3.638699]
-
-alive uptime_ms=53586 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-9.219753 0.086193 3.687183]
-
-alive uptime_ms=53794 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-7.966350 0.626701 5.067482]
 
 REC-PAGE K1 short
 
 PLAY start: 2384 ms gain_q8=1024
 
-alive uptime_ms=54061 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.891139 0.241821 3.766792]
-
-alive uptime_ms=54365 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.813325 0.454313 3.710527]
-
-alive uptime_ms=54629 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.809733 0.569837 3.748237]
-
-alive uptime_ms=54893 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.801353 0.509980 3.700950]
-
-alive uptime_ms=55157 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.886350 0.438152 3.767989]
-
-alive uptime_ms=55421 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.821705 0.554873 3.768588]
-
-alive uptime_ms=55685 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.776214 0.562055 3.725491]
-
-alive uptime_ms=55949 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5152 imu=1 accel=[-8.871985 0.378295 3.682993]
-
-alive uptime_ms=56213 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.919870 0.411815 3.624931]
-
 PLAY done
-
-alive uptime_ms=56477 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.871985 0.487833 3.559687]
-
-alive uptime_ms=56784 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.864802 0.557866 3.649473]
-
-alive uptime_ms=57052 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.878569 0.414209 3.594404]
-
-alive uptime_ms=57319 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.931243 0.262173 3.626727]
-
-alive uptime_ms=57587 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.676253 0.017957 4.189382]
-
-alive uptime_ms=57854 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5154 imu=1 accel=[-8.927053 0.219076 3.202941]
-
-alive uptime_ms=58122 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.970748 0.796096 4.739466]
-
-alive uptime_ms=58390 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.955784 0.785920 3.065868]
-
-alive uptime_ms=58657 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-8.955784 -2.591802 0.316044]
-
-alive uptime_ms=58925 page=3 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[-9.083878 -3.069460 0.392661]
-
-alive uptime_ms=59192 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-9.288588 -1.170800 3.289134]
-
-alive uptime_ms=59460 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-8.805543 -1.357553 4.568276]
-
-alive uptime_ms=59727 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-8.232713 0.062251 5.207547]
-
-alive uptime_ms=59995 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-8.044164 0.533923 4.753832]
-
-alive uptime_ms=60263 page=3 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5162 imu=1 accel=[-7.744281 0.557267 5.791750]
-
-alive uptime_ms=60530 page=3 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5162 imu=1 accel=[-7.681431 0.589590 5.826467]
-
-alive uptime_ms=60798 page=3 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5162 imu=1 accel=[-7.551542 0.418998 5.757632]
-
-alive uptime_ms=61065 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-7.774210 0.490826 5.399089]
-
-alive uptime_ms=61333 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-7.292960 0.231047 6.644710]
-
-alive uptime_ms=61600 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-6.550735 -1.297098 7.523409]
-
-alive uptime_ms=61868 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[-6.910475 0.581210 6.838647]
-
-alive uptime_ms=62135 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-6.783578 0.691945 6.762628]
-
-alive uptime_ms=62403 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-7.557528 0.353754 6.726714]
-
-alive uptime_ms=62670 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-7.382147 0.657826 5.962342]
-
-alive uptime_ms=62938 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[-7.944203 0.353754 5.646298]
-
-alive uptime_ms=63206 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5164 imu=1 accel=[-7.743084 0.318438 5.883331]
-
-alive uptime_ms=63473 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5164 imu=1 accel=[-8.931243 0.196330 3.329837]
-
-alive uptime_ms=63741 page=3 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5164 imu=1 accel=[-7.813715 0.797892 4.742459]
-
-alive uptime_ms=64008 page=3 KEY1=0 KEY2=1 bat=4186 soc=100 vin=5164 imu=1 accel=[-9.217359 0.186154 3.429798]
 
 [monitor captured 29011 chars; last 0.0s silent]

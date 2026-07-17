@@ -93,7 +93,6 @@ Board: m5stack_sticks3
 
 [00:00:00.397,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
 
-
 === ES8311 sample-rate sweep ===
 
 regs  : the clock registers read back off the chip over I2C
@@ -115,7 +114,6 @@ tone  : the captured level with the amplifier on. Reported, not
         Judge the speaker by ear; the pitch rises across the sweep
 
         because the tone table was made for 16 kHz
-
 
   sweep.8000: slab pre-reset  tx=8 rx=8
 
@@ -405,9 +403,7 @@ SWEEP 44100  regs=OK  lrck=44096  OK  adc=alive floor=112   [-120..115] tone_rms
 
 SWEEP 48000  regs=OK  lrck=47996  OK  adc=alive floor=122   [-240..207] tone_rms=14123  peak=32767  PASS
 
-
 === sweep: 0 of 9 rate(s) FAILED ===
-
 
 -- route transitions: the unused converter must power DOWN --
 
@@ -421,7 +417,6 @@ SWEEP route both      PASS
 
 SWEEP restore: lrck measured 16000 Hz, want 16000  OK
 
-
 === SWEEP PASSED: 9 rates + 3 routes, restored to 16000 Hz and measured ===
 
     What that means: the clock registers land on the chip, the frame clock
@@ -432,86 +427,6 @@ SWEEP restore: lrck measured 16000 Hz, want 16000  OK
 
     quality or the codec's internal OSR. The speaker is judged by ear.
 
-
 *** ES8311 CLOCK/ROUTE/CAPTURE SWEEP PASSED ***
-
-alive uptime_ms=10632 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.855979 0.036512 9.007860]
-
-alive uptime_ms=11682 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[3.850592 0.061054 9.031802]
-
-alive uptime_ms=12692 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.833233 0.071828 9.095251]
-
-alive uptime_ms=13703 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.866753 0.074222 8.987508]
-
-alive uptime_ms=14714 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.866155 0.065842 8.955784]
-
-alive uptime_ms=15724 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.858373 0.050878 9.006064]
-
-alive uptime_ms=16735 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5162 imu=1 accel=[3.845205 0.058659 9.022824]
-
-alive uptime_ms=17745 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[3.845205 0.043096 9.027014]
-
-alive uptime_ms=18756 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.872140 0.120312 8.955784]
-
-alive uptime_ms=19767 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5162 imu=1 accel=[3.905062 0.068236 8.985713]
-
-alive uptime_ms=20777 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5154 imu=1 accel=[3.872739 0.045491 8.989304]
-
-alive uptime_ms=21788 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5158 imu=1 accel=[3.826649 0.044892 9.063526]
-
-alive uptime_ms=22798 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[3.872739 0.055666 9.019831]
-
-alive uptime_ms=23809 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[3.892492 0.064645 8.976135]
-
-alive uptime_ms=24820 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.872739 0.047286 8.997684]
-
-alive uptime_ms=25830 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.869746 0.053272 9.040182]
-
-alive uptime_ms=26841 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[3.846402 0.048484 9.027014]
-
-alive uptime_ms=27851 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5156 imu=1 accel=[3.866753 0.058659 8.991100]
-
-alive uptime_ms=28862 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.873936 0.051476 9.005465]
-
-alive uptime_ms=29873 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5156 imu=1 accel=[3.872739 0.058061 9.033598]
-
-alive uptime_ms=30883 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.842212 0.030527 9.062928]
-
-alive uptime_ms=31894 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.855380 0.070032 9.020430]
-
-alive uptime_ms=32904 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.845803 0.056864 9.012050]
-
-alive uptime_ms=33915 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[3.901470 0.077215 8.948003]
-
-alive uptime_ms=34926 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.866155 0.068835 9.014444]
-
-alive uptime_ms=35936 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.869746 0.060455 9.000078]
-
-alive uptime_ms=36947 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.867950 0.065243 8.948601]
-
-alive uptime_ms=37957 page=0 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5156 imu=1 accel=[3.893090 0.058659 8.974938]
-
-alive uptime_ms=38968 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[3.906259 0.072426 8.943813]
-
-alive uptime_ms=39979 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5156 imu=1 accel=[3.848198 0.057462 9.049161]
-
-alive uptime_ms=40989 page=0 KEY1=1 KEY2=1 bat=4186 soc=100 vin=5164 imu=1 accel=[3.869746 0.070631 8.977931]
-
-alive uptime_ms=42000 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[3.873337 0.068236 9.007261]
-
-alive uptime_ms=43010 page=0 KEY1=1 KEY2=1 bat=4188 soc=100 vin=5162 imu=1 accel=[3.854183 0.057462 9.041379]
-
-alive uptime_ms=44021 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[3.886506 0.049681 8.989903]
-
-alive uptime_ms=45032 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.891893 0.033519 8.982720]
-
-alive uptime_ms=46042 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[3.926610 0.061054 8.907300]
-
-alive uptime_ms=47053 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5164 imu=1 accel=[3.860169 0.083799 8.981523]
-
-alive uptime_ms=48063 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5160 imu=1 accel=[3.922420 0.008379 8.915081]
-
-alive uptime_ms=49074 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5162 imu=1 accel=[3.884710 0.035315 9.016838]
-
 
 [monitor captured 12067 chars; last 0.5s silent]

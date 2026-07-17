@@ -80,28 +80,5 @@ Board: m5stack_sticks3
 [39;120Hs alias)
 [00:00:00.342,000] <inf> gfx: Pixel format RGB_565 (high byte first)
 [00:00:00.342,000] <inf> gfx: Display ready (135x240)
-alive uptime_ms=378 page=0 KEY1=1 KEY2=1 bat=3742 soc=67 vin=5146 imu=1 accel=[0.000000 0.000000 0.000000]
-alive uptime_ms=1428 page=0 KEY1=1 KEY2=1 bat=3742 soc=67 vin=5148 imu=1 accel=[3.714717 0.216083 9.099441]
-alive uptime_ms=2439 page=0 KEY1=1 KEY2=1 bat=3744 soc=67 vin=5142 imu=1 accel=[3.704541 0.194534 9.114405]
-alive uptime_ms=3449 page=0 KEY1=1 KEY2=1 bat=3742 soc=67 vin=5146 imu=1 accel=[3.742251 0.190943 9.046168]
-alive uptime_ms=4460 page=0 KEY1=1 KEY2=1 bat=3750 soc=68 vin=5148 imu=1 accel=[3.686584 0.262771 9.047365]
-alive uptime_ms=5470 page=0 KEY1=1 KEY2=1 bat=3742 soc=67 vin=5148 imu=1 accel=[3.738659 0.234040 9.027612]
-alive uptime_ms=6480 page=0 KEY1=1 KEY2=1 bat=3746 soc=67 vin=5164 imu=1 accel=[3.724294 0.205309 9.031204]
-alive uptime_ms=7491 page=0 KEY1=1 KEY2=1 bat=3740 soc=67 vin=5158 imu=1 accel=[3.723695 0.205907 9.058738]
-alive uptime_ms=8501 page=0 KEY1=1 KEY2=1 bat=3728 soc=65 vin=5144 imu=1 accel=[3.690175 0.223864 9.079089]
-alive uptime_ms=9512 page=0 KEY1=1 KEY2=1 bat=3738 soc=66 vin=5156 imu=1 accel=[3.690175 0.296291 9.070111]
-alive uptime_ms=10522 page=0 KEY1=1 KEY2=1 bat=3730 soc=65 vin=5146 imu=1 accel=[3.695563 0.202914 9.119193]
-alive uptime_ms=11533 page=0 KEY1=1 KEY2=1 bat=3744 soc=67 vin=5148 imu=1 accel=[3.740455 0.211893 9.037788]
-alive uptime_ms=12543 page=0 KEY1=1 KEY2=1 bat=3726 soc=65 vin=5148 imu=1 accel=[3.694365 0.261574 9.056942]
-alive uptime_ms=13554 page=0 KEY1=1 KEY2=1 bat=3750 soc=68 vin=5150 imu=1 accel=[3.703344 0.234040 9.039584]
-alive uptime_ms=14564 page=0 KEY1=1 KEY2=1 bat=3744 soc=67 vin=5162 imu=1 accel=[3.704541 0.307664 9.005465]
-alive uptime_ms=15575 page=0 KEY1=1 KEY2=1 bat=3748 soc=68 vin=5154 imu=1 accel=[3.701548 0.194534 9.105426]
-alive uptime_ms=16586 page=0 KEY1=1 KEY2=1 bat=3746 soc=67 vin=5144 imu=1 accel=[3.696161 0.220871 9.107821]
-alive uptime_ms=17596 page=0 KEY1=1 KEY2=1 bat=3748 soc=68 vin=5146 imu=1 accel=[3.706935 0.218477 9.103631]
-alive uptime_ms=18607 page=0 KEY1=1 KEY2=1 bat=3746 soc=67 vin=5144 imu=1 accel=[3.694964 0.200520 9.126376]
-alive uptime_ms=19617 page=0 KEY1=1 KEY2=1 bat=3748 soc=68 vin=5144 imu=1 accel=[3.714118 0.190943 9.079089]
-alive uptime_ms=20628 page=0 KEY1=1 KEY2=1 bat=3728 soc=65 vin=5146 imu=1 accel=[3.696161 0.233441 9.059337]
-alive uptime_ms=21639 page=0 KEY1=1 KEY2=1 bat=3726 soc=65 vin=5144 imu=1 accel=[3.677007 0.275940 9.039584]
-alive uptime_ms=22649 page=0 KEY1=1 KEY2=1 bat=3726 soc=65 vin=5144 imu=1 accel=[3.705738 0.289108 9.005465]
 
 [monitor captured 5472 chars; last 1.0s silent]
