@@ -239,6 +239,13 @@ and every line is also under `#ifdef CONFIG_APP_AUDIO`).
   needed. `configure()` handles the playback (DAC), capture (ADC) and combined
   `PLAYBACK_CAPTURE` routes. This driver is also the standalone upstream
   candidate (task #21).
+- Codec board policy + contracts: three board choices are devicetree properties on
+  the `es8311` node — `everest,mono-dac-source`, `everest,mic-pga-gain-db`,
+  `everest,output-mode` — and the StickS3 node sets none, taking the HW-verified
+  defaults (left slot / 30 dB / headphone). Two contracts the driver enforces: the
+  codec is always the I2S clock **TARGET** (the SoC drives BCLK/LRCK, so the codec cfg
+  must pass `TARGET | TARGET`, not the host's CONTROLLER role), and `configure()`
+  leaves the DAC muted — `start_output()` is the first unmute.
 - Playback data path: SoC I2S0 as master (16 kHz / 16-bit, standard I2S) →
   ES8311 DAC → AW8737 speaker amp. (`audio_beep()` is the HW-006-verified playback
   primitive; the AUDIO page itself is a mic meter and does not beep.)
