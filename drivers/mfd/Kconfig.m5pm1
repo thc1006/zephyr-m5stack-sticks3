@@ -1,26 +1,22 @@
-# Copyright (c) 2026 The Zephyr Project Contributors
+# Copyright (c) 2026 Hsiu-Chi Tsai
 # SPDX-License-Identifier: Apache-2.0
-#
-# Vendored from Zephyr PR #109961
-# (commit b9dde93c9a8173a884a3aabd7f08bc23260ae9e7), Apache-2.0.
-# Interim copy; #109961 MERGED upstream 2026-06-03 (drop when Zephyr is bumped past 4.4.0).
-# See docs/07_UPSTREAM_PLAN.md.
 
-config MFD_M5PM1
-	bool "M5Stack M5PM1 PMIC"
-	default y
-	depends on DT_HAS_M5STACK_M5PM1_ENABLED
-	select I2C
-	help
-	  Enable the M5Stack M5PM1 multi-function PMIC driver.
+# MFD_M5PM1 itself is deliberately NOT defined here. Zephyr PR #109961 landed
+# upstream on 2026-06-03 and brings the M5PM1 MFD, GPIO and ADC drivers with
+# the same compatibles, the same `zephyr/drivers/mfd/m5pm1.h` and the same
+# Kconfig symbol names this tree used to vendor, so defining MFD_M5PM1 again
+# out-of-tree would give the symbol two definitions in one Kconfig tree.
+#
+# What upstream does NOT ship is an emulator, and tests/drivers/m5pm1_mfd
+# needs one, so that one file stays here and keeps its own symbol.
 
 config EMUL_M5PM1_MFD
 	bool "M5Stack M5PM1 PMIC emulator (MFD path)"
 	default y
 	depends on EMUL
-	depends on DT_HAS_M5STACK_M5PM1_ENABLED
+	depends on MFD_M5PM1
 	help
 	  I2C register-store emulator for the M5PM1 PMIC behind the
 	  `m5stack,m5pm1` MFD parent node, for native_sim driver unit tests.
-	  Backs mfd_m5pm1.c + gpio_m5pm1.c + adc_m5pm1.c (the on-board path).
-	  Tests of the MFD path select this one.
+	  Backs the upstream mfd_m5pm1.c + gpio_m5pm1.c + adc_m5pm1.c (the
+	  on-board path). Tests of the MFD path select this one.

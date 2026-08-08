@@ -26,33 +26,46 @@ Small PRs beat one giant PR.
    - The canonical M5PM1 driver is already being upstreamed: **PR #109961**
      (Benjamin Cabé, MERGED 2026-06-03) adds an M5PM1 MFD + gpio + adc + regulator
      suite (`m5stack,m5pm1*` bindings) for the PaperColor board.
-   - This repo **vendors** the #109961 MFD/ADC/GPIO drivers + bindings
-     (`drivers/{mfd,adc,gpio}/*_m5pm1.c`, `dts/bindings/{mfd,adc,gpio}/`) as an
-     interim copy, with the source commit recorded in each file header. **Delete
-     them on the next Zephyr bump past 4.4.0** (#109961 merged 2026-06-03) and depend
-     on the upstream module. The StickS3 board gates
-     the L3B/LCD rail with a stock `regulator-fixed` on the MFD gpio child, so no
+   - This repo **used to vendor** the #109961 MFD/ADC/GPIO drivers + bindings as
+     an interim copy. **They were dropped on 2026-08-09**: the build tree now
+     carries #109961 and the upstream suite is a strict superset of what was
+     vendored -- the same `m5stack,m5pm1{,-adc,-gpio}` compatibles, the same
+     `zephyr/drivers/mfd/m5pm1.h` (four functions we call, four more we do not),
+     the same `MFD_M5PM1`/`ADC_M5PM1`/`GPIO_M5PM1` symbol names, plus a regulator
+     and a watchdog this repo never had. Keeping the copy would have defined
+     `MFD_M5PM1` twice in one Kconfig tree. The StickS3 board gates the L3B/LCD
+     rail with a stock `regulator-fixed` on the MFD gpio child, so no
      M5PM1-specific regulator is needed (the earlier interim
      `m5stack,m5pm1-l3b-regulator` driver + its ztest have been removed).
-   - **Local delta worth raising on #109961**: `mfd_m5pm1.c` adds an idle-sleep
-     disable (reg 0x09 = 0x00) and a wake-retry on the first I2C transfer, needed
-     for the StickS3's M5PM1 to respond reliably at boot. Offer this upstream
-     (issue/comment on #109961) rather than carrying it forever out-of-tree.
-   - Coordinate with the #109961 author; if it stalls, offer help rather than a
-     competing driver.
+   - **The one file that stays is `drivers/mfd/emul_m5pm1.c`**, because upstream
+     ships no M5PM1 emulator and `tests/drivers/m5pm1_mfd` needs one. Its Kconfig
+     now declares only `EMUL_M5PM1_MFD` and `depends on MFD_M5PM1` rather than
+     defining that symbol itself.
+   - **The local delta is already upstream, and better.** The vendored
+     `mfd_m5pm1.c` disabled idle-sleep by writing reg 0x09 = 0x00 and retried the
+     first I2C transfer, which the StickS3's M5PM1 needs to answer reliably at
+     boot. Upstream does the same thing generically: an
+     `idle-sleep-timeout-seconds` DT property (default 0 = disabled), a
+     read-modify-write that clears `I2C_CFG[3:0]` while preserving bits 7:4
+     instead of clobbering the register, and a `wake_if_needed()` before *every*
+     transfer rather than only the first. Nothing needs raising on #109961.
+     Dropping the copy caught one over-specified assertion in
+     `tests/drivers/m5pm1_mfd`, which asserted the whole byte was 0x00 and so was
+     testing the vendored clobber rather than idle-sleep being off; it now
+     asserts the `SLP_TO` field. Suite is 4/4 on `native_sim` against the
+     upstream driver.
    - **Silicon limit (verified 2026-06-01)**: the M5PM1 has no battery-current,
      charge-current, coulomb-counter or SoC register (voltages only). Any "full
      PMIC" upstream work is limited to charge-enable + power-source/insertion
      status; there is no fuel-gauge to contribute, and the current/per-state
      dataset (issue #4) is not obtainable on-device.
-   - **Battery SoC% (issue #8) is repo-local until a Zephyr bump** (#109961 merged
-     2026-06-03): the `vbatt`
-     (`voltage-divider`) and `fuel_gauge` (`zephyr,fuel-gauge-composite`)
-     consumer nodes bind against the vendored M5PM1 ADC, so they cannot ship in
-     the upstream board DTS until the MFD/ADC bindings merge. Both are stock
-     upstream bindings (no new driver), so once #109961 is in, this is a small
-     follow-up board patch (or a board sample overlay) that adds the two nodes on
-     top of the upstream M5PM1 ADC. The SoC is voltage-only OCV (no coulomb
+   - **Battery SoC% (issue #8) is now unblocked upstream.** The `vbatt`
+     (`voltage-divider`) and `fuel_gauge` (`zephyr,fuel-gauge-composite`) consumer
+     nodes used to bind against the vendored M5PM1 ADC, which is why they could
+     not ship in the upstream board DTS; since 2026-08-09 they bind against the
+     upstream one. Both are stock upstream bindings (no new driver), so this is a
+     small follow-up board patch (or a board sample overlay) adding the two nodes
+     on top of the upstream M5PM1 ADC. The SoC is voltage-only OCV (no coulomb
      counter), so the upstream value is an approximate gauge, consistent with the
      silicon limit above.
 
