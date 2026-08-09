@@ -290,10 +290,8 @@ struct es8311_data {
 	 * neither can forge the other: audible only when the route carries it AND
 	 * the caller has not muted it AND it has not been stopped.
 	 *
-	 * output_stopped defaults true, so configure() powers the path but leaves the
-	 * DAC muted and start() is the first unmute. input_stopped defaults false,
-	 * because configure(CAPTURE) opens the microphone, so capture is already
-	 * running when configure() returns.
+	 * Both default true. configure() powers a path but leaves it muted; start()
+	 * is the first unmute in either direction.
 	 */
 	bool output_mute;
 	bool adc_mute;
@@ -443,7 +441,6 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	uint8_t analog;
 	uint8_t dac_osr;
 	uint8_t sdp_in;
-	uint8_t sdp_out;
 	bool playback = false;
 	bool capture = false;
 	int ret = 0;
@@ -557,15 +554,14 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	data->playback = false;
 	data->capture = false;
 	/*
-	 * And the output goes STOPPED. configure() is not start_output(): it sets up and powers the
-	 * path but leaves the DAC muted, whatever the lifecycle was before -- so "start_output() is
-	 * the first unmute" holds on a RECONFIGURE too, not only a fresh init. It also stops a
-	 * configure() that FAILED while the output was started from letting the next successful
-	 * configure() self-unmute the DAC before the caller has started the output again.
-	 * configure() mutes, powers down and reclocks the whole path regardless, so there is no
-	 * live-reconfigure continuity to preserve by staying started.
+	 * And both directions go STOPPED. configure() is not start(): it sets up and powers the
+	 * path but leaves it muted, whatever the lifecycle was before -- so "start() is the first
+	 * unmute" holds on a RECONFIGURE too, not only a fresh init. It also stops a configure()
+	 * that FAILED while a direction was started from letting the next successful configure()
+	 * self-unmute before the caller has started it again.
 	 */
 	data->output_stopped = true;
+	data->input_stopped = true;
 
 	/*
 	 * Route decisions are made under the lock: sampling the cached mute first would
@@ -596,7 +592,6 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 							  : ES8311_DAC_OSR_64FS;
 
 	sdp_in = ES8311_SDP_I2S_16BIT | dcfg->sdp_in_sel | (playback ? 0U : ES8311_SDP_MUTE);
-	sdp_out = ES8311_SDP_I2S_16BIT | ((capture && !data->adc_mute) ? 0U : ES8311_SDP_MUTE);
 
 	/*
 	 * FIRST, unhold the register file.
@@ -830,13 +825,11 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		goto end;
 	}
 	/*
-	 * The microphone port last. sdp_out carries the UNMUTE bit only when the route captures and
-	 * the caller has not muted the input; otherwise it is muted, and a muting write opens
-	 * nothing. Either way it is the last thing this function does, so a persistent bus failure
-	 * -- which fails the error-path quiesce too -- can never leave the microphone open behind a
-	 * write that failed after it.
+	 * The microphone port last, and always muted: start(RX) is the only unmute. A muting write
+	 * opens nothing, so a persistent bus failure -- which fails the error-path quiesce too --
+	 * can never leave the microphone open behind a write that failed after it.
 	 */
-	ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, sdp_out);
+	ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
 	if (ret < 0) {
 		goto end;
 	}
@@ -888,6 +881,11 @@ static int es8311_start_rx_locked(const struct device *dev)
 	if (!data->capture) {
 		LOG_WRN("start: no capture route configured");
 		return -EIO;
+	}
+
+	/* Already started: do not re-issue the unmute. The output side guards the same way. */
+	if (!data->input_stopped) {
+		return 0;
 	}
 
 	if (data->adc_mute) {
@@ -994,6 +992,7 @@ static int es8311_stop_tx_locked(const struct device *dev)
 static int es8311_start(const struct device *dev, audio_dai_dir_t dir)
 {
 	struct es8311_data *data = dev->data;
+	bool rx_was_stopped;
 	int ret = 0;
 
 	if (dir == 0U || (dir & ~(audio_dai_dir_t)AUDIO_DAI_DIR_TXRX) != 0U) {
@@ -1002,13 +1001,15 @@ static int es8311_start(const struct device *dev, audio_dai_dir_t dir)
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
+	rx_was_stopped = data->input_stopped;
+
 	if ((dir & AUDIO_DAI_DIR_RX) != 0U) {
 		ret = es8311_start_rx_locked(dev);
 	}
 
 	if (ret == 0 && (dir & AUDIO_DAI_DIR_TX) != 0U) {
 		ret = es8311_start_tx_locked(dev);
-		if (ret < 0 && (dir & AUDIO_DAI_DIR_RX) != 0U) {
+		if (ret < 0 && (dir & AUDIO_DAI_DIR_RX) != 0U && rx_was_stopped) {
 			/* Undo the opener this call made, not one it inherited. */
 			(void)es8311_stop_rx_locked(dev);
 		}
@@ -1162,7 +1163,7 @@ static int es8311_apply_properties(const struct device *dev)
 	}
 
 	/* The ADC mutes at its serial data port, not through its volume. */
-	if (data->capture && data->adc_mute) {
+	if (data->capture && (data->adc_mute || data->input_stopped)) {
 		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT,
 				       ES8311_SDP_I2S_16BIT | ES8311_SDP_MUTE);
 		if (ret < 0) {
@@ -1203,7 +1204,7 @@ static int es8311_apply_properties(const struct device *dev)
 	 */
 	bool this_apply_opened_mic = false;
 
-	if (first_err == 0 && data->capture && !data->adc_mute) {
+	if (first_err == 0 && data->capture && !data->adc_mute && !data->input_stopped) {
 		ret = es8311_reg_write(dev, ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT);
 		if (ret < 0) {
 			LOG_ERR("Failed to unmute the microphone (%d)", ret);
@@ -1366,12 +1367,13 @@ static int es8311_init(const struct device *dev)
 	data->output_mute = false;
 	data->adc_mute = false;
 	/*
-	 * STOPPED until start_output() opens the output. configure() sets up and powers the path
-	 * but leaves the DAC muted; start_output() is the first unmute. That is the audio_codec
-	 * lifecycle -- configure() is not start_output() -- and it is what samples/drivers/i2s/
-	 * i2s_codec does: configure(), then start_output().
+	 * Both STOPPED until start() opens them. configure() sets up and powers the path but
+	 * leaves it muted; start() is the first unmute. That is the audio_codec lifecycle --
+	 * configure() is not start() -- and it is what samples/drivers/i2s/i2s_codec does:
+	 * configure(), then start_output().
 	 */
 	data->output_stopped = true;
+	data->input_stopped = true;
 	/* Nothing is routed until configure() says so. */
 	data->playback = false;
 	data->capture = false;

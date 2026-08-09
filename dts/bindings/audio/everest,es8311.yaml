@@ -132,9 +132,10 @@ description: |
   Shutdown reverses the streaming pair: audio_codec_stop_output() (mute), then stop the
   transport. A board with a separate power-amp enable should gate the speaker with THAT -- on
   only once clean frames are flowing, off before the mute -- which is the primary click control
-  on such boards. Capture has no start_input(): the ADC is live as soon as the transport clocks
-  it, and its analog settling is measured in seconds, so an application should discard the first
-  buffers rather than expect the opening frames to be clean.
+  on such boards. Capture is symmetric: configure() leaves the microphone muted, and
+  audio_codec_start() with AUDIO_DAI_DIR_RX is the first unmute. The ADC's analog settling is
+  measured in seconds, so an application should discard the first buffers rather than expect the
+  opening frames to be clean.
 
 compatible: "everest,es8311"
 

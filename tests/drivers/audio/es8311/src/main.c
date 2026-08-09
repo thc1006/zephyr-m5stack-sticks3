@@ -369,8 +369,9 @@ ZTEST(es8311, test_configure_capture_sequence)
 	cfg.dai_route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure(PLAYBACK_CAPTURE) failed");
 
-	/* ADC serial data port: standard I2S, 16-bit, not muted. */
-	zassert_equal(reg_get(ES8311_REG_SDP_OUT), 0x0CU, "0x0A should be 0x0C");
+	/* ADC serial data port: standard I2S, 16-bit, and MUTED. start(RX) is the first unmute. */
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT), 0x0CU | ES8311_SDP_MUTE,
+		      "0x0A should be 0x0C with the mute bit set");
 	/* ADC power up. */
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "0x0E should be 0x02");
 	/* Differential MIC1 pair (LINSEL = 1) at the 30 dB PGA maximum. */
@@ -917,6 +918,8 @@ ZTEST(es8311, test_set_input_mute)
 	zassert_ok(audio_codec_apply_properties(codec), "apply_properties failed");
 	zassert_equal(reg_get(ES8311_REG_ADC_VOLUME), 0xCBU, "+6 dB should map to 0xCB");
 
+	/* The RX lifecycle must be running before a caller unmute can reach the port. */
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
 	reg_put(ES8311_REG_SDP_OUT, 0x0C);
 	zassert_ok(
 		audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL, mute),
@@ -1645,6 +1648,7 @@ ZTEST(es8311, test_input_mute_survives_a_bus_that_cannot_be_read)
 
 	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_CAPTURE);
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
 
 	val.mute = false;
 	zassert_ok(
@@ -1854,7 +1858,7 @@ ZTEST(es8311, test_configure_opens_the_microphone_last_of_all)
 		}
 	}
 
-	/* The last three writes: DAC serial port, DAC mute (held ON), microphone port (opened). */
+	/* The last three writes: DAC serial port, DAC mute (held ON), microphone port (held OFF). */
 	zassert_equal(emul_es8311_write_at(emul, n - 3), ES8311_REG_SDP_IN,
 		      "write %d should be the DAC serial port (0x09), not 0x%02x", n - 3,
 		      emul_es8311_write_at(emul, n - 3));
@@ -1863,15 +1867,14 @@ ZTEST(es8311, test_configure_opens_the_microphone_last_of_all)
 		      emul_es8311_write_at(emul, n - 2));
 	zassert_equal(
 		emul_es8311_write_at(emul, n - 1), ES8311_REG_SDP_OUT,
-		"the LAST write of a configure() must be the microphone port (0x0A): it is the "
-		"only converter configure() opens. It was 0x%02x",
+		"the LAST write of a configure() must be the microphone port (0x0A). It was 0x%02x",
 		emul_es8311_write_at(emul, n - 1));
 
-	/* The DAC is held muted; the microphone port is opened. */
+	/* Both converters are left silent: start() is the first unmute in either direction. */
 	zassert_equal(emul_es8311_wval_at(emul, n - 2), ES8311_DAC_MUTE_ON,
 		      "the DAC must be left MUTED by configure()");
-	zassert_equal(emul_es8311_wval_at(emul, n - 1) & ES8311_SDP_MUTE, 0x00U,
-		      "the microphone serial port was not opened");
+	zassert_equal(emul_es8311_wval_at(emul, n - 1) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "the microphone serial port must be left MUTED by configure()");
 
 	zassert_true(
 		mux >= 0 && mux < n - 1,
@@ -2034,6 +2037,7 @@ ZTEST(es8311, test_input_mute_survives_a_failed_volume_write)
 {
 	audio_property_value_t mute = {.mute = true};
 
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
 	zassert_equal(reg_get(ES8311_REG_SDP_OUT), ES8311_SDP_I2S_16BIT,
 		      "precondition: the microphone must be open before we try to mute it");
 
@@ -2093,6 +2097,7 @@ ZTEST(es8311, test_a_failure_on_one_direction_still_mutes_the_other)
 	audio_property_value_t mute = {.mute = true};
 
 	audio_codec_start_output(codec);
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
 	zassert_equal(reg_get(ES8311_REG_SDP_OUT), ES8311_SDP_I2S_16BIT,
 		      "precondition: full duplex, and the microphone is open");
 
@@ -2128,6 +2133,7 @@ ZTEST(es8311, test_a_failed_input_mute_does_not_turn_the_speaker_up)
 	audio_property_value_t loud = {.vol = 32};
 
 	audio_codec_start_output(codec);
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
 	zassert_equal(reg_get(ES8311_REG_SDP_OUT), ES8311_SDP_I2S_16BIT,
 		      "precondition: full duplex, microphone open");
 
@@ -2262,6 +2268,7 @@ ZTEST(es8311, test_a_failed_input_mute_does_not_turn_the_microphone_up)
 	audio_property_value_t mute = {.mute = true};
 	audio_property_value_t loud = {.vol = 32};
 
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
 	zassert_equal(reg_get(ES8311_REG_SDP_OUT), ES8311_SDP_I2S_16BIT,
 		      "precondition: the microphone is open");
 
@@ -2488,16 +2495,16 @@ ZTEST(es8311, test_capture_only_commit_opens_the_microphone_last)
 	n = emul_es8311_write_count(emul);
 	zassert_true(n >= 2, "capture configure emitted only %d writes", n);
 
-	/* The LAST write opens the microphone, unmuted, and NOTHING failable follows it. */
+	/* The LAST write is the microphone port, left MUTED, and NOTHING failable follows it. */
 	zassert_equal(
 		emul_es8311_write_at(emul, n - 1), ES8311_REG_SDP_OUT,
 		"the last write of a capture-only configure must be the ADC serial port (0x0A), "
 		"not 0x%02x",
 		emul_es8311_write_at(emul, n - 1));
-	zassert_equal(emul_es8311_wval_at(emul, n - 1) & ES8311_SDP_MUTE, 0x00U,
-		      "that last write must OPEN the microphone (unmuted)");
+	zassert_equal(emul_es8311_wval_at(emul, n - 1) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "that last write must leave the microphone MUTED");
 
-	/* The DAC mute is held ON and written in phase A, BEFORE the microphone opener -- never
+	/* The DAC mute is held ON and written in phase A, BEFORE the microphone port -- never
 	 * after it. That is what keeps the capture-only commit fail-closed under a persistent bus
 	 * failure that also kills the quiesce.
 	 */
@@ -2694,6 +2701,7 @@ ZTEST(es8311, test_reconfigure_from_a_live_route_quiesces_before_clocks_and_neve
 	zassert_ok(audio_codec_configure(codec, &cfg), "setup configure must pass");
 	audio_codec_set_property(codec, AUDIO_PROPERTY_OUTPUT_MUTE, AUDIO_CHANNEL_ALL, off);
 	audio_codec_start_output(codec);
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
 	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x00U,
 		      "precondition -- the DAC must be LIVE");
 	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, 0x00U,
@@ -2864,6 +2872,130 @@ ZTEST(es8311, test_quiesce_mutes_the_speaker_first)
 	}
 	zassert_equal(emul_es8311_wval_at(emul, n - 6), ES8311_DAC_MUTE_ON,
 		      "the quiesce's first write must be a DAC MUTE, not an unmute");
+}
+
+/*
+ * The RX half of test_configure_leaves_the_output_stopped: configure() powers the capture path
+ * but leaves the microphone MUTED, so start(RX) is the first unmute.
+ */
+ZTEST(es8311, test_configure_leaves_both_directions_stopped)
+{
+	struct audio_codec_cfg cfg;
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "configure failed");
+
+	zassert_equal(reg_get(ES8311_REG_DAC_MUTE) & 0x60U, 0x60U,
+		      "configure() must leave the DAC muted");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "configure() must leave the microphone muted");
+}
+
+ZTEST(es8311, test_start_rx_is_the_first_microphone_unmute)
+{
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "precondition: the fixture's configure() leaves the microphone muted");
+
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT), ES8311_SDP_I2S_16BIT,
+		      "start(RX) must open the microphone with the port format intact");
+}
+
+/*
+ * stop(RX) must be DURABLE. A later apply_properties() carrying an unmuted INPUT_MUTE must not
+ * re-open a microphone the application stopped. The DAC has had this gate all along; the ADC did
+ * not, so one set_property(INPUT_MUTE, false) re-opened it.
+ */
+ZTEST(es8311, test_stop_rx_survives_apply_properties)
+{
+	const audio_property_value_t unmuted = {.mute = false};
+
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, 0x00U,
+		      "precondition: the microphone is open");
+
+	zassert_ok(audio_codec_stop(codec, AUDIO_DAI_DIR_RX), "stop(RX) failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "stop(RX) must mute the microphone");
+
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    unmuted),
+		   "set INPUT_MUTE(false) failed");
+	zassert_ok(audio_codec_apply_properties(codec), "apply failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "apply_properties() re-opened a microphone that stop(RX) had stopped");
+}
+
+/* A reconfigure must not leave a started RX flag against a port configure() just muted. */
+ZTEST(es8311, test_reconfigure_resets_rx_lifecycle_to_stopped)
+{
+	struct audio_codec_cfg cfg;
+	const audio_property_value_t unmuted = {.mute = false};
+
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	zassert_ok(audio_codec_configure(codec, &cfg), "reconfigure failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "a reconfigure of a started capture must come up MUTED");
+
+	zassert_ok(audio_codec_set_property(codec, AUDIO_PROPERTY_INPUT_MUTE, AUDIO_CHANNEL_ALL,
+					    unmuted),
+		   "set INPUT_MUTE(false) failed");
+	zassert_ok(audio_codec_apply_properties(codec), "apply failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "the RX lifecycle flag did not follow the reconfigure");
+}
+
+ZTEST(es8311, test_duplicate_start_rx_is_idempotent)
+{
+	int n;
+
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
+
+	emul_es8311_reset_log(emul);
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "duplicate start(RX) failed");
+	n = emul_es8311_write_count(emul);
+	zassert_equal(n, 0, "a duplicate start(RX) emitted %d writes", n);
+}
+
+/*
+ * The TXRX rollback undoes the opener THIS call made, and only that one. start_tx_locked()
+ * unmutes at 0x31, so failing that write fails the TX half and arms the rollback.
+ */
+ZTEST(es8311, test_txrx_start_failure_does_not_stop_preexisting_rx)
+{
+	/* The fixture leaves the output STARTED, and a started TX takes the idempotent path. */
+	audio_codec_stop_output(codec);
+
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, 0x00U,
+		      "precondition: the microphone is open");
+
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	zassert_true(audio_codec_start(codec, AUDIO_DAI_DIR_TXRX) < 0,
+		     "the injected TX failure must surface");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, 0x00U,
+		      "the rollback stopped an RX stream this call did not open");
+}
+
+ZTEST(es8311, test_txrx_start_failure_rolls_back_rx_opened_by_this_call)
+{
+	/* The fixture leaves the output STARTED, and a started TX takes the idempotent path. */
+	audio_codec_stop_output(codec);
+
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "precondition: the fixture leaves the microphone stopped");
+
+	emul_es8311_fail_write_to(emul, ES8311_REG_DAC_MUTE);
+	zassert_true(audio_codec_start(codec, AUDIO_DAI_DIR_TXRX) < 0,
+		     "the injected TX failure must surface");
+	emul_es8311_fail_write_to(emul, -1);
+
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "a failed TXRX start left the microphone this call opened running");
 }
 
 ZTEST_SUITE(es8311, NULL, NULL, es8311_before, NULL, NULL);
