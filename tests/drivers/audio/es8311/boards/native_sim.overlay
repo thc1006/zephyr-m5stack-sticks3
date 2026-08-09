@@ -97,6 +97,6 @@
 		reg = <0x1f>;
 		status = "okay";
 		everest,mono-dac-source = "right";
-		everest,mic-pga-gain-db = <0>;
+		everest,mic-pga-gain-db = <30>;
 	};
 };

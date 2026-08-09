@@ -60,21 +60,20 @@ description: |
 
   Two board-policy choices are devicetree properties (defined below), because they are the
   ones most likely to differ between boards and to be met as silence or as clipping. Mainline
-  Linux exposes each as a control, and both Espressif reference drivers hard-code the values
-  this driver takes as defaults:
+  Linux exposes each as a control, and both Espressif reference drivers hard-code them:
 
-    everest,mic-pga-gain-db  analog PGA gain, 0..30 dB in 3 dB steps (0x14 [3:0]); default 30
+    everest,mic-pga-gain-db  analog PGA gain, 0..30 dB in 3 dB steps (0x14 [3:0]); default 0
     everest,mono-dac-source  which I2S slot the mono DAC plays (0x09 bit 7); default left
 
   The mono DAC source is the one most easily met as silence: the ES8311 has a single DAC, 0x09
   bit 7 chooses which half of the stereo frame it plays, and a board that puts its samples in the
   other slot hears nothing with every register reading back as intended.
 
-  Capture gain stacks, and the total is worth knowing before choosing the PGA value. The driver
-  also writes a fixed ADC scale of +24 dB (0x16 ADC_SCALE), which is not a devicetree property,
-  so the default PGA of 30 dB puts 54 dB of gain ahead of the digital volume control. A board
-  with a hotter microphone than the one these defaults were tuned against should lower
-  everest,mic-pga-gain-db: no amount of digital attenuation recovers a front end that clipped.
+  Capture gain stacks, and the total is worth knowing before raising the PGA. The driver also
+  writes 0x16 ADC_SCALE as +24 dB, which is that register's own reset value, so a board on the
+  0 dB PGA default still has 24 dB of digital gain ahead of INPUT_VOLUME. The PGA is the one
+  that matters: it sits in FRONT of the ADC, and no amount of digital attenuation recovers a
+  front end that clipped. Raise it deliberately, per board.
 
   Three choices remain compiled in:
 
@@ -83,7 +82,9 @@ description: |
                    microphone (the mux has two states, disabled or MIC1P-MIC1N, and Linux models
                    it the same way). 0x14 bit 6 selects a DIGITAL microphone on MIC1P instead;
                    that is a different input this driver does not support at all.
-    ADC scale      +24 dB (0x16), a digital gain that could become a property in a follow-up.
+    ADC scale      +24 dB (0x16), which is the register's reset value; the driver writes it
+                   whole so that ADC_SYNC (bit 5, clear at reset) is set for a standard audio
+                   clock. It could become a property in a follow-up.
     output mode    headphone, 0x13 HPSW set. The part also has a line-out mode, and this
                    version does not expose it: every measurement behind either value was taken
                    through a board power amplifier, which cannot tell the two apart at the
@@ -159,12 +160,13 @@ properties:
   everest,mic-pga-gain-db:
     type: int
     enum: [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
-    default: 30
+    default: 0
     description: |
-      Analog microphone PGA gain in dB, 0x14 bits [3:0] (3 dB per step, 0-30 dB). The default
-      is the 30 dB maximum both Espressif reference drivers use; a hot microphone that clips the
-      ADC needs this lowered, because the digital INPUT_VOLUME downstream cannot undo analog
-      clipping.
+      Analog microphone PGA gain in dB, 0x14 bits [3:0] (3 dB per step, 0-30 dB). The default is
+      0 dB, which is also this field's reset value: the gain is ahead of the ADC, clipping there
+      cannot be undone by the digital INPUT_VOLUME downstream, so a board asks for it
+      explicitly. Both Espressif reference drivers hard-code the 30 dB maximum, which suits a
+      quiet analog MEMS microphone and will clip a hotter one.
 
 # The power properties are BLOCKED, not merely unimplemented.
 #

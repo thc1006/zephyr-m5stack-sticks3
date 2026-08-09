@@ -216,6 +216,13 @@
 		reg = <0x18>;
 		status = "okay";
 		zephyr,deferred-init;
+		/*
+		 * The on-board analog MEMS microphone is quiet enough to want the
+		 * PGA maximum. The driver defaults to 0 dB because that gain is
+		 * ahead of the ADC and clipping there is unrecoverable, so this
+		 * board asks for it explicitly. Measured in HW-016d.
+		 */
+		everest,mic-pga-gain-db = <30>;
 	};
 
 	/*

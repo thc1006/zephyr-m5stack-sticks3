@@ -370,8 +370,8 @@ ZTEST(es8311, test_configure_capture_sequence)
 		      "0x0A should be 0x0C with the mute bit set");
 	/* ADC power up. */
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "0x0E should be 0x02");
-	/* Differential MIC1 pair (LINSEL = 1) at the 30 dB PGA maximum. */
-	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU, "0x14 should be 0x1A");
+	/* Differential MIC1 pair (LINSEL = 1) at the 0 dB PGA default. */
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x10U, "0x14 should be 0x10");
 	/* ADC volume ramp rate. */
 	zassert_equal(reg_get(ES8311_REG_ADC_RAMP), 0x40U, "0x15 should be 0x40");
 	/* ADC digital scale. */
@@ -435,7 +435,7 @@ ZTEST(es8311, test_route_transition_drops_the_microphone)
 	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure(PLAYBACK_CAPTURE) failed");
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_0E), 0x02U, "the ADC should be up here");
-	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU, "the mic should be on the mux here");
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x10U, "the mic should be on the mux here");
 
 	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure(PLAYBACK) failed");
@@ -1874,7 +1874,7 @@ static void walk_every_failure_into(audio_route_t target, const char *name)
 		audio_codec_start_output(codec);
 		zassert_equal(reg_get(ES8311_REG_DAC_MUTE), ES8311_DAC_MUTE_OFF,
 			      "setup: the DAC must be live before we break anything");
-		zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU,
+		zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x10U,
 			      "setup: MIC1 must be on the PGA mux before we break anything");
 
 		/* Break transfer n of the switch to the target route. */
@@ -2693,17 +2693,17 @@ ZTEST(es8311, test_board_policy_devicetree_properties)
 
 	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 
-	/* Defaults on the main node: left slot, 30 dB PGA (MIC1 differential). */
+	/* Defaults on the main node: left slot, 0 dB PGA (MIC1 differential). */
 	emul_es8311_reset(emul);
 	zassert_ok(audio_codec_configure(codec, &cfg), "default configure must pass");
 	zassert_equal(reg_get(ES8311_REG_SDP_IN) & 0x80U, 0x00U,
 		      "default everest,mono-dac-source is the LEFT slot (SDP_IN_SEL clear)");
-	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU,
-		      "default everest,mic-pga-gain-db is 30 dB (0x14 = MIC1 diff | code 0x0A)");
+	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x10U,
+		      "default everest,mic-pga-gain-db is 0 dB (0x14 = MIC1 differential only)");
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_13), 0x10U,
 		      "the output mode is compiled in as headphone (0x13 HPSW set)");
 
-	/* The configured node: right slot, 0 dB PGA. */
+	/* The configured node: right slot, 30 dB PGA. */
 	zassert_true(device_is_ready(codec_profile), "the profile codec must be ready");
 	zassert_ok(audio_codec_configure(codec_profile, &cfg), "profile configure must pass");
 
@@ -2711,7 +2711,7 @@ ZTEST(es8311, test_board_policy_devicetree_properties)
 	zassert_equal(v & 0x80U, 0x80U, "mono-dac-source=right must set SDP_IN_SEL (0x09 bit 7)");
 	zassert_ok(i2c_reg_read_byte_dt(&es_profile, ES8311_REG_ADC_PGA, &v),
 		   "read ADC_PGA failed");
-	zassert_equal(v, 0x10U, "mic-pga-gain-db=0 must be MIC1 differential | 0 dB (0x14 = 0x10)");
+	zassert_equal(v, 0x1AU, "mic-pga-gain-db=30 must be MIC1 differential | 30 dB (0x14 = 0x1A)");
 }
 
 /*
