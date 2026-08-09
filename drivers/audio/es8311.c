@@ -169,21 +169,43 @@ LOG_MODULE_REGISTER(es8311);
  * The internal master clock is BCLK scaled by DIV_PRE and MULT_PRE (0x02). A
  * standard 16-bit stereo frame carries 32 bit clocks, so BCLK is 32 * Fs, and
  * with DIV_PRE = 1 and MULT_PRE = x8 the internal master clock lands on
- * 256 * Fs. Every divider below is a ratio of that clock, never an absolute
- * frequency, so the same values are correct at every sample rate that preserves
- * the 256fs relationship. Only a 16-bit word does; 24-bit and 32-bit frames
- * carry 48 and 64 bit clocks, which would give 384fs and 512fs, and are
+ * 256 * Fs. The dividers below are ratios of that clock, never absolute
+ * frequencies, so the same values are correct at every sample rate that
+ * preserves the 256fs relationship. Only a 16-bit word does; 24-bit and 32-bit
+ * frames carry 48 and 64 bit clocks, which would give 384fs and 512fs, and are
  * rejected in es8311_configure().
  *
- * The user guide requires the ratio of the internal ADC (and DAC) clock to LRCK
- * to be at least 256 and an integral multiple of 16 in single-speed mode. With
- * DIV_CLKADC = DIV_CLKDAC = 1 the ratio is exactly 256 = 16 * 16, and the
- * oversampling rates follow as ratio / 16 = 16.
+ * The oversampling registers are the exception, and the distinction is
+ * load-bearing. Datasheet revision 8.0 defines 0x03 as ADC_FSMODE plus ADC_OSR
+ * (bits 5:0) and 0x04 as DAC_OSR (bits 6:0), each encoding a field value N as
+ * an oversampling rate of 4N * fs: 0x10 is 64 * fs and 0x20 is 128 * fs. Those
+ * are multiples of the sample rate, not divisions of the master clock, so the
+ * ratiometric argument above says nothing about them, and a fixed 256fs clock
+ * tree does not on its own make one value right at every rate.
+ *
+ * ADC_OSR is rate-independent all the same, and the reference tables show it:
+ * every single-speed row of the Everest coefficient table carries adc_osr 0x10.
+ *
+ * DAC_OSR is not. The vendor's reference coefficient table originally used
+ * 64 * fs at every rate, and was changed to 128 * fs for 8000, 11025, 12000 and
+ * 16000 Hz specifically to fix audible noise at those rates. That change was
+ * made against a clock tree pinned at 256 * Fs, the same one this driver
+ * builds, so it applies here rather than being an artefact of some other
+ * clocking. Not every implementation took it: one still ships 64 * fs at the
+ * low rates from a copy of the table that predates the fix, and the Linux
+ * driver sidesteps the question by never writing 0x03 or 0x04 at all, leaving
+ * both at their reset default. This driver follows the corrected table. The
+ * provenance is in the pull request rather than here, since it names a specific
+ * vendor project and this driver is not tied to one.
  */
 #define ES8311_CLK_PRE_DIV1_MULT8 0x18U /* 0x02: DIV_PRE = 1, MULT_PRE = x8 */
-#define ES8311_ADC_OSR_SINGLE_16  0x10U /* 0x03: single speed, ADC_OSR = 16 */
-#define ES8311_DAC_OSR_16         0x10U /* 0x04: DAC_OSR = 16 */
+#define ES8311_ADC_OSR_SINGLE_16  0x10U /* 0x03: single speed, ADC_OSR = 64 * fs */
+#define ES8311_DAC_OSR_64FS       0x10U /* 0x04: DAC_OSR = 64 * fs */
+#define ES8311_DAC_OSR_128FS      0x20U /* 0x04: DAC_OSR = 128 * fs, <= 16 kHz */
 #define ES8311_CLK_DIV_ADC1_DAC1  0x00U /* 0x05: DIV_CLKADC = 1, DIV_CLKDAC = 1 */
+
+/* Above this rate the vendor table uses 64 * fs; at or below it, 128 * fs. */
+#define ES8311_DAC_OSR_128FS_MAX_RATE 16000U
 
 /*
  * 0x06 / 0x07 / 0x08 hold the BCLK and LRCK dividers, which the user guide says
@@ -543,6 +565,7 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	uint32_t rate;
 	uint8_t clk_mgr;
 	uint8_t analog;
+	uint8_t dac_osr;
 	uint8_t sdp_in;
 	uint8_t sdp_out;
 	bool playback = false;
@@ -723,6 +746,15 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		analog = ES8311_ANALOG_CAPTURE;
 	}
 
+	/*
+	 * The only register in the clock tree that follows the sample rate rather than
+	 * the 256fs ratio. See the DAC_OSR discussion above the register definitions:
+	 * the vendor moved these four rates to 128 * fs to fix audible noise, in this
+	 * same clock tree.
+	 */
+	dac_osr = (rate <= ES8311_DAC_OSR_128FS_MAX_RATE) ? ES8311_DAC_OSR_128FS
+							  : ES8311_DAC_OSR_64FS;
+
 	sdp_in = ES8311_SDP_I2S_16BIT | dcfg->sdp_in_sel | (playback ? 0U : ES8311_SDP_MUTE);
 	sdp_out = ES8311_SDP_I2S_16BIT | ((capture && !data->adc_mute) ? 0U : ES8311_SDP_MUTE);
 
@@ -817,7 +849,7 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	if (ret < 0) {
 		goto end;
 	}
-	ret = es8311_reg_write(dev, ES8311_REG_DAC_OSR, ES8311_DAC_OSR_16);
+	ret = es8311_reg_write(dev, ES8311_REG_DAC_OSR, dac_osr);
 	if (ret < 0) {
 		goto end;
 	}

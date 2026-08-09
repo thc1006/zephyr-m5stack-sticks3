@@ -486,8 +486,18 @@ ZTEST(es8311, test_apply_properties_respects_the_route)
 /*
  * The clock tree is ratiometric: the master clock is 8 * BCLK, and a 16-bit
  * stereo frame carries 32 bit clocks, so the master clock is 256 * Fs at every
- * supported rate. That means one register set must serve them all. Configure at
- * each supported rate and assert the clock registers are identical every time.
+ * supported rate. Every DIVIDER therefore takes one value at every rate.
+ *
+ * DAC_OSR is not a divider, and this test used to assert it was. 0x04 holds an
+ * oversampling rate in multiples of fs (datasheet rev 8.0: field N means 4N * fs),
+ * so the ratiometric argument never covered it, and asserting one value at every
+ * rate was encoding a claim the datasheet does not support. The driver now follows
+ * the vendor table, which uses 128 * fs at and below 16 kHz and 64 * fs above it.
+ *
+ * ADC_OSR, in the neighbouring register, really is rate-independent: every
+ * single-speed row of the vendor coefficient table carries adc_osr 0x10. So the
+ * two are asserted differently on purpose, and a regression that made 0x04
+ * constant again would fail here.
  */
 ZTEST(es8311, test_configure_all_supported_rates)
 {
@@ -513,7 +523,8 @@ ZTEST(es8311, test_configure_all_supported_rates)
 		zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xB5U, "0x01 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x18U, "0x02 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_ADC_OSR), 0x10U, "0x03 at %u Hz", rate);
-		zassert_equal(reg_get(ES8311_REG_DAC_OSR), 0x10U, "0x04 at %u Hz", rate);
+		zassert_equal(reg_get(ES8311_REG_DAC_OSR), rate <= 16000U ? 0x20U : 0x10U,
+			      "0x04 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_CLK_DIV), 0x00U, "0x05 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_CLK_BCLK), 0x03U, "0x06 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_CLK_LRCK_H), 0x00U, "0x07 at %u Hz", rate);

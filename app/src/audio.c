@@ -1151,15 +1151,20 @@ static const uint32_t sweep_rates[] = {
 	8000U, 11025U, 12000U, 16000U, 22050U, 24000U, 32000U, 44100U, 48000U,
 };
 
-/* Clock and format registers the driver must write, identical at every rate. */
+/*
+ * Clock and format registers the driver must write, identical at every rate.
+ *
+ * 0x04 is deliberately absent: it is the one clock-tree register that follows the
+ * sample rate rather than the 256fs ratio, and it is checked separately below so
+ * this table keeps meaning what its name says.
+ */
 static const struct {
 	uint8_t reg;
 	uint8_t val;
 } sweep_expect[] = {
 	{0x01U, 0xBFU}, /* clock manager: master clock taken from BCLK */
 	{0x02U, 0x18U}, /* DIV_PRE = 1, MULT_PRE = x8 */
-	{0x03U, 0x10U}, /* single speed, ADC_OSR = 16 */
-	{0x04U, 0x10U}, /* DAC_OSR = 16 */
+	{0x03U, 0x10U}, /* single speed, ADC_OSR = 64 * fs at every rate */
 	{0x05U, 0x00U}, /* DIV_CLKADC = 1, DIV_CLKDAC = 1 */
 	{0x06U, 0x03U}, /* BCLK_CON clear: the codec stays the clock slave */
 	{0x07U, 0x00U},
@@ -1187,12 +1192,21 @@ static int16_t sweep_rx[BLOCK_FRAMES * AUDIO_CHANNELS];
 static int16_t sweep_mono[BLOCK_FRAMES];
 
 /* One full-duplex block: keep TX fed, take one RX block. */
-static int sweep_io(size_t *frames)
+/*
+ * A block of digital silence, for the DAC-noise measurement. Playing zeros with the
+ * amplifier ON is the only phase of this sweep that isolates what the DAC itself
+ * puts on the pin: the amp-off baseline measures the ADC path, and the tone measures
+ * neither. That distinction is what makes a DAC_OSR comparison possible at all --
+ * the vendor's low-rate fix is about noise, so a tone level cannot see it.
+ */
+static const int16_t sweep_silence[BLOCK_FRAMES * AUDIO_CHANNELS];
+
+static int sweep_io_tx(const void *tx, size_t *frames)
 {
 	size_t sz = sizeof(sweep_rx);
 	int ret;
 
-	ret = i2s_buf_write(i2s_dev, tone_block, BLOCK_SIZE);
+	ret = i2s_buf_write(i2s_dev, (void *)tx, BLOCK_SIZE);
 	if (ret < 0) {
 		return ret;
 	}
@@ -1219,6 +1233,11 @@ static int sweep_io(size_t *frames)
 	audio_deinterleave(sweep_rx, *frames, AUDIO_MIC_SLOT, sweep_mono);
 
 	return 0;
+}
+
+static int sweep_io(size_t *frames)
+{
+	return sweep_io_tx(tone_block, frames);
 }
 
 /*
@@ -1333,6 +1352,23 @@ static int sweep_one(uint32_t rate)
 		if (ret < 0 || v != sweep_expect[i].val) {
 			printk("SWEEP %-6u  reg 0x%02x = 0x%02x (want 0x%02x) ret=%d\n", rate,
 			       sweep_expect[i].reg, v, sweep_expect[i].val, ret);
+			regs_bad++;
+		}
+	}
+
+	/*
+	 * 0x04 follows the rate. The vendor moved 8/11.025/12/16 kHz to 128 * fs to fix
+	 * audible low-rate noise (esp-adf 13c3bcff65) in this same 256fs clock tree, so
+	 * this is the one register whose expected value is not constant across the sweep.
+	 */
+	{
+		uint8_t want = (rate <= 16000U) ? 0x20U : 0x10U;
+		uint8_t v = 0U;
+
+		ret = i2c_reg_read_byte_dt(&codec_i2c, 0x04U, &v);
+		if (ret < 0 || v != want) {
+			printk("SWEEP %-6u  reg 0x04 = 0x%02x (want 0x%02x) ret=%d\n", rate, v,
+			       want, ret);
 			regs_bad++;
 		}
 	}
@@ -1461,6 +1497,49 @@ static int sweep_one(uint32_t rate)
 			printk("SWEEP %-6u FAIL settle i/o=%d (block %u)\n", rate, ret, b);
 			goto stop;
 		}
+	}
+
+	/*
+	 * DAC noise floor: amplifier ON, DAC unmuted, digital silence on the wire.
+	 *
+	 * This is the only phase that can see a DAC_OSR difference. The amp-off baseline
+	 * above measures the ADC path, and the tone below measures a level, not a noise
+	 * floor; the vendor's low-rate DAC_OSR change (esp-adf 13c3bcff65) was made to fix
+	 * audible NOISE, so neither of the other two phases could ever have tested it.
+	 * Reported, not asserted -- it also contains amplifier and room noise, and this
+	 * microphone couples weakly, so it is a comparison between two builds on one board
+	 * rather than an absolute figure.
+	 *
+	 * The first blocks are discarded because the tone above is still in the DMA
+	 * pipeline and in the amplifier's own settling.
+	 */
+	{
+		uint32_t acc = 0U;
+		uint16_t worst = 0U;
+		uint32_t measured = 0U;
+
+		for (uint32_t b = 0U; b < SWEEP_WARMUP_BLOCKS + SWEEP_BASELINE_BLOCKS; b++) {
+			ret = sweep_io_tx(sweep_silence, &frames);
+			if (ret < 0) {
+				printk("SWEEP %-6u FAIL dacfloor i/o=%d (block %u)\n", rate, ret,
+				       b);
+				goto stop;
+			}
+
+			if (b >= SWEEP_WARMUP_BLOCKS) {
+				uint16_t rms = audio_rms_i16(sweep_mono, frames);
+				uint16_t peak = audio_peak_i16(sweep_mono, frames);
+
+				acc += rms;
+				measured++;
+				if (peak > worst) {
+					worst = peak;
+				}
+			}
+		}
+
+		printk("SWEEP %-6u  dacfloor rms=%-5u peak=%-5u (silence, amp on, %u blocks)\n",
+		       rate, measured ? (unsigned int)(acc / measured) : 0U, worst, measured);
 	}
 
 	/*
