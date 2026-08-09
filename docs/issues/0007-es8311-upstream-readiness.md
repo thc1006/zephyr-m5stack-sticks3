@@ -73,8 +73,8 @@ Two things to watch while the PR is open:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **79/79** (was 11,
-  then 29, 33, 42, 47, 51, 52, 54, 59, 60, 61, 62, 65, 67, 68, 69, 72). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **78/78** (was 11,
+  then 29, 33, 42, 47, 51, 52, 54, 59, 60, 61, 62, 65, 67, 68, 69, 72, 79). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
   other codec in `drivers/audio` is at zero. The emulator's test hooks are declared in a
   header (`drivers/audio/emul_es8311.h`, beside the emulator so it resolves whatever the
   build's include path is) that both the emulator and the test include, so the two cannot
@@ -87,10 +87,9 @@ Two things to watch while the PR is open:
   - Four seed a **dirty** register file before `configure()` — the one input the first
     twenty-nine never varied. They all started from an all-zero emulator, so they could not
     see any defect that only appears on a chip the driver did not reset.
-  - One recovers a part whose register file is **held by `INI_REG`**. The emulator could not
-    model that state at all, so the test named after the property could only assert that
-    `0xFA` was the first write — which was true, and did not stop `init()` from bailing out
-    on the chip-id read before it got there.
+  - Two bound what the driver does with **`INI_REG`**: `configure()` never writes `0xFA`, and
+    a part that cannot identify itself receives no register write at all. The behavioural
+    hold model earlier tests assumed is retracted — see `docs/15_ES8311_NO_RESET_DESIGN.md`.
   - Two prove the **mute still fires on a bus whose reads fail** but whose writes land.
   - Two assert the **route- and state-aware commit order**: the write that opens a converter
     (the speaker's DAC unmute, the microphone's serial-port unmute) is the *last* one on its

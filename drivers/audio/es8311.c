@@ -77,8 +77,8 @@ LOG_MODULE_REGISTER(es8311);
 /*
  * 0x00: CSM_ON. RST_DIG is "reset digital EXCEPT control port block", and the
  * registers live in that block, so no value of 0x00 resets the register file. The
- * only thing that does is 0xFA bit 0, which is not usable as one; see
- * ES8311_INI_RELEASE. Hence es8311_known_state[] below.
+ * one bit that does is 0xFA bit 0, and this driver does not use it as a reset: it
+ * programs the registers it depends on instead. Hence es8311_known_state[] below.
  */
 #define ES8311_RESET_CSM_ON 0x80U
 
@@ -101,12 +101,10 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_DRC_LVL_DEF   0x00U /* 0x35 */
 
 /*
- * 0xFA bit 0, INI_REG: "reset registers to default except itself". A level, not a
- * pulse: while set, every write is discarded and every read returns 0x00, and the
- * vendor Linux driver asserts it at shutdown, so a part can be handed over in that
- * state. Clearing it is therefore the first register write here. A held part also
- * reads 0x00 as its identity, so es8311_check_id() treats 0x0000 as a symptom and
- * releases 0xFA before giving up.
+ * 0xFA bit 0, INI_REG: "reset registers to default except itself". A shipping vendor
+ * driver asserts it in its shutdown handler and never clears it, so a part can be
+ * handed over with its register file sitting at the defaults. init() clears it once,
+ * after the identity check.
  */
 #define ES8311_INI_RELEASE 0x00U
 
@@ -594,20 +592,6 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	sdp_in = ES8311_SDP_I2S_16BIT | dcfg->sdp_in_sel | (playback ? 0U : ES8311_SDP_MUTE);
 
 	/*
-	 * FIRST, unhold the register file.
-	 *
-	 * If 0xFA bit 0 is set -- and a previous firmware may well have left it set; the
-	 * vendor Linux driver does so deliberately at shutdown -- then every write below
-	 * this line is silently discarded and every read returns 0x00, while this function
-	 * returns 0. Nothing else can be done until it is cleared, so nothing else is
-	 * attempted first.
-	 */
-	ret = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
-	if (ret < 0) {
-		goto end;
-	}
-
-	/*
 	 * Mute before reclocking. The clock manager below gates the clocks of whichever
 	 * converter the new route drops, and gating the clock of a DAC that is still
 	 * powered and unmuted freezes its modulator on the last sample, a DC step into
@@ -851,11 +835,9 @@ end:
 	if (ret < 0) {
 		/*
 		 * Attempted, not guaranteed, and the log says so. es8311_quiesce() returning 0
-		 * means every write was ACKed, not that it landed: if this configure() failed on
-		 * its 0xFA release, the part may still be holding its register file down, in which
-		 * case every quiesce write is ACKed and silently discarded. Without a read-back --
-		 * which on that same failing bus may not work either -- "quiesced" cannot be
-		 * claimed, only "quiesce attempted".
+		 * means every write was ACKed, not that it landed. Without a read-back -- which
+		 * on that same failing bus may not work either -- "quiesced" cannot be claimed,
+		 * only "quiesce attempted".
 		 */
 		(void)es8311_quiesce(dev);
 		LOG_ERR("configure() I2C error: %d. A best-effort quiesce was attempted.", ret);
@@ -1297,16 +1279,7 @@ static int es8311_read_id(const struct device *dev, uint8_t *id1, uint8_t *id2)
 	return 0;
 }
 
-/*
- * Identify the part, and recover one that cannot currently identify itself.
- *
- * This "check" writes a register because it has to: a part holding INI_REG (0xFA
- * bit 0) answers 0x00 to every read including the chip id, and the vendor Linux
- * driver asserts that bit at shutdown, so it is a state parts are routinely handed
- * over in. Reading 0x0000 and returning -ENODEV would leave such a part
- * unrecoverable across every reboot, so 0x0000 is treated as a symptom and the
- * release is attempted exactly once. A part that answers 0x0000 twice is rejected.
- */
+/* Identify the part. Reads only: nothing is written to a device not yet known to be one. */
 static int es8311_check_id(const struct device *dev)
 {
 	uint8_t id1 = 0U;
@@ -1316,22 +1289,6 @@ static int es8311_check_id(const struct device *dev)
 	ret = es8311_read_id(dev, &id1, &id2);
 	if (ret < 0) {
 		return ret;
-	}
-
-	if (id1 == 0x00U && id2 == 0x00U) {
-		LOG_WRN("chip id reads 0x0000: the register file may be held by INI_REG. "
-			"Releasing 0xFA and re-reading.");
-
-		ret = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
-		if (ret < 0) {
-			LOG_ERR("Failed to release the register file (%d)", ret);
-			return ret;
-		}
-
-		ret = es8311_read_id(dev, &id1, &id2);
-		if (ret < 0) {
-			return ret;
-		}
 	}
 
 	/*
@@ -1385,8 +1342,7 @@ static int es8311_init(const struct device *dev)
 	 * really at an address the devicetree only claims is an ES8311; doing nothing to a part
 	 * that cannot identify itself is the smaller failure. So the safety claims in this file
 	 * are scoped: once the part has said it is an ES8311, init() leaves it as safe as the bus
-	 * allows; before that, it does not touch it. (The one 0xFA write inside es8311_check_id()
-	 * is bounded to a single register and argued for there.)
+	 * allows; before that, it does not touch it.
 	 */
 	ret = es8311_check_id(dev);
 	if (ret < 0) {
@@ -1396,24 +1352,24 @@ static int es8311_init(const struct device *dev)
 	/*
 	 * The part has no reset pin, so a warm reboot leaves a DAC frozen on its last
 	 * sample and a microphone live. Recovery, not prevention: nothing runs between
-	 * the SoC reset and here. The 0xFA write does not veto the quiesce, because
-	 * check_id() already read 0x8311 back.
+	 * the SoC reset and here. INI_REG is released first, because the quiesce writes
+	 * below are the ones that have to land.
 	 */
 	int normalize_err = es8311_reg_write(dev, ES8311_REG_INI, ES8311_INI_RELEASE);
 	int quiesce_err;
 
 	if (normalize_err < 0) {
-		LOG_ERR("Failed to normalise 0xFA (%d). Quiescing anyway: INI_REG is already "
-			"known to be clear, because the chip id read back.",
+		LOG_ERR("Failed to release INI_REG (%d). Quiescing anyway: the safety writes are "
+			"worth attempting either way.",
 			normalize_err);
 	}
 
 	/*
-	 * Runs regardless of the 0xFA result, and its own errors are reported SEPARATELY. The
+	 * Runs regardless of the INI_REG result, and its own errors are reported SEPARATELY. The
 	 * two failures are not the same thing and must not be logged as if they were: a failed
-	 * 0xFA normalisation with a fully successful quiesce is a safe part with one dirty
-	 * housekeeping bit, and printing "failed to quiesce" over it would send whoever is
-	 * debugging in exactly the wrong direction.
+	 * release with a fully successful quiesce is a safe part with one dirty housekeeping
+	 * bit, and printing "failed to quiesce" over it would send whoever is debugging in
+	 * exactly the wrong direction.
 	 */
 	quiesce_err = es8311_quiesce(dev);
 	if (quiesce_err < 0) {

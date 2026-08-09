@@ -40,8 +40,6 @@ LOG_MODULE_REGISTER(emul_es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
 
 #define ES8311_REG_RESET    0x00U
 #define ES8311_RESET_BITS   0x1FU /* the digital/CMG/master/ADC/DAC resets */
-#define ES8311_REG_INI      0xFAU
-#define ES8311_INI_HOLD     0x01U /* INI_REG: a LEVEL, not a pulse */
 #define ES8311_REG_CHIP_ID1 0xFDU
 #define ES8311_REG_CHIP_ID2 0xFEU
 #define ES8311_CHIP_ID1     0x83U
@@ -114,37 +112,9 @@ struct es8311_emul_data {
 	bool pause_armed;
 };
 
-/*
- * Is the part currently holding its register file down? Derived from the register itself
- * rather than a separate flag, so that a driver clearing 0xFA releases it exactly the way
- * the silicon does, and a driver that sets it bricks itself exactly the way ours once did.
- */
-static inline bool es8311_emul_held(const struct es8311_emul_data *data)
-{
-	return (data->regs[ES8311_REG_INI] & ES8311_INI_HOLD) != 0U;
-}
-
 static int es8311_emul_init(const struct emul *target, const struct device *parent);
 
 /* Test backend hooks (declared extern in the test). */
-
-/*
- * Seed the part into the state a previous firmware can leave it in: INI_REG asserted, the
- * register file held at its defaults, every read returning 0x00. The vendor Linux driver
- * does this deliberately at shutdown. A driver that probes such a chip reads 0x00 for both
- * chip-id registers, and if it treats that as "not an ES8311" and gives up, the chip is
- * unrecoverable.
- */
-void emul_es8311_set_ini_hold(const struct emul *target, bool hold)
-{
-	struct es8311_emul_data *data = target->data;
-
-	if (hold) {
-		data->regs[ES8311_REG_INI] |= ES8311_INI_HOLD;
-	} else {
-		data->regs[ES8311_REG_INI] &= (uint8_t)~ES8311_INI_HOLD;
-	}
-}
 
 /*
  * Break every READ and let every WRITE through, until disarmed.
@@ -367,25 +337,12 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 		data->wcount++;
 
 		/*
-		 * INI_REG (0xFA bit 0) is a LEVEL, not a pulse. While it is set, the part
-		 * holds the register file down: every write to any OTHER register is
-		 * silently discarded and every read returns 0x00, while the I2C transfer
-		 * itself still ACKs. The one register that remains writable is 0xFA itself,
-		 * which is the only way out -- and a driver that never writes it can be
-		 * handed a chip it cannot recover.
-		 *
 		 * The write is logged above either way, because the log is a record of what
 		 * the driver attempted, not of what the chip accepted.
 		 */
 		if (data->fail_write_reg >= 0 && m->buf[0] == (uint8_t)data->fail_write_reg) {
 			LOG_DBG("W reg=0x%02x FAILED (injected)", m->buf[0]);
 			return -EIO;
-		}
-
-		if (es8311_emul_held(data) && m->buf[0] != ES8311_REG_INI) {
-			LOG_DBG("W reg=0x%02x val=0x%02x DISCARDED (INI_REG held)", m->buf[0],
-				m->buf[1]);
-			return 0;
 		}
 
 		data->regs[m->buf[0]] = m->buf[1];
@@ -418,8 +375,7 @@ static int es8311_emul_transfer(const struct emul *target, struct i2c_msg *msgs,
 
 		reg = w->buf[0];
 		for (uint32_t i = 0; i < r->len; i++) {
-			/* Held: every read returns 0x00, chip-id registers included. */
-			r->buf[i] = es8311_emul_held(data) ? 0x00U : data->regs[(uint8_t)(reg + i)];
+			r->buf[i] = data->regs[(uint8_t)(reg + i)];
 		}
 		return 0;
 	}

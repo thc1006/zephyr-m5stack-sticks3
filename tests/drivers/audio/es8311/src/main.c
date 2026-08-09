@@ -24,11 +24,6 @@ static const struct emul *const emul = EMUL_DT_GET(CODEC_NODE);
  * touched it: device_init() returns -EALREADY on an already-initialised device, so the
  * instance above cannot be re-probed.
  */
-#define HELD_NODE DT_NODELABEL(codec_held)
-static const struct device *const codec_held = DEVICE_DT_GET(HELD_NODE);
-static const struct i2c_dt_spec es_held = I2C_DT_SPEC_GET(HELD_NODE);
-static const struct emul *const emul_held = EMUL_DT_GET(HELD_NODE);
-
 #define QUIESCE_NODE DT_NODELABEL(codec_quiesce)
 static const struct device *const codec_quiesce = DEVICE_DT_GET(QUIESCE_NODE);
 static const struct i2c_dt_spec es_quiesce = I2C_DT_SPEC_GET(QUIESCE_NODE);
@@ -208,19 +203,20 @@ ZTEST(es8311, test_init_wrong_chip_id_is_fatal)
 	 * writing it left the shared instance un-ready for every test after this one whenever
 	 * the restore was missed.
 	 *
-	 * 0x0000 is deliberately the identity used. It is also the signature of a part whose
-	 * register file is held by INI_REG, so check_id() releases 0xFA and reads again --
-	 * which makes this a test that the recovery path has not become a way of ACCEPTING a
-	 * foreign device. It answers 0x0000 twice, and it is still rejected.
+	 * 0x0000 is deliberately the identity used: it is what a pulled-down bus answers, and
+	 * the reading a driver is most tempted to treat as a recoverable symptom rather than a
+	 * rejection. It is rejected, and nothing at all is written to it.
 	 */
 	zassert_false(device_is_ready(codec_foreign), "the deferred instance must not be up yet");
 
 	emul_es8311_set_chip_id(emul_foreign, 0x00U, 0x00U);
+	emul_es8311_reset_log(emul_foreign);
 
 	zassert_equal(device_init(codec_foreign), -ENODEV,
-		      "init() must reject a part that cannot identify itself as an ES8311, "
-		      "even after the INI_REG recovery attempt");
+		      "init() must reject a part that cannot identify itself as an ES8311");
 	zassert_false(device_is_ready(codec_foreign), "a foreign part must not be left ready");
+	zassert_equal(emul_es8311_write_count(emul_foreign), 0,
+		      "an unidentified device must not receive a single register write");
 }
 
 /*
@@ -1403,28 +1399,24 @@ ZTEST(es8311, test_playback_only_still_clears_adc2dac_sel)
 		      "a playback-only route left ADC2DAC_SEL set: the speaker plays the mic");
 }
 
-ZTEST(es8311, test_ini_reg_is_released_before_anything_else)
+/*
+ * INI_REG is released once, by init(), after the identity check. configure() must not touch
+ * it: the only published description of the bit is "reset registers to default except
+ * itself", and writing it on every reconfigure asserts more about it than that.
+ */
+ZTEST(es8311, test_configure_never_touches_the_ini_register)
 {
 	struct audio_codec_cfg cfg;
 
-	/*
-	 * 0xFA bit 0 is a LEVEL, not a pulse: while it is set the register file is held at
-	 * its defaults, every write is silently discarded, and every read returns 0x00.
-	 * The vendor Linux driver sets it at shutdown ON PURPOSE, to hold the file down
-	 * across a reboot. A driver that does not clear it can be handed a chip it cannot
-	 * recover -- and cannot even tell it has been, because configure() still returns 0.
-	 *
-	 * So it has to be the FIRST write, before the mutes: on a held chip every write
-	 * after it would go nowhere.
-	 */
 	emul_es8311_reset_log(emul);
 
 	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 	zassert_ok(audio_codec_configure(codec, &cfg), "configure() failed");
 
-	zassert_equal(emul_es8311_write_at(emul, 0), ES8311_REG_INI,
-		      "0xFA must be the first write: on a held chip nothing after it lands");
-	zassert_equal(reg_get(ES8311_REG_INI), 0x00U, "0xFA bit 0 left set");
+	for (int i = 0; i < emul_es8311_write_count(emul); i++) {
+		zassert_not_equal(emul_es8311_write_at(emul, i), ES8311_REG_INI,
+				  "configure() wrote 0xFA at index %d", i);
+	}
 }
 
 ZTEST(es8311, test_the_driver_never_resets_the_register_file)
@@ -1777,54 +1769,6 @@ ZTEST(es8311, test_init_finishes_quiescing_even_when_a_safety_write_fails)
 
 	zassert_ok(i2c_reg_read_byte_dt(&es_quiesce, ES8311_REG_ADC_PGA, &reg), "read failed");
 	zassert_equal(reg, ES8311_ADC_MIC_OFF, "MIC1 was left connected to the PGA");
-}
-
-/*
- * THE ONE A CLEAN EMULATOR COULD NOT SEE.
- *
- * The vendor Linux driver asserts 0xFA bit 0 at shutdown, deliberately, to hold the register
- * file at its defaults across a reboot. A part handed over in that state answers 0x00 to
- * every read, chip-id registers included, and discards every write except one: a write to
- * 0xFA itself, which is the only way out.
- *
- * So a driver that reads the chip id BEFORE releasing 0xFA sees 0x0000, concludes it is not
- * talking to an ES8311, returns -ENODEV, and never issues the one write that would have
- * recovered the part. The chip is then unrecoverable by that driver, permanently, and no
- * amount of rebooting helps.
- *
- * This test is why the emulator models INI_REG as a level. Without that, the emulator cannot
- * express the state -- and a test cannot catch a bug in a state its model cannot express.
- */
-ZTEST(es8311, test_init_recovers_a_chip_left_holding_its_register_file)
-{
-	uint8_t id1 = 0U;
-	uint8_t id2 = 0U;
-	int ret;
-
-	zassert_false(device_is_ready(codec_held),
-		      "the deferred instance must not have been initialised at boot");
-	/* Exactly what a previous firmware leaves behind. */
-	emul_es8311_set_ini_hold(emul_held, true);
-
-	/* Prove the hold is real before asking the driver to survive it. */
-	zassert_ok(i2c_reg_read_byte_dt(&es_held, ES8311_REG_CHIP_ID1, &id1), "i2c read failed");
-	zassert_ok(i2c_reg_read_byte_dt(&es_held, ES8311_REG_CHIP_ID2, &id2), "i2c read failed");
-	zassert_equal(id1, 0x00U, "a held part must answer 0x00, not 0x%02x", id1);
-	zassert_equal(id2, 0x00U, "a held part must answer 0x00, not 0x%02x", id2);
-
-	ret = device_init(codec_held);
-	zassert_ok(ret,
-		   "init() failed (%d) on a chip whose register file was held. The driver "
-		   "read the chip id before releasing 0xFA, saw 0x0000, and gave up -- so "
-		   "it never issued the one write that recovers the part.",
-		   ret);
-	zassert_true(device_is_ready(codec_held), "the device must be ready after recovery");
-
-	/* And it must actually be released, not merely tolerated. */
-	zassert_ok(i2c_reg_read_byte_dt(&es_held, ES8311_REG_CHIP_ID1, &id1), "i2c read failed");
-	zassert_ok(i2c_reg_read_byte_dt(&es_held, ES8311_REG_CHIP_ID2, &id2), "i2c read failed");
-	zassert_equal(id1, 0x83U, "0xFA is still asserted: the part is still held");
-	zassert_equal(id2, 0x11U, "0xFA is still asserted: the part is still held");
 }
 
 /*
@@ -2373,12 +2317,10 @@ ZTEST(es8311, test_a_failed_unmute_stops_the_next_unmute)
 /*
  * HOUSEKEEPING DOES NOT GET A VETO OVER SAFETY.
  *
- * init() writes 0xFA before it quiesces, but a failure of that write must NOT abandon the quiesce.
- * The 0xFA-is-a-precondition argument (nothing lands while INI_REG holds the file down) is true in
- * configure() but false here: es8311_check_id() has already read 0x8311 back, and a held part
- * answers 0x00 to every read, so INI_REG is proven clear and this write is housekeeping on its
- * other bits. Letting it abandon the DAC mute, the power-downs and the microphone disconnect is a
- * fail-open.
+ * init() releases INI_REG before it quiesces, but a failure of that write must NOT abandon the
+ * quiesce. The two are separate obligations: whatever state the register file is in, the DAC
+ * mute, the power-downs and the microphone disconnect are still worth attempting, and skipping
+ * them because a housekeeping write failed is a fail-open.
  */
 ZTEST(es8311, test_init_quiesces_even_when_the_register_file_write_fails)
 {

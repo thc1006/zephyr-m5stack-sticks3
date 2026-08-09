@@ -48,13 +48,12 @@ description: |
 
   The consequence is that the codec inherits its register file from whatever ran
   last, so the driver normalises the registers it depends on rather than trusting
-  any of them. In particular 0xFA bit 0 (INI_REG) is a LEVEL, not a pulse: while
-  it is set the part holds its register file at the defaults, answers 0x00 to
-  every read, and discards every write except a write to 0xFA itself. The vendor
-  Linux driver asserts it at shutdown deliberately, so a part can be handed over in
-  that state. This driver reads the identity FIRST and treats a 0x0000 read as a
-  possible hold: it releases 0xFA, re-reads the id, and only then rejects a part
-  that still fails to identify.
+  any of them. That includes 0xFA bit 0 (INI_REG), whose only published description
+  is "reset registers to default except itself": a shipping vendor driver asserts it
+  in its shutdown handler and never clears it, so a part can be handed over with its
+  register file sitting at the defaults. init() reads the identity first and releases
+  the bit afterwards, before the quiescing writes that have to land. A part that
+  cannot identify itself is rejected without being written to at all.
 
   Board policy: devicetree properties, and what is still compiled in
   ------------------------------------------------------------------

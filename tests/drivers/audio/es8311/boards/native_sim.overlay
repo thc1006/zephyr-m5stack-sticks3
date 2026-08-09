@@ -41,14 +41,6 @@
 	 * is one refactor away from testing nothing.
 	 */
 
-	/* A part held by INI_REG: its register file pinned at the defaults, every read 0x00. */
-	codec_held: es8311@19 {
-		compatible = "everest,es8311";
-		reg = <0x19>;
-		status = "okay";
-		zephyr,deferred-init;
-	};
-
 	/* A part on a bus that fails one of init()'s safety writes. */
 	codec_quiesce: es8311@1a {
 		compatible = "everest,es8311";

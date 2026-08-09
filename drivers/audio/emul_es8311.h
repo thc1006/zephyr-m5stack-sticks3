@@ -74,13 +74,6 @@ void emul_es8311_fail_write_to(const struct emul *target, int reg);
  */
 void emul_es8311_fail_reads(const struct emul *target, bool fail);
 
-/*
- * Hold, or release, INI_REG (0xFA bit 0) as a LEVEL: while held, every write to any other
- * register is silently discarded and every read returns 0x00, the way the vendor Linux driver
- * leaves the part at shutdown.
- */
-void emul_es8311_set_ini_hold(const struct emul *target, bool hold);
-
 /* Override the chip-id registers (0xFD/0xFE), to exercise the driver's identity rejection. */
 void emul_es8311_set_chip_id(const struct emul *target, uint8_t id1, uint8_t id2);
 

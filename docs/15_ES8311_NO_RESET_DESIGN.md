@@ -36,8 +36,9 @@ port block is where the registers live. The vendor sequence (`0x00 = 0x1F`, wait
 `0x00 = 0x00`, `0x00 = 0x80`) resets the digital blocks and leaves **every register exactly
 as it found it**.
 
-The only register-file reset on the part is `0xFA` bit 0, and that one is unusable as a
-reset (see below).
+The one register-file reset on the part is `0xFA` bit 0, and this driver does not use it as
+one: it programs the registers it depends on rather than resetting to defaults it would then
+have to overwrite anyway.
 
 ### 3. What a reset actually costs: ~6.2 seconds of a stone-deaf ADC
 
@@ -132,7 +133,7 @@ Five of them are not housekeeping. They are correctness:
 | **`0x18` `ALC_EN`** | The datasheet, under the ADC volume register itself: *"When ALC is on, `ADC_VOLUME` = MAXGAIN"*. A stuck ALC bit silently turns `0x17` -- which the driver writes and exposes as `AUDIO_PROPERTY_INPUT_VOLUME` -- from a **volume** into a **servo-loop ceiling**. |
 | **`0x34` `DRC_EN`** | The exact mirror image, for the DAC volume (`0x32`). |
 | **`0x44` bit 7 `ADC2DAC_SEL`** | Routes the ADC into the DAC. It is a **playback** control living in a register whose other field is about the ADC -- so it was only ever written on the capture path. A chip handed over with bit 7 set **plays its own microphone instead of the caller's audio**, through a route that just powered that microphone down. Silently: `configure()` returns 0 and every register the driver checks reads back as intended. |
-| **`0xFA` bit 0 `INI_REG`** | **A LEVEL, not a pulse.** While it is set, the register file is *held* at its defaults: every write is silently discarded, every read returns `0x00`, and `configure()` still returns 0. The vendor Linux driver **sets this bit at shutdown on purpose**, to hold the file down across a reboot -- so a driver that never clears it can be handed a chip it cannot possibly recover. It is now the first register write the driver makes -- **and an adversarial review proved that is not enough.** `init()` read the chip id BEFORE writing anything, and a held part answers `0x00` to that read, so the identity check failed, `init()` returned `-ENODEV`, and the one write that recovers the chip was never reached. The driver documented the hazard exactly and then gated the cure behind a check the hazard defeats. **`es8311_check_id()` now treats a chip id of `0x0000` as a symptom rather than an identity**: it releases `0xFA` and re-reads, and anything that still fails to identify itself is rejected exactly as before. |
+| **`0xFA` bit 0 `INI_REG`** | Documented, in full, as *"1 -- reset registers to default except itself"*. A shipping vendor driver asserts it in its shutdown handler and never clears it, so a part can be handed over with its register file sitting at the defaults, which would swallow the quiescing writes. `init()` releases it once, after the identity check. **Everything this document used to claim beyond that one datasheet sentence was invented and is retracted** -- see [The model that was never in the datasheet](#the-model-that-was-never-in-the-datasheet). |
 | **`es8311_init()` wrote zero registers** | With no reset pin, a warm reboot does not reach the codec, but the SoC's I2S peripheral *does* reset and the bit clock stops -- and this codec takes its master clock from that bit clock. A DAC that was powered and unmuted when the reboot hit has its modulator **frozen on its last sample**: a DC level sitting on the amplifier until the application gets around to `configure()`. `init()` now releases the register file and quiesces the part. |
 
 `0xFA` was found the hard way: by setting it and forgetting to clear it. The next boot came
@@ -158,21 +159,43 @@ file -- because, per section 2 above, the silicon does not wipe one.
 
 ---
 
-## The test that could not see the bug it was named after
+## The model that was never in the datasheet
 
-`test_ini_reg_is_released_before_anything_else` existed, passed, and proved nothing about
-the thing it is named after.
+`0xFA` grew a behavioural model this project invented and then built production code on. It
+is retracted. **The whole datasheet entry** (Rev 8.0) is: `REGISTER 0XFA - I2C, DEFAULT 0000
+0000`; `I2C_RETIME 1 Internal use`; `INI_REG 0 Initial registers`; `0 - not reset (default)`;
+`1 - reset registers to default except itself`.
 
-**The emulator did not model INI_REG.** It was a plain 256-byte register store, so a "held"
-part could not exist in it. The test could only assert that the first entry in the write log
-was `0xFA` -- which was true, and which did not stop `init()` from bailing out on the chip-id
-read before ever getting there.
+Withdrawn, claim by claim:
 
-**A test cannot catch a bug in a state its model cannot express.** The emulator now models
-`0xFA` bit 0 as a level: while set, every write to any other register is discarded and every
-read returns `0x00`, and the only way out is a write to `0xFA` itself.
+- *"A LEVEL, not a pulse."* Not stated either way. Defensible as an **inference** -- the
+  "except itself" carve-out only makes sense if the bit survives the reset it triggers, and
+  the vendor driver's explicit clear 20 ms later would be redundant against a self-clearing
+  bit -- but that is an argument, not a citation.
+- *"Every read returns `0x00`."* **Refuted three ways.** The defaults are not zero (`0x13`
+  defaults to `0100 0000`, `0x14` to `0001 0000`). The chip-id registers' defaults **are** the
+  chip id (`0xFD` = `1000 0011`, `0xFE` = `0001 0001`), so a part held at its defaults reports
+  its identity *correctly*. And the bench event above had `audio_init()` **succeed** on a
+  stone-deaf part at a commit where `es8311_check_id()` already gated init -- so that part's
+  id read worked while the bit was set.
+- *"Discards every write except a write to `0xFA` itself."* No source. "Reset registers to
+  default except itself" names which register escapes the reset, not which writes are dropped.
+  Writes-being-ignored is *consistent* with the deaf-part event, but it is not documented.
+- *"The vendor Linux driver asserts it at shutdown."* True, but **not of mainline**:
+  `torvalds/linux` never touches `0xFA` at all. The driver that does is the one Everest
+  authored for Rockchip BSP kernels, in its i2c shutdown handler, unpaired. Separately,
+  esp-adf and esp_codec_dev write the **value** `0xFA` to **register `0x0D`** in their suspend
+  paths -- a power-down pattern, and an easy thing to mistake for this register.
 
-The same review found that the emulator **wiped its whole register array** when the low five
+**Removed:** the emulator's hold model, the `0x0000`-as-symptom recovery in
+`es8311_check_id()`, the `configure()` release write, and the test built on the hold.
+**Kept:** one release write in `init()`, after the identity check, justified by the shutdown
+assert alone.
+
+Two minutes on a bench would settle the remainder: set `0xFA` bit 0, then read `0xFD` and a
+writable sentinel. Not yet run.
+
+An adversarial review also found that the emulator **wiped its whole register array** when the low five
 bits of `0x00` were asserted -- implementing a register-file reset that
 [this very document](#2-register-0x00-does-not-reset-the-register-file) says the silicon does
 not perform. The tripwire test depended on that fiction. It now checks the **write log**
