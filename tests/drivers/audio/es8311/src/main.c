@@ -147,11 +147,15 @@ static void reg_put(uint8_t r, uint8_t v)
 	zassert_ok(i2c_reg_write_byte_dt(&es, r, v), "i2c write of 0x%02x failed", r);
 }
 
-/* A configuration with the master clock derived from BCLK (mclk_freq == 0). */
+/*
+ * A configuration on the EXTERNAL MCLK pin, at the 256fs the driver's dividers assume.
+ * That is the mode which serves every supported rate, so it is what most tests use; the
+ * BCLK-derived mode is narrower and has make_cfg_bclk() below.
+ */
 static void make_cfg(struct audio_codec_cfg *cfg, uint32_t rate, audio_route_t route)
 {
 	memset(cfg, 0, sizeof(*cfg));
-	cfg->mclk_freq = 0U;
+	cfg->mclk_freq = rate * 256U;
 	cfg->dai_type = AUDIO_DAI_TYPE_I2S;
 	cfg->dai_route = route;
 	cfg->dai_cfg.i2s.word_size = AUDIO_PCM_WIDTH_16_BITS;
@@ -164,6 +168,13 @@ static void make_cfg(struct audio_codec_cfg *cfg, uint32_t rate, audio_route_t r
 	 * role this codec cannot fill -- so every test must set it, not inherit the memset zero.
 	 */
 	cfg->dai_cfg.i2s.options = I2S_OPT_BIT_CLK_TARGET | I2S_OPT_FRAME_CLK_TARGET;
+}
+
+/* The same, with the master clock derived from BCLK instead (mclk_freq == 0). */
+static void make_cfg_bclk(struct audio_codec_cfg *cfg, uint32_t rate, audio_route_t route)
+{
+	make_cfg(cfg, rate, route);
+	cfg->mclk_freq = 0U;
 }
 
 /* 16 kHz / 16-bit playback, the configuration the application uses. */
@@ -250,9 +261,9 @@ ZTEST(es8311, test_configure_16k_16bit_sequence)
 	/* CSM on. */
 	zassert_equal(reg_get(ES8311_REG_RESET), 0x80U, "0x00 should be 0x80");
 	/* Master clock from BCLK, and the ADC's clocks gated off on a playback route. */
-	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xB5U, "0x01 should be 0xB5");
-	/* DIV_PRE = 1, MULT_PRE = x8. */
-	zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x18U, "0x02 should be 0x18");
+	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0x35U, "0x01 should be 0x35");
+	/* DIV_PRE = 1, MULT_PRE = x1: an external MCLK is already 256fs. */
+	zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x00U, "0x02 should be 0x00");
 	/* BCLK_CON clear, so the codec stays the I2S clock slave. */
 	zassert_equal(reg_get(ES8311_REG_CLK_BCLK), 0x03U, "0x06 should be 0x03");
 	/* DIV_LRCK low byte. */
@@ -415,7 +426,7 @@ ZTEST(es8311, test_configure_capture_only)
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_12), 0x02U,
 		      "0x12: the DAC must be powered DOWN, not left as the previous route "
 		      "left it");
-	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xBAU,
+	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0x3AU,
 		      "0x01: the DAC clocks must be gated off");
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_0D), 0x09U,
 		      "0x0D: the DAC's own reference must be dropped");
@@ -444,7 +455,7 @@ ZTEST(es8311, test_route_transition_drops_the_microphone)
 		      "0x0E: the ADC must be powered down, not left running");
 	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x00U,
 		      "0x14: the microphone must be taken off the input mux");
-	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xB5U,
+	zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0x35U,
 		      "0x01: the ADC clocks must be gated off");
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_0D), 0x31U,
 		      "0x0D: the ADC's own bias and reference must be dropped");
@@ -517,8 +528,8 @@ ZTEST(es8311, test_configure_all_supported_rates)
 		zassert_ok(audio_codec_configure(codec, &cfg), "configure(%u Hz) failed", rate);
 
 		/* A playback-only route: the ADC's clocks are gated off. */
-		zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0xB5U, "0x01 at %u Hz", rate);
-		zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x18U, "0x02 at %u Hz", rate);
+		zassert_equal(reg_get(ES8311_REG_CLK_MANAGER), 0x35U, "0x01 at %u Hz", rate);
+		zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x00U, "0x02 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_ADC_OSR), 0x10U, "0x03 at %u Hz", rate);
 		zassert_equal(reg_get(ES8311_REG_DAC_OSR), rate <= 16000U ? 0x20U : 0x10U,
 			      "0x04 at %u Hz", rate);
@@ -563,14 +574,11 @@ ZTEST(es8311, test_configure_rejects_non_16bit_word)
 }
 
 /*
- * audio_codec_cfg.mclk_freq describes the clock fed to the codec's MCLK *input*
- * pin. This driver never uses that pin: it derives the master clock from BCLK.
- * So zero is the only meaningful value, and anything else must be rejected
- * rather than silently ignored. In particular the internal 256fs figure is NOT
- * an MCLK input frequency, and accepting it would be describing a clock that is
- * not on any pin.
+ * mclk_freq selects the clock source. Zero derives it from BCLK; anything else names
+ * the frequency present on the MCLK pin, and only 256fs matches the dividers the
+ * driver writes. A wrong figure describes a clock the part is not being given.
  */
-ZTEST(es8311, test_configure_mclk_must_be_zero)
+ZTEST(es8311, test_external_mclk_must_be_256fs)
 {
 	struct audio_codec_cfg cfg;
 
@@ -578,23 +586,74 @@ ZTEST(es8311, test_configure_mclk_must_be_zero)
 		uint32_t rate = supported_rates[i];
 
 		make_cfg(&cfg, rate, AUDIO_ROUTE_PLAYBACK);
-		cfg.mclk_freq = 0U;
 		zassert_ok(audio_codec_configure(codec, &cfg),
-			   "mclk 0 (BCLK-derived) must be accepted at %u Hz", rate);
+			   "256fs on the MCLK pin must be accepted at %u Hz", rate);
+		zassert_equal(reg_get(ES8311_REG_CLK_MANAGER) & 0x80U, 0x00U,
+			      "0x01 bit 7 must select the MCLK pin at %u Hz", rate);
+		zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x00U,
+			      "0x02 must not multiply an external MCLK at %u Hz", rate);
 
 		make_cfg(&cfg, rate, AUDIO_ROUTE_PLAYBACK);
-		cfg.mclk_freq = rate * 256U;
+		cfg.mclk_freq = rate * 128U;
 		zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
-			      "the internal 256fs clock is not an MCLK input and must be "
-			      "rejected at %u Hz",
-			      rate);
+			      "128fs on the MCLK pin must be rejected at %u Hz", rate);
 
 		make_cfg(&cfg, rate, AUDIO_ROUTE_PLAYBACK);
 		cfg.mclk_freq = 12288000U;
-		zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
-			      "an external MCLK is not supported and must be rejected at %u Hz",
-			      rate);
+		if (rate != 48000U) {
+			zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
+				      "a fixed 12.288 MHz MCLK is not 256fs at %u Hz", rate);
+		}
 	}
+}
+
+/*
+ * The BCLK-derived mode runs the x8 multiplier off SCLK, so it is bounded by the
+ * published multiplier-input minimum. On a 16-bit stereo frame SCLK is 32fs, which
+ * clears 1 MHz only from 32 kHz up.
+ */
+ZTEST(es8311, test_bclk_derived_clock_is_limited_to_compliant_rates)
+{
+	static const uint32_t compliant[] = {32000U, 44100U, 48000U};
+	static const uint32_t below[] = {8000U, 11025U, 12000U, 16000U, 22050U, 24000U};
+	struct audio_codec_cfg cfg;
+
+	for (size_t i = 0; i < ARRAY_SIZE(compliant); i++) {
+		make_cfg_bclk(&cfg, compliant[i], AUDIO_ROUTE_PLAYBACK);
+		zassert_ok(audio_codec_configure(codec, &cfg), "BCLK-derived must work at %u Hz",
+			   compliant[i]);
+		zassert_equal(reg_get(ES8311_REG_CLK_MANAGER) & 0x80U, 0x80U,
+			      "0x01 bit 7 must select BCLK at %u Hz", compliant[i]);
+		zassert_equal(reg_get(ES8311_REG_CLK_PRE), 0x18U,
+			      "0x02 must multiply BCLK by 8 at %u Hz", compliant[i]);
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(below); i++) {
+		int n;
+
+		emul_es8311_reset_log(emul);
+		make_cfg_bclk(&cfg, below[i], AUDIO_ROUTE_PLAYBACK);
+		zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP,
+			      "BCLK-derived must be refused at %u Hz", below[i]);
+
+		/* Refused before the part is touched, not half way through reclocking it. */
+		n = emul_es8311_write_count(emul);
+		zassert_equal(n, 0, "a refused rate emitted %d writes at %u Hz", n, below[i]);
+	}
+}
+
+/* The 32fs derivation assumes a two-slot frame, so anything else has to be refused. */
+ZTEST(es8311, test_configure_rejects_a_non_stereo_frame)
+{
+	struct audio_codec_cfg cfg;
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	cfg.dai_cfg.i2s.channels = 1U;
+	zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP, "mono must be refused");
+
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK);
+	cfg.dai_cfg.i2s.channels = 4U;
+	zassert_equal(audio_codec_configure(codec, &cfg), -ENOTSUP, "4 slots must be refused");
 }
 
 /* configure() must reject a non-I2S DAI, an unsupported route and a bad format. */

@@ -61,20 +61,25 @@ Two things to watch while the PR is open:
       the ADC digital volume (0x17) and `AUDIO_PROPERTY_INPUT_MUTE` to the ADC
       serial port's own mute bit (0x0A bit 6), which is a real mute rather than
       the -95.5 dB volume floor. The `TODO(#7)` in the source is gone.
-- [x] **Sample rates 8 kHz to 48 kHz.** The master clock is derived from BCLK, so
-      it is 256 * Fs at every rate and the divider chain is a pure ratio: one
-      register set serves them all. Corroborated by the vendor clock table, by
-      Linux `sound/soc/codecs/es8311.c` (identical REG02 = 0x18 / REG05 = 0x00 at
-      every rate), and by `i2s_esp32.c` producing BCLK = 32 * Fs exactly. Word
-      sizes other than 16 bits break the ratio and are now rejected instead of
-      silently mis-clocking the codec.
+- [x] **Sample rates 8 kHz to 48 kHz, on two clock sources.** The divider chain is a
+      pure ratio of 256 * Fs, so one register set serves every rate — corroborated by
+      the vendor clock table, by Linux `sound/soc/codecs/es8311.c` (identical
+      REG02 = 0x18 / REG05 = 0x00 at every rate), and by `i2s_esp32.c` producing
+      BCLK = 32 * Fs exactly. What differs per rate is only which *source* may be
+      used. Deriving the clock from BCLK runs the x8 multiplier off 32 * Fs, and the
+      recommended operating conditions require a multiplied source above 1 MHz at
+      3.3 V DVDD, so that mode is accepted only from 32 kHz up; an external 256 * Fs
+      MCLK uses no multiplier and serves all nine rates. Word sizes other than 16
+      bits, and frames with other than two slots, break the ratio and are rejected
+      instead of silently mis-clocking the codec. **The external-MCLK path has not
+      been run on hardware yet — HW-020A.**
 - [x] **checkpatch clean** — 0 lines over 100 columns, pure ASCII.
       The 2026-06-11 entry that claimed this was **invalidated in the same week**:
       commit `4fa40be` introduced a 137-column line that would have failed upstream
       CI, and the checklist went on saying "clean". Fixed, and worth remembering:
       a readiness tick is only true for the commit it was taken against.
-- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **78/78** (was 11,
-  then 29, 33, 42, 47, 51, 52, 54, 59, 60, 61, 62, 65, 67, 68, 69, 72, 79). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
+- [x] **Unit tests** — `tests/drivers/audio/es8311` → twister native_sim **80/80** (was 11,
+  then 29, 33, 42, 47, 51, 52, 54, 59, 60, 61, 62, 65, 67, 68, 69, 72, 79, 78). Coverage is ~97% of lines and ~76% of branches (`gcovr`); every
   other codec in `drivers/audio` is at zero. The emulator's test hooks are declared in a
   header (`drivers/audio/emul_es8311.h`, beside the emulator so it resolves whatever the
   build's include path is) that both the emulator and the test include, so the two cannot

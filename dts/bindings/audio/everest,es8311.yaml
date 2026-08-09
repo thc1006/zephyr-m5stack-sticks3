@@ -11,24 +11,25 @@ description: |
   The codec can take its internal master clock either from a dedicated MCLK
   pin or from the I2S bit clock.
 
-  This driver supports the second of those only: it programs the codec to
-  derive its master clock from BCLK. With a 16-bit stereo I2S frame that puts
-  the master clock at 256 * Fs at every sample rate, so one set of clock
-  registers serves 8 kHz through 48 kHz. Consequently:
+  This driver supports both, selected by audio_codec_cfg.mclk_freq:
 
-  - audio_codec_configure() requires audio_codec_cfg.mclk_freq to be 0. That
-    field describes the clock fed to the codec's MCLK *input* pin, and this
-    driver never uses that pin, so any non-zero value would be describing a
-    clock that is on no pin at all. It is rejected with -ENOTSUP rather than
-    accepted and ignored.
-  - Word sizes other than 16 bits are rejected for the same reason: a 24-bit
-    frame carries 48 bit clocks and a 32-bit frame 64, which would put the
-    master clock at 384 * Fs and 512 * Fs and silently mis-clock the codec.
+  - mclk_freq == 0 derives the master clock from BCLK. A 16-bit stereo frame is
+    32 bit clocks, and register 0x02 multiplies that source by 8, giving 256 * Fs.
+    The multiplier is what bounds this mode: the recommended operating conditions
+    state that a source multiplied by 4 or 8 must exceed 1 MHz at 3.3 V DVDD, and
+    32 * Fs clears that only from 32 kHz up. The driver cannot read DVDD, so it
+    applies the 3.3 V figure and accepts this mode at 32, 44.1 and 48 kHz.
+  - mclk_freq == 256 * Fs takes the clock from the MCLK pin with no multiplier,
+    and serves every rate the driver lists. Any other non-zero value is rejected
+    rather than ignored: it would describe a clock the part is not being given.
 
-  A configuration that drives the codec from its MCLK input pin (rather than from
-  BCLK) would need register 0x01 bit 7 cleared and its own divider values, which
-  this driver does not implement -- independent of whether the board physically
-  routes an MCLK signal, which this BCLK-derived mode simply ignores.
+  Word sizes other than 16 bits are rejected in both modes: a 24-bit frame carries
+  48 bit clocks and a 32-bit frame 64, and the dividers here are written for the
+  32-bit-clock frame. Frames with other than two slots are rejected for the same
+  reason -- the 32 * Fs figure above assumes exactly two.
+
+  Whichever clock is named must actually be present on the pin before the codec is
+  opened, and a board using the external-MCLK mode has to route MCLK.
 
   This driver does not reset the codec, and there is no reset-gpios property,
   because the ES8311 has no reset pin. Its twenty pins are the I2C three, MCLK,

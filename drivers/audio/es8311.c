@@ -115,9 +115,10 @@ LOG_MODULE_REGISTER(es8311);
  * CLKDAC_ON (2), ANACLKADC_ON (1), ANACLKDAC_ON (0). The unused converter's
  * clocks are gated off, as the ASoC driver does.
  */
-#define ES8311_CLK_MGR_BOTH     0xBFU /* both converters clocked */
-#define ES8311_CLK_MGR_PLAYBACK 0xB5U /* the ADC clocks gated off */
-#define ES8311_CLK_MGR_CAPTURE  0xBAU /* the DAC clocks gated off */
+#define ES8311_CLK_SRC_BCLK          BIT(7) /* 0x01 bit 7: master clock from BCLK */
+#define ES8311_CLK_MGR_BOTH_BASE     0x3FU  /* both converters clocked */
+#define ES8311_CLK_MGR_PLAYBACK_BASE 0x35U  /* the ADC clocks gated off */
+#define ES8311_CLK_MGR_CAPTURE_BASE  0x3AU  /* the DAC clocks gated off */
 
 /*
  * Clock tree. MCLK is BCLK scaled by 0x02; a 16-bit stereo frame is 32 BCLK, so
@@ -130,6 +131,7 @@ LOG_MODULE_REGISTER(es8311);
  * Bit 7 of both is undocumented and written 0, like every other bit this driver
  * depends on, because it never resets the part.
  */
+#define ES8311_CLK_PRE_DIV1_MULT1 0x00U /* 0x02: DIV_PRE = 1, MULT_PRE = x1 */
 #define ES8311_CLK_PRE_DIV1_MULT8 0x18U /* 0x02: DIV_PRE = 1, MULT_PRE = x8 */
 #define ES8311_ADC_OSR_SINGLE_16  0x10U /* 0x03: single speed, ADC_OSR = 64 * fs */
 #define ES8311_DAC_OSR_64FS       0x10U /* 0x04: DAC_OSR = 64 * fs */
@@ -138,6 +140,23 @@ LOG_MODULE_REGISTER(es8311);
 
 /* Above this rate the vendor table uses 64 * fs; at or below it, 128 * fs. */
 #define ES8311_DAC_OSR_128FS_MAX_RATE 16000U
+
+/*
+ * The master clock the dividers below are written for, and the bit clock a 16-bit
+ * stereo frame carries.
+ */
+#define ES8311_MCLK_FS_RATIO 256U
+#define ES8311_BCLK_FS_RATIO 32U
+
+/*
+ * Recommended operating conditions, note 2: when the internal clock source is
+ * multiplied by 4 or 8, its frequency must be greater than 1 MHz for 3.3 V DVDD, or
+ * 500 kHz for 1.8 V. The driver cannot see DVDD, so it applies the stricter figure,
+ * and reads "its frequency" as the multiplier's input rather than its output, which
+ * is the reading that constrains rather than excuses. Only the BCLK-derived mode
+ * multiplies; feeding MCLK directly does not.
+ */
+#define ES8311_MULT_INPUT_MIN_HZ 1000000U
 
 /*
  * 0x06 / 0x07 / 0x08 hold the BCLK and LRCK dividers, which the user guide says
@@ -442,6 +461,8 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	uint8_t analog;
 	uint8_t dac_osr;
 	uint8_t sdp_in;
+	uint8_t clk_pre;
+	bool mclk_from_bclk;
 	bool playback = false;
 	bool capture = false;
 	int ret = 0;
@@ -490,12 +511,20 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * The master clock is derived from BCLK, so the frame has to carry 32 bit
-	 * clocks for the clock tree to land on 256fs. Only a 16-bit word does.
+	 * A 16-bit word in a two-slot frame is 32 bit clocks, which is what the
+	 * BCLK-derived tree needs to land on 256fs and what the dividers below are
+	 * written for in either clock mode.
 	 */
 	if (cfg->dai_cfg.i2s.word_size != AUDIO_PCM_WIDTH_16_BITS) {
-		LOG_INF("Unsupported word size %u (BCLK-derived MCLK needs a 16-bit word)",
+		LOG_INF("Unsupported word size %u: this driver supports 16-bit I2S only",
 			cfg->dai_cfg.i2s.word_size);
+		return -ENOTSUP;
+	}
+
+	if (cfg->dai_cfg.i2s.channels != 2U) {
+		LOG_INF("Unsupported channel count %u: the clock tree here assumes a two-slot "
+			"frame",
+			cfg->dai_cfg.i2s.channels);
 		return -ENOTSUP;
 	}
 
@@ -536,9 +565,30 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		return -ENOTSUP;
 	}
 
-	if (cfg->mclk_freq != 0U) {
-		LOG_INF("mclk_freq must be 0: the master clock comes from BCLK and the "
-			"MCLK input is unused");
+	/*
+	 * Two clock sources, chosen by mclk_freq. Zero asks for the BCLK-derived tree,
+	 * which runs the x8 multiplier off SCLK and so has to clear the input minimum
+	 * above; any other value names the frequency present on the MCLK pin, which must
+	 * be the 256fs the dividers below assume and which uses no multiplier at all.
+	 */
+	if (cfg->mclk_freq == 0U) {
+		uint32_t mult_in = rate * ES8311_BCLK_FS_RATIO;
+
+		if (mult_in <= ES8311_MULT_INPUT_MIN_HZ) {
+			LOG_INF("a BCLK-derived clock at %u Hz gives a %u Hz multiplier input, "
+				"under the published minimum; drive MCLK at %u Hz instead",
+				rate, mult_in, rate * ES8311_MCLK_FS_RATIO);
+			return -ENOTSUP;
+		}
+		mclk_from_bclk = true;
+		clk_pre = ES8311_CLK_PRE_DIV1_MULT8;
+	} else if (cfg->mclk_freq == rate * ES8311_MCLK_FS_RATIO) {
+		mclk_from_bclk = false;
+		clk_pre = ES8311_CLK_PRE_DIV1_MULT1;
+	} else {
+		LOG_INF("mclk_freq %u is neither 0 (derive from BCLK) nor %u (256fs on the "
+			"MCLK pin)",
+			cfg->mclk_freq, rate * ES8311_MCLK_FS_RATIO);
 		return -ENOTSUP;
 	}
 
@@ -573,14 +623,18 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	 * directions and powers down the one it does not use.
 	 */
 	if (playback && capture) {
-		clk_mgr = ES8311_CLK_MGR_BOTH;
+		clk_mgr = ES8311_CLK_MGR_BOTH_BASE;
 		analog = ES8311_ANALOG_BOTH;
 	} else if (playback) {
-		clk_mgr = ES8311_CLK_MGR_PLAYBACK;
+		clk_mgr = ES8311_CLK_MGR_PLAYBACK_BASE;
 		analog = ES8311_ANALOG_PLAYBACK;
 	} else {
-		clk_mgr = ES8311_CLK_MGR_CAPTURE;
+		clk_mgr = ES8311_CLK_MGR_CAPTURE_BASE;
 		analog = ES8311_ANALOG_CAPTURE;
+	}
+
+	if (mclk_from_bclk) {
+		clk_mgr |= ES8311_CLK_SRC_BCLK;
 	}
 
 	/*
@@ -649,7 +703,7 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 		goto end;
 	}
 
-	ret = es8311_reg_write(dev, ES8311_REG_CLK_PRE, ES8311_CLK_PRE_DIV1_MULT8);
+	ret = es8311_reg_write(dev, ES8311_REG_CLK_PRE, clk_pre);
 	if (ret < 0) {
 		goto end;
 	}
