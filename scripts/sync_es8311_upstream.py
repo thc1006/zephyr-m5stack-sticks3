@@ -74,6 +74,17 @@ AUDIO = os.path.join(HERE, os.pardir, "drivers", "audio")
 REPO_DRIVER = os.path.join(AUDIO, "es8311.c")
 REPO_KCONFIG = os.path.join(AUDIO, "Kconfig.es8311")
 
+# Files that go upstream byte-for-byte. They need no rewriting, but they DO need
+# to travel with the driver: on 2026-08-09 the driver was synced with a
+# rate-dependent DAC_OSR while the test upstream still asserted the old constant,
+# and twister failed on a driver disagreeing with its own test. Emitting them here
+# makes that a mechanical step rather than something to remember.
+VERBATIM = [
+    os.path.join(AUDIO, "emul_es8311.c"),
+    os.path.join(AUDIO, "emul_es8311.h"),
+    os.path.join(HERE, os.pardir, "tests", "drivers", "audio", "es8311", "src", "main.c"),
+]
+
 
 def read(path):
     return io.open(path, encoding="utf-8", newline="\n").read()
@@ -117,7 +128,17 @@ def main(argv):
 
     write(os.path.join(outdir, "es8311.c"), driver)
     write(os.path.join(outdir, "Kconfig.es8311"), kconfig)
-    print("emitted the upstream form of es8311.c + Kconfig.es8311 -> %s" % outdir)
+    names = ["es8311.c", "Kconfig.es8311"]
+
+    for src in VERBATIM:
+        if not os.path.exists(src):
+            print("error: %s is missing; it must travel with the driver" % src)
+            return 1
+        name = os.path.basename(src)
+        write(os.path.join(outdir, name), read(src))
+        names.append(name)
+
+    print("emitted -> %s: %s" % (outdir, ", ".join(names)))
     return 0
 
 
