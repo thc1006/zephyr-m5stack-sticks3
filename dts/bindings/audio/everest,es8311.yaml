@@ -72,6 +72,12 @@ description: |
   bit 7 chooses which half of the stereo frame it plays, and a board that puts its samples in the
   other slot hears nothing with every register reading back as intended.
 
+  Capture gain stacks, and the total is worth knowing before choosing the PGA value. The driver
+  also writes a fixed ADC scale of +24 dB (0x16 ADC_SCALE), which is not a devicetree property,
+  so the default PGA of 30 dB puts 54 dB of gain ahead of the digital volume control. A board
+  with a hotter microphone than the one these defaults were tuned against should lower
+  everest,mic-pga-gain-db: no amount of digital attenuation recovers a front end that clipped.
+
   Two choices remain compiled in, because they are not board-variable on this hardware:
 
     capture input  MIC1, differential (0x14 LINSEL). The ES8311 has exactly one analog input,
@@ -172,7 +178,10 @@ properties:
 #
 # supply-gpios and vin-supply arrive here from power.yaml, via i2c-device.yaml, and this
 # driver reads neither: a board whose codec sits behind a switch or a regulator must bring
-# that rail up itself. Saying so in a comment is not enough. A board could write
+# that rail up itself, and must do it before POST_KERNEL, because that is when this driver
+# probes and reads the chip ID. Ordinary application code runs too late; a board that cannot
+# power the rail from its own init needs zephyr,deferred-init and an explicit device_init().
+# Saying so in a comment is not enough. A board could write
 # supply-gpios on an es8311 node, have it validate, and then watch the driver probe an
 # unpowered codec and reject it -- with the devicetree looking entirely correct. Blocking
 # the properties turns that into a build error naming the property, which is what a
