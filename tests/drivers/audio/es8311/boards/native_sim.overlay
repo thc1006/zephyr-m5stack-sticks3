@@ -90,7 +90,7 @@
 
 	/*
 	 * A part with every board-policy devicetree property set to its NON-default value, so a
-	 * test can prove each reaches the register it names: right slot, 0 dB PGA, line-out.
+	 * test can prove each reaches the register it names: right slot, 0 dB PGA.
 	 */
 	codec_profile: es8311@1f {
 		compatible = "everest,es8311";
@@ -98,6 +98,5 @@
 		status = "okay";
 		everest,mono-dac-source = "right";
 		everest,mic-pga-gain-db = <0>;
-		everest,output-mode = "lineout";
 	};
 };

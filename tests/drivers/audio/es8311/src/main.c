@@ -2693,7 +2693,7 @@ ZTEST(es8311, test_board_policy_devicetree_properties)
 
 	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 
-	/* Defaults on the main node: left slot, 30 dB PGA (MIC1 differential), headphone. */
+	/* Defaults on the main node: left slot, 30 dB PGA (MIC1 differential). */
 	emul_es8311_reset(emul);
 	zassert_ok(audio_codec_configure(codec, &cfg), "default configure must pass");
 	zassert_equal(reg_get(ES8311_REG_SDP_IN) & 0x80U, 0x00U,
@@ -2701,9 +2701,9 @@ ZTEST(es8311, test_board_policy_devicetree_properties)
 	zassert_equal(reg_get(ES8311_REG_ADC_PGA), 0x1AU,
 		      "default everest,mic-pga-gain-db is 30 dB (0x14 = MIC1 diff | code 0x0A)");
 	zassert_equal(reg_get(ES8311_REG_SYSTEM_13), 0x10U,
-		      "default everest,output-mode is headphone (0x13 HPSW set)");
+		      "the output mode is compiled in as headphone (0x13 HPSW set)");
 
-	/* The configured node: right slot, 0 dB PGA, line-out. */
+	/* The configured node: right slot, 0 dB PGA. */
 	zassert_true(device_is_ready(codec_profile), "the profile codec must be ready");
 	zassert_ok(audio_codec_configure(codec_profile, &cfg), "profile configure must pass");
 
@@ -2712,9 +2712,6 @@ ZTEST(es8311, test_board_policy_devicetree_properties)
 	zassert_ok(i2c_reg_read_byte_dt(&es_profile, ES8311_REG_ADC_PGA, &v),
 		   "read ADC_PGA failed");
 	zassert_equal(v, 0x10U, "mic-pga-gain-db=0 must be MIC1 differential | 0 dB (0x14 = 0x10)");
-	zassert_ok(i2c_reg_read_byte_dt(&es_profile, ES8311_REG_SYSTEM_13, &v),
-		   "read SYSTEM_13 failed");
-	zassert_equal(v, 0x00U, "output-mode=lineout must clear HPSW (0x13 = 0x00)");
 }
 
 /*

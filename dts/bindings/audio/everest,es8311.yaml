@@ -58,12 +58,11 @@ description: |
   Board policy: devicetree properties, and what is still compiled in
   ------------------------------------------------------------------
 
-  Three board-policy choices are devicetree properties (defined below), because they are the
+  Two board-policy choices are devicetree properties (defined below), because they are the
   ones most likely to differ between boards and to be met as silence or as clipping. Mainline
   Linux exposes each as a control, and both Espressif reference drivers hard-code the values
   this driver takes as defaults:
 
-    everest,output-mode      headphone vs line-out drive (0x13 bit 4, HPSW); default headphone
     everest,mic-pga-gain-db  analog PGA gain, 0..30 dB in 3 dB steps (0x14 [3:0]); default 30
     everest,mono-dac-source  which I2S slot the mono DAC plays (0x09 bit 7); default left
 
@@ -77,7 +76,7 @@ description: |
   with a hotter microphone than the one these defaults were tuned against should lower
   everest,mic-pga-gain-db: no amount of digital attenuation recovers a front end that clipped.
 
-  Two choices remain compiled in, because they are not board-variable on this hardware:
+  Three choices remain compiled in:
 
     capture input  MIC1, differential (0x14 LINSEL). The ES8311 has exactly one analog input,
                    the differential MIC1P/MIC1N pair -- there is no single-ended analog
@@ -85,6 +84,12 @@ description: |
                    it the same way). 0x14 bit 6 selects a DIGITAL microphone on MIC1P instead;
                    that is a different input this driver does not support at all.
     ADC scale      +24 dB (0x16), a digital gain that could become a property in a follow-up.
+    output mode    headphone, 0x13 HPSW set. The part also has a line-out mode, and this
+                   version does not expose it: every measurement behind either value was taken
+                   through a board power amplifier, which cannot tell the two apart at the
+                   codec pins. A devicetree property is a stable interface once merged, so it
+                   waits for a differential measurement at OUTP/OUTN. Note HPSW resets CLEAR,
+                   so line-out, not headphone, is the reset default.
 
   Power management: the application owns it
   -----------------------------------------
@@ -160,19 +165,6 @@ properties:
       is the 30 dB maximum both Espressif reference drivers use; a hot microphone that clips the
       ADC needs this lowered, because the digital INPUT_VOLUME downstream cannot undo analog
       clipping.
-
-  everest,output-mode:
-    type: string
-    enum:
-      - "headphone"
-      - "lineout"
-    default: "headphone"
-    description: |
-      Drive mode of the single OUTP/OUTN differential output pair, 0x13 bit 4 (HPSW):
-      "headphone" enables the headphone driver (the reset/reference default), "lineout" selects
-      the line-level differential mode. NOTE: only "headphone" is hardware-verified; "lineout"
-      is derived from the ES8311 datasheet and the mainline Linux driver and has not been
-      exercised on silicon.
 
 # The power properties are BLOCKED, not merely unimplemented.
 #

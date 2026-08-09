@@ -49,7 +49,7 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_REG_ANALOG_10    0x10U /* SYNCMODE, VMIDLOW, DAC_IBIAS_SW, IBIAS_SW, VX2OFF */
 #define ES8311_REG_ANALOG_11    0x11U /* VSEL */
 #define ES8311_REG_SYSTEM_12    0x12U /* DAC power */
-#define ES8311_REG_SYSTEM_13    0x13U /* output select: line-out or headphone */
+#define ES8311_REG_SYSTEM_13    0x13U /* HPSW (bit 4): line-out or headphone drive */
 #define ES8311_REG_ADC_PGA      0x14U /* LINSEL microphone mux, PGA gain */
 #define ES8311_REG_ADC_RAMP     0x15U /* ADC volume ramp rate */
 #define ES8311_REG_ADC_SCALE    0x16U /* ADC polarity, ADC_SCALE */
@@ -182,9 +182,13 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_ADC_PWR_DOWN    0x62U /* 0x0E: PDN_PGA | PDN_MOD, shared refs kept */
 #define ES8311_DAC_PWR_ON      0x00U /* 0x12 */
 #define ES8311_DAC_PWR_DOWN    0x02U /* 0x12: PDN_DAC */
-#define ES8311_OUT_HEADPHONE                                                                       \
-	0x10U /* 0x13: HPSW=1, headphone driver (the everest,output-mode default) */
-#define ES8311_OUT_LINEOUT 0x00U /* 0x13: HPSW=0, line-level differential drive */
+/*
+ * 0x13: HPSW=1, the headphone driver. Not the reset value -- 0x13 resets to 0x40, HPSW clear,
+ * which is the line-out mode -- but what the reference drivers select and the only one this
+ * driver has measured. Writing the whole byte also clears bit 6, which resets set and the
+ * datasheet's bit table does not describe; the reference drivers write 0x10 too.
+ */
+#define ES8311_OUT_HEADPHONE 0x10U
 /*
  * 0x37: DAC_RAMPRATE in [7:4] and DAC_EQBYPASS in bit 3. 0x48 is a 0.25 dB / 32-LRCK volume
  * soft ramp (rate 4) with the equaliser bypassed. The ramp is the point: the ADC volume is
@@ -276,7 +280,6 @@ struct es8311_config {
 	struct i2c_dt_spec bus;
 	uint8_t sdp_in_sel; /* 0x09 bit 7: mono DAC source slot (0 = left, 0x80 = right) */
 	uint8_t pga_reg;    /* 0x14: MIC1 differential plus the configured PGA gain */
-	uint8_t out_reg;    /* 0x13: headphone or line-out drive mode */
 };
 
 struct es8311_data {
@@ -697,7 +700,7 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 			goto end;
 		}
 
-		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_13, dcfg->out_reg);
+		ret = es8311_reg_write(dev, ES8311_REG_SYSTEM_13, ES8311_OUT_HEADPHONE);
 		if (ret < 0) {
 			goto end;
 		}
@@ -1398,9 +1401,6 @@ static int es8311_init(const struct device *dev)
 				      : 0U,                                                        \
 		.pga_reg = ES8311_ADC_PGA_MIC1_0DB | (DT_INST_PROP(idx, everest_mic_pga_gain_db) / \
 						      ES8311_ADC_PGA_GAIN_STEP_DB),                \
-		.out_reg = (DT_INST_ENUM_IDX(idx, everest_output_mode) == 1)                       \
-				   ? ES8311_OUT_LINEOUT                                            \
-				   : ES8311_OUT_HEADPHONE,                                         \
 	};                                                                                         \
 	static struct es8311_data es8311_data_##idx;                                               \
 	DEVICE_DT_INST_DEFINE(idx, es8311_init, NULL, &es8311_data_##idx, &es8311_config_##idx,    \
