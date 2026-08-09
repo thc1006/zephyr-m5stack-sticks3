@@ -217,12 +217,16 @@ static int audio_codec_probe(void)
  * endpoint-relative: the SoC I2S is the CONTROLLER (it drives BCLK and LRCK), so the codec is the
  * TARGET -- it receives them. Keeping this in ONE place is what stops the call sites from drifting;
  * passing the SoC's CONTROLLER role to the codec is what the es8311 driver rejects with -ENOTSUP.
- * mclk_freq is 0 because the codec makes its master clock from BCLK, not from an MCLK input pin.
+ *
+ * mclk_freq names the clock on the codec's MCLK pin. This board routes it (G18), and the ESP32
+ * I2S controller drives it at 256 * Fs for a 16-bit frame, which is the ratio the codec's
+ * dividers are written for. Deriving the codec clock from BCLK instead would run its x8
+ * multiplier off 32 * Fs, below the published 1 MHz minimum at every rate this app uses.
  */
 static void audio_codec_cfg_from_i2s(struct audio_codec_cfg *codec_cfg,
 				     const struct i2s_config *i2s_cfg, audio_route_t route)
 {
-	codec_cfg->mclk_freq = 0U;
+	codec_cfg->mclk_freq = i2s_cfg->frame_clk_freq * 256U;
 	codec_cfg->dai_type = AUDIO_DAI_TYPE_I2S;
 	codec_cfg->dai_route = route;
 	codec_cfg->dai_cfg.i2s = *i2s_cfg;
@@ -1321,10 +1325,6 @@ static int sweep_one(uint32_t rate)
 		return ret;
 	}
 
-	/*
-	 * mclk_freq is the codec's MCLK *input*, which this board does not drive:
-	 * the codec derives its master clock from BCLK, so the driver requires 0.
-	 */
 	audio_codec_cfg_from_i2s(&codec_cfg, &i2s_cfg, AUDIO_ROUTE_PLAYBACK_CAPTURE);
 
 	SWEEP_STEP(rate, "cfg-codec");
