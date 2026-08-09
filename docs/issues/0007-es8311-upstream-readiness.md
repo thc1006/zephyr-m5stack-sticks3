@@ -100,8 +100,9 @@ Two things to watch while the PR is open:
   - One walks a *single* I2C failure across **every transfer** of a `configure()`, into **all
     three target routes**, and reads the registers back before calling anything else: a failed
     `configure()` must leave the DAC muted and powered down and the microphone off the mux,
-    because the `audio_codec` API has no `stop_input()` and there would otherwise be no way
-    to switch a live microphone off.
+    because `audio_codec_stop(dev, AUDIO_DAI_DIR_RX)` dispatches to an optional `.stop` op
+    this driver does not implement yet, so it returns `-ENOSYS` and there would otherwise be
+    no way to switch a live microphone off.
   - Two walk a **persistent** failure (`fail_from()`, which fails the error-path quiesce too)
     across every transfer — one across all three *routes*, one across the *state* matrix
     (`OUTPUT_MUTE`, output-stopped, `INPUT_MUTE`, both) on a full-duplex route. Whenever only one

@@ -199,8 +199,10 @@ before touching the chip, which is right -- a half-reprogrammed part is not desc
 route. But on its own that is a fail-open. Take a live capture route whose reconfigure fails on
 its first write: the ADC is still powered, the PGA is live, MIC1 is still on the mux -- and the
 cache now says there is no capture, so `apply_properties()` will not touch the ADC and
-`stop_output()` only reaches the DAC. **The `audio_codec` API has no `stop_input()`. The
-microphone was left running with no call in the API able to switch it off.** `init()` and every
+`stop_output()` only reaches the DAC. **The API does expose `audio_codec_stop(dev,
+AUDIO_DAI_DIR_RX)`, but the `.stop` op it dispatches to is optional and this driver does not
+implement it yet, so it returns `-ENOSYS`. The microphone was left running with nothing able
+to switch it off.** `init()` and every
 error path out of `configure()` now run the same best-effort quiesce, and a test walks the
 failure across every transfer and reads the registers back *before* calling anything else.
 

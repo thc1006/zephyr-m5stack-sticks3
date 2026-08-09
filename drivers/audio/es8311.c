@@ -197,6 +197,13 @@ LOG_MODULE_REGISTER(es8311);
  * both at their reset default. This driver follows the corrected table. The
  * provenance is in the pull request rather than here, since it names a specific
  * vendor project and this driver is not tied to one.
+ *
+ * Bit 7 of both 0x03 and 0x04 is undocumented. These writes clear it, and that is
+ * deliberate rather than an oversight: this driver never resets the part, so its
+ * contract is to write every register it depends on into a known state instead of
+ * inheriting one. A read-modify-write would preserve whatever a previous user left
+ * in that bit, which is the inheritance the contract exists to prevent. The reset
+ * default is 0, so nothing changes on a cold part either way.
  */
 #define ES8311_CLK_PRE_DIV1_MULT8 0x18U /* 0x02: DIV_PRE = 1, MULT_PRE = x8 */
 #define ES8311_ADC_OSR_SINGLE_16  0x10U /* 0x03: single speed, ADC_OSR = 64 * fs */
@@ -1048,9 +1055,11 @@ end:
 	 * Consider a live capture route and a configure() whose first write fails. The
 	 * hardware is untouched: the ADC is powered, the PGA is live and MIC1 is still wired
 	 * into it. The route cache now says there is no capture, so apply_properties() will
-	 * not go near the ADC; stop_output() only mutes the DAC; and the audio_codec API has
-	 * no stop_input() at all. The microphone would be left running, with no call in the
-	 * API able to switch it off, and nothing in the driver's own state admitting it exists.
+	 * not go near the ADC, and stop_output() only mutes the DAC. The API does have a
+	 * directional stop -- audio_codec_stop(dev, AUDIO_DAI_DIR_RX) -- but the .stop op it
+	 * dispatches to is optional and this driver does not implement it yet, so that call
+	 * returns -ENOSYS. The microphone would be left running, with nothing in the driver's
+	 * own state admitting it exists.
 	 *
 	 * So every error path quiesces, with the lock still held. It is best-effort by
 	 * construction (the bus is already failing, or we would not be here) and its own

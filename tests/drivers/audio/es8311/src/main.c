@@ -1890,8 +1890,9 @@ ZTEST(es8311, test_configure_opens_the_microphone_last_of_all)
  * Take a live capture route and a configure() whose first write fails. The hardware is
  * untouched: the ADC is powered, the PGA is live, MIC1 is still wired into it. The route
  * cache now says there is no capture, so apply_properties() will not go near the ADC.
- * stop_output() only mutes the DAC. And the audio_codec API has no stop_input() at all. The
- * microphone is left running, with no call in the API able to switch it off.
+ * stop_output() only mutes the DAC. The API does have audio_codec_stop(dev, AUDIO_DAI_DIR_RX),
+ * but the .stop op behind it is optional and this driver does not implement it yet, so it
+ * returns -ENOSYS. The microphone is left running, with nothing able to switch it off.
  *
  * So this walks the failure across every transfer and checks the HARDWARE, before calling
  * anything else. That distinction is the whole test: the neighbouring
