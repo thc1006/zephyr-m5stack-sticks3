@@ -101,10 +101,10 @@ LOG_MODULE_REGISTER(es8311);
 #define ES8311_DRC_LVL_DEF   0x00U /* 0x35 */
 
 /*
- * 0xFA bit 0, INI_REG: "reset registers to default except itself". A shipping vendor
- * driver asserts it in its shutdown handler and never clears it, so a part can be
- * handed over with its register file sitting at the defaults. init() clears it once,
- * after the identity check.
+ * 0xFA bit 0, INI_REG: "reset registers to default except itself". An ES8311 driver
+ * carried in Rockchip BSP kernels asserts it in its i2c shutdown handler and never
+ * clears it, so a part can be handed over with its register file sitting at the
+ * defaults. init() clears it once, after the identity check.
  */
 #define ES8311_INI_RELEASE 0x00U
 

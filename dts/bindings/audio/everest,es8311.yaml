@@ -50,11 +50,12 @@ description: |
   The consequence is that the codec inherits its register file from whatever ran
   last, so the driver normalises the registers it depends on rather than trusting
   any of them. That includes 0xFA bit 0 (INI_REG), whose only published description
-  is "reset registers to default except itself": a shipping vendor driver asserts it
-  in its shutdown handler and never clears it, so a part can be handed over with its
-  register file sitting at the defaults. init() reads the identity first and releases
-  the bit afterwards, before the quiescing writes that have to land. A part that
-  cannot identify itself is rejected without being written to at all.
+  is "reset registers to default except itself": an ES8311 driver carried in Rockchip
+  BSP kernels asserts it in its i2c shutdown handler and never clears it, so a part
+  can be handed over with its register file sitting at the defaults. init() reads the
+  identity first and releases the bit afterwards, before the quiescing writes that
+  have to land. A part that cannot identify itself is rejected without being written
+  to at all.
 
   Board policy: devicetree properties, and what is still compiled in
   ------------------------------------------------------------------
