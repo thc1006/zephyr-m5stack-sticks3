@@ -25,7 +25,9 @@ Rationale:
 
 ### 4.1 Board definition
 
-Path: `boards/m5stack/m5stack_sticks3/`
+Path: upstream Zephyr, `boards/m5stack/m5stack_sticks3/` (landed as PR #110205).
+This tree carries only what upstream does not describe, in
+`app/boards/m5stack_sticks3_esp32s3_procpu.overlay`.
 
 The board follows the Zephyr Hardware Model v2 (HWMv2) layout used by the
 nearby upstream ESP32-S3 M5Stack boards (`m5stack_atoms3`, `m5stack_stamps3`,

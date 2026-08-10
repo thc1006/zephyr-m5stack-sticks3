@@ -143,6 +143,7 @@ From the current Zephyr board-porting guide + contributor expectations:
   build docs locally.
 - **Maintainership**: add an entry for `boards/m5stack/m5stack_sticks3/` to
   `MAINTAINERS.yml` — upstream expects every new board to have a maintainer.
+  (Done: `M5Stack Platforms`, landed with the board.)
 - **Defaults**: onboard component DT nodes enabled by default; do not enable
   subsystems in board defconfig beyond what boot needs; provide `zephyr,console`.
 - **Process**: DCO `Signed-off-by:` on every commit; small, bisectable commits
