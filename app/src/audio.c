@@ -9,7 +9,7 @@
  * overlay-audio.conf); the default build does not compile this file.
  *
  * Signal path: SoC I2S0 (master, 16 kHz / 16-bit / standard I2S) -> ES8311
- * codec (I2C control @ 0x18, MCLK derived from BCLK) -> AW8737 speaker amp.
+ * codec (I2C control @ 0x18, MCLK on G18 at 256 * Fs) -> AW8737 speaker amp.
  * The amp is enabled by the M5PM1 PMIC GPIO3 (sound_amp / amp-gpios) and is
  * driven high ONLY for the duration of a beep to avoid switch-on/off pops and
  * to keep the speaker path muted at rest.
@@ -252,9 +252,9 @@ static int audio_configure_chain(uint32_t rate)
 
 	/*
 	 * I2S0 TX as master (no I2S_OPT_*_CLK_TARGET => SoC drives BCLK + WS),
-	 * standard I2S, 16-bit stereo. The esp32-i2s driver derives BCLK = 32 * Fs,
-	 * and the codec makes its own master clock from BCLK, so the codec sees
-	 * 256 * Fs at every rate: one coefficient row serves them all.
+	 * standard I2S, 16-bit stereo. The esp32-i2s driver derives BCLK = 32 * Fs and
+	 * drives MCLK at 256 * Fs, which is what the codec's dividers are written for:
+	 * one coefficient row serves every rate.
 	 */
 	i2s_cfg.word_size = AUDIO_WORD_BITS;
 	i2s_cfg.channels = AUDIO_CHANNELS;
@@ -1108,8 +1108,10 @@ uint32_t audio_rec_len_ms(void)
  * ES8311 sample-rate sweep: hardware validation for the codec driver (issue #7).
  *
  * The driver claims 8 kHz to 48 kHz on the argument that the codec's master clock
- * is derived from BCLK, so it lands on 256 * Fs at every rate and the divider
- * chain is a pure ratio. That is an argument. This is the measurement.
+ * lands on 256 * Fs at every rate, so the divider chain is a pure ratio. That is an
+ * argument. This is the measurement. The app drives MCLK directly, so what the sweep
+ * exercises is the external-MCLK mode; the BCLK-derived mode is bounded by the
+ * multiplier-input limit and is not what runs here.
  *
  * Three independent things are checked at each rate.
  *
@@ -1166,15 +1168,15 @@ static const struct {
 	uint8_t reg;
 	uint8_t val;
 } sweep_expect[] = {
-	{0x01U, 0xBFU}, /* clock manager: master clock taken from BCLK */
-	{0x02U, 0x18U}, /* DIV_PRE = 1, MULT_PRE = x8 */
+	{0x01U, 0x3FU}, /* clock manager: master clock taken from the MCLK pin */
+	{0x02U, 0x00U}, /* DIV_PRE = 1, MULT_PRE = x1: a 256fs MCLK needs no multiplier */
 	{0x03U, 0x10U}, /* single speed, ADC_OSR = 64 * fs at every rate */
 	{0x05U, 0x00U}, /* DIV_CLKADC = 1, DIV_CLKDAC = 1 */
 	{0x06U, 0x03U}, /* BCLK_CON clear: the codec stays the clock slave */
 	{0x07U, 0x00U},
 	{0x08U, 0xFFU},
 	{0x09U, 0x0CU}, /* serial data in: standard I2S, 16-bit */
-	{0x0AU, 0x0CU}, /* serial data out: standard I2S, 16-bit, unmuted */
+	{0x0AU, 0x4CU}, /* serial data out: standard I2S, 16-bit, MUTED until start(RX) */
 };
 
 static const struct i2c_dt_spec codec_i2c = I2C_DT_SPEC_GET(DT_NODELABEL(es8311));
@@ -1390,6 +1392,13 @@ static int sweep_one(uint32_t rate)
 		printk("SWEEP %-6u FAIL i2s_trigger(START)=%d\n", rate, ret);
 		sweep_reset_i2s();
 		return ret;
+	}
+
+	/* configure() no longer opens the mic, and a muted ADC reads zero at every rate. */
+	ret = audio_codec_start(codec_dev, AUDIO_DAI_DIR_RX);
+	if (ret < 0) {
+		printk("SWEEP %-6u FAIL audio_codec_start(RX)=%d\n", rate, ret);
+		goto stop;
 	}
 
 	SWEEP_STEP(rate, "warmup");
@@ -1695,19 +1704,19 @@ stop:
 static const uint8_t sweep_route_regs[] = {
 	0x01U, /* clock manager: the unused converter's clocks gated off */
 	0x09U, /* SDP in (DAC): muted when playback is not routed */
-	0x0AU, /* SDP out (ADC): muted when capture is not routed */
+	0x0AU, /* SDP out (ADC): muted by configure() whatever the route; start(RX) unmutes */
 	0x0DU, /* analog: the unused converter's bias and references dropped */
 	0x0EU, /* ADC power */
 	0x12U, /* DAC power */
 	0x14U, /* microphone mux: nothing selected when capture is not routed */
 };
 
-/* Indexed [route][register], in the order above. */
+/* Indexed [route][register], in the order above. 0x01 bit 7 is clear: the board feeds MCLK. */
 static const uint8_t sweep_route_vals[3][ARRAY_SIZE(sweep_route_regs)] = {
 	/* 0x01  0x09  0x0A  0x0D  0x0E  0x12  0x14 */
-	{ 0xB5U, 0x0CU, 0x4CU, 0x31U, 0x62U, 0x00U, 0x00U }, /* playback only */
-	{ 0xBAU, 0x4CU, 0x0CU, 0x09U, 0x02U, 0x02U, 0x1AU }, /* capture only  */
-	{ 0xBFU, 0x0CU, 0x0CU, 0x01U, 0x02U, 0x00U, 0x1AU }, /* both          */
+	{ 0x35U, 0x0CU, 0x4CU, 0x31U, 0x62U, 0x00U, 0x00U }, /* playback only */
+	{ 0x3AU, 0x4CU, 0x4CU, 0x09U, 0x02U, 0x02U, 0x1AU }, /* capture only  */
+	{ 0x3FU, 0x0CU, 0x4CU, 0x01U, 0x02U, 0x00U, 0x1AU }, /* both          */
 };
 
 static int sweep_one_route(const char *name, audio_route_t route, unsigned int idx)

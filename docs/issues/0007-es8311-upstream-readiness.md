@@ -71,8 +71,8 @@ Two things to watch while the PR is open:
       3.3 V DVDD, so that mode is accepted only from 32 kHz up; an external 256 * Fs
       MCLK uses no multiplier and serves all nine rates. Word sizes other than 16
       bits, and frames with other than two slots, break the ratio and are rejected
-      instead of silently mis-clocking the codec. **The external-MCLK path has not
-      been run on hardware yet — HW-020A.**
+      instead of silently mis-clocking the codec. **The external-MCLK path is now
+      hardware-verified at all nine rates and all three routes — HW-032.**
 - [x] **checkpatch clean** — 0 lines over 100 columns, pure ASCII.
       The 2026-06-11 entry that claimed this was **invalidated in the same week**:
       commit `4fa40be` introduced a 137-column line that would have failed upstream

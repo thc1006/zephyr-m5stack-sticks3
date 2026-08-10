@@ -1,0 +1,378 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200[38;5;3m
+
+--- Warning: No ELF files found. Please provide the ELF file paths, required for binary log decoding.
+
+[m[38;5;3m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[m
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x40377722
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc90f80,len:0x2ea0
+
+load:0x40374000,len:0xcf64
+
+load:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: 0437a5076464b05e21e16b8f5fb7b9c48392b755337fa8d283d1a4d0a7e8dfc7
+
+Expected: 0000000090010000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037ad74
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Aug 10 2026 08:20:41
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc90f80h size=02ea0h ( 11936)
+
+I (boot): IRAM[2C: lma=00002ec8h vma=40374000h size=0cf64h ( 53092)
+
+I (boot): RTC_DATA[6C: lma=0000fe34h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=0d260h ( 53856)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=05154h ( 20820)
+
+I (boot): libc heap size 141 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+[38;5;9m-[m[38;5;9m-- Error: ClearCommError failed (PermissionError(13, '鋆蔭?⊥?颲刻??賭誘??', None, 22))[38;5;3m
+
+--- Waiting for the device to reconnect[m
+
+*** Booting Zephyr OS build 697b32395414 ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.374,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.374,000] <inf> gfx: Display ready (135x240)
+
+[00:00:00.452,000] <inf> audio: audio_init OK (16 kHz/16-bit, amp off)
+
+
+=== ES8311 sample-rate sweep ===
+
+regs  : the clock registers read back off the chip over I2C
+
+lrck  : the frame clock MEASURED against the kernel cycle counter,
+
+        which is not derived from the I2S clock
+
+adc   : the microphone noise floor with the amplifier off. A running ADC
+
+        returns a dithering floor; a zero one means the codec's clock tree
+
+        did not come up -- OR that its analog was disturbed less than ~6 s
+
+        ago and its reference caps are still charging (HW-023). This cannot
+
+        tell those apart, so a zero floor is not by itself a fault.
+
+order : the rates ASCEND, and so does time, so a settling effect and a rate
+
+        effect are confounded in any run that starts from a disturbed codec.
+
+        Reading a low-rate cliff off this table without reversing it first is
+
+        exactly how 'the reset deafens the ADC below 22 kHz' was invented.
+
+tone  : the captured level with the amplifier on. Reported, not
+
+        asserted: this speaker couples weakly into this microphone.
+
+        Judge the speaker by ear; the pitch rises across the sweep
+
+        because the tone table was made for 16 kHz
+
+
+  sweep.8000: slab pre-reset  tx=8 rx=8
+
+  sweep.8000: reset
+
+  sweep.8000: slab post-reset tx=8 rx=8  (of 8)
+
+  sweep.8000: cfg-tx
+
+  sweep.8000: cfg-codec
+
+  sweep.8000: cfg-rx
+
+  sweep.8000: regs
+
+  sweep.8000: prequeue
+
+  sweep.8000: start
+
+  sweep.8000: warmup
+
+  sweep.8000: baseline
+
+  sweep.8000: amp
+
+  sweep.8000: settle
+
+SWEEP 8000    dacfloor rms=99    peak=401   (silence, amp on, 8 blocks)
+
+  sweep.8000: timed
+
+  sweep.8000: stop
+
+SWEEP 8000   regs=OK  lrck=8000   OK  adc=alive floor=147   [-457..452] tone_rms=799    peak=6537   PASS
+
+  sweep.11025: slab pre-reset  tx=7 rx=7
+
+  sweep.11025: reset
+
+  sweep.11025: slab post-reset tx=7 rx=7  (of 8)
+
+  sweep.11025: cfg-tx
+
+  sweep.11025: cfg-codec
+
+  sweep.11025: cfg-rx
+
+  sweep.11025: regs
+
+  sweep.11025: prequeue
+
+  sweep.11025: start
+
+  sweep.11025: warmup
+
+  sweep.11025: baseline
+
+  sweep.11025: amp
+
+  sweep.11025: settle
+
+SWEEP 11025   dacfloor rms=99    peak=332   (silence, amp on, 8 blocks)
+
+  sweep.11025: timed
+
+  sweep.11025: stop
+
+SWEEP 11025  regs=OK  lrck=11025  OK  adc=alive floor=151   [-276..314] tone_rms=1105   peak=12149  PASS
+
+  sweep.12000: slab pre-reset  tx=6 rx=6
+
+  sweep.12000: reset
+
+  sweep.12000: slab post-reset tx=6 rx=6  (of 8)
+
+  sweep.12000: cfg-tx
+
+  sweep.12000: cfg-codec
+
+  sweep.12000: cfg-rx
+
+  sweep.12000: regs
+
+  sweep.12000: prequeue
+
+  sweep.12000: start
+
+  sweep.12000: warmup
+
+  sweep.12000: baseline
+
+  sweep.12000: amp
+
+  sweep.12000: settle
+
+SWEEP 12000   dacfloor rms=110   peak=357   (silence, amp on, 8 blocks)
+
+  sweep.12000: timed
+
+  sweep.12000: stop
+
+SWEEP 12000  regs=OK  lrck=12000  OK  adc=alive floor=124   [-230..248] tone_rms=1185   peak=10195  PASS
+
+  sweep.16000: slab pre-reset  tx=5 rx=5
+
+  sweep.16000: reset
+
+  sweep.16000: slab post-reset tx=5 rx=5  (of 8)
+
+  sweep.16000: cfg-tx
+
+  sweep.16000: cfg-codec
+
+  sweep.16000: cfg-rx
+
+  sweep.16000: regs
+
+  sweep.16000: prequeue
+
+  sweep.16000: start
+
+  sweep.16000: warmup
+
+  sweep.16000: baseline
+
+  sweep.16000: amp
+
+  sweep.16000: settle
+
+SWEEP 16000   dacfloor rms=102   peak=389   (silence, amp on, 8 blocks)
+
+  sweep.16000: timed
+
+  sweep.16000: stop
+
+SWEEP 16000  regs=OK  lrck=16000  OK  adc=alive floor=122   [-243..319] tone_rms=1484   peak=11368  PASS
+
+  sweep.22050: slab pre-reset  tx=4 rx=4
+
+  sweep.22050: reset
+
+  sweep.22050: slab post-reset tx=4 rx=4  (of 8)
+
+  sweep.22050: cfg-tx
+
+  sweep.22050: cfg-codec
+
+  sweep.22050: cfg-rx
+
+  sweep.22050: regs
+
+  sweep.22050: prequeue
+
+  sweep.22050: start
+
+  sweep.22050: warmup
+
+  sweep.22050: baseline
+
+  sweep.22050: amp
+
+  sweep.22050: settle
+
+SWEEP 22050   dacfloor rms=92    peak=279   (silence, amp on, 8 blocks)
+
+  sweep.22050: timed
+
+  sweep.22050: stop
+
+SWEEP 22050  regs=OK  lrck=22050  OK  adc=alive floor=117   [-182..168] tone_rms=2054   peak=13812  PASS
+
+  sweep.24000: slab pre-reset  tx=3 rx=3
+
+  sweep.24000: reset
+
+  sweep.24000: slab post-reset tx=3 rx=3  (of 8)
+
+  sweep.24000: cfg-tx
+
+  sweep.24000: cfg-codec
+
+  sweep.24000: cfg-rx
+
+  sweep.24000: regs
+
+  sweep.24000: prequeue
+
+  sweep.24000: start
+
+  sweep.24000: warmup
+
+  sweep.24000: baseline
+
+  sweep.24000: amp
+
+  sweep.24000: settle
+
+SWEEP 24000   dacfloor rms=140   peak=429   (silence, amp on, 8 blocks)
+
+  sweep.24000: timed
+
+  sweep.24000: stop
+
+SWEEP 24000  regs=OK  lrck=24001  OK  adc=alive floor=345   [-661..760] tone_rms=2517   peak=12104  PASS
+
+  sweep.32000: slab pre-reset  tx=2 rx=2
+
+  sweep.32000: reset
+
+  sweep.32000: slab post-reset tx=2 rx=2  (of 8)
+
+  sweep.32000: cfg-tx
+
+  sweep.32000: cfg-codec
+
+  sweep.32000: cfg-rx
+
+  sweep.32000: regs
+
+  sweep.32000: prequeue
+
+  sweep.32000: start
+
+  sweep.32000: warmup
+
+  sweep.32000: baseline
+
+  sweep.32000: amp
+
+  sweep.32000: settle
+
+SWEEP 32000   dacfloor rms=198   peak=621   (silence, amp on, 8 blocks)
+
+  sweep.32000: timed
+
+  sweep.32000: stop
+
+SWEEP 32000  regs=OK  lrck=32002  OK  adc=alive floor=591   [-885..1165] tone_rms=4463   peak=15911  PASS
+
+  sweep.44100: slab pre-reset  tx=1 rx=1
+
+  sweep.44100: reset
+
+  sweep.44100: slab post-reset tx=1 rx=1  (of 8)
+
+  sweep.44100: cfg-tx
+
+  sweep.44100: cfg-codec
+
+  sweep.44100: cfg-rx
+
+  sweep.44100: regs
+
+  sweep.44100: prequeue
+
+
+[monitor captured 7472 chars; last 185.0s silent]

@@ -34,7 +34,7 @@ than 1 MHz for 3.3 V DVDD, or 500 kHz for 1.8 V DVDD.
 
 Our configuration is:
 
-```
+```text
 MCLK_SEL = SCLK
 DIV_PRE  = /1
 MULT_PRE = x8
@@ -96,8 +96,8 @@ identity, but we would like to know whether that is sufficient and correctly ord
 
 ### 3. DAC_OSR below 22.05 kHz
 
-Reference code we have seen uses `0x04 = 0x20`, that is DAC_OSR at 128 * fs, for 8000, 11025,
-12000 and 16000 Hz, and `0x10`, at 64 * fs, at 22.05 kHz and above, with a change described as
+Reference code we have seen uses `0x04 = 0x20`, that is DAC_OSR at `128 * fs`, for 8000, 11025,
+12000 and 16000 Hz, and `0x10`, at `64 * fs`, at 22.05 kHz and above, with a change described as
 fixing audible noise in the 8 kHz to 16 kHz range. Is that split the recommended one, and does it
 depend on how the internal master clock is produced? Our driver follows it, but we would like to
 know whether it addresses a known effect or is specific to one clock arrangement.
