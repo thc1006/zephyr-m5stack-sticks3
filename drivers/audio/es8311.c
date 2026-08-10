@@ -11,10 +11,10 @@
  * Audio interface: I2S / PCM, with the codec as the clock slave: the SoC drives
  * both the bit clock and the frame clock.
  *
- * The codec takes its internal master clock from the I2S bit clock (register
- * 0x01 bit 7), so no dedicated MCLK line is required. Register programming
- * follows the Everest ES8311 user guide (rev 1.11). The playback and capture
- * paths are validated on hardware.
+ * The internal master clock comes either from the MCLK pin or, with register
+ * 0x01 bit 7 set, from the I2S bit clock; audio_codec_cfg.mclk_freq picks
+ * between them. Register programming follows the Everest ES8311 user guide
+ * (rev 1.11). The playback and capture paths are validated on hardware.
  */
 
 #define DT_DRV_COMPAT everest_es8311
@@ -535,18 +535,18 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 	}
 
 	/*
-	 * mclk_freq describes the MCLK input pin, which is unused: the master clock
-	 * comes from BCLK (0x01 bit 7).
-	 */
-	/*
-	 * Gating BCLK stops this part's whole clock tree, leaving the DAC modulator
-	 * frozen on its last sample as a DC level into the amplifier. Rejected rather
-	 * than ignored. This covers only the configured state: underrun, DROP, PM and
-	 * reset can remove BCLK without asking, and no codec driver sees those.
+	 * A gated bit clock stops the serial port at a moment nothing tells this driver
+	 * about, and in the BCLK-derived mode below it stops the whole clock tree, which
+	 * leaves the DAC modulator frozen on its last sample as a DC level into the
+	 * amplifier. Rejected rather than ignored, in both modes, because the mode is
+	 * chosen further down and the hazard is worse in one of them. This covers only
+	 * the configured state: underrun, DROP, PM and reset can remove BCLK without
+	 * asking, and no codec driver sees those.
 	 */
 	if ((cfg->dai_cfg.i2s.options & I2S_OPT_BIT_CLK_GATED) != 0U) {
-		LOG_INF("I2S_OPT_BIT_CLK_GATED is not supported: this codec's master clock is "
-			"derived from BCLK, so a gated bit clock stops the whole codec");
+		LOG_INF("I2S_OPT_BIT_CLK_GATED is not supported: a gated bit clock stops the "
+			"serial port, and stops the whole codec when the master clock is "
+			"derived from BCLK");
 		return -ENOTSUP;
 	}
 
