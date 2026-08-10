@@ -1,0 +1,285 @@
+/*
+ * Copyright (c) 2026 Hsiu-Chi Tsai
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * What the StickS3 carries beyond the upstream board definition. Upstream owns
+ * the console, the two buttons, the BMI270 and the core buses; this adds the
+ * display, audio, IR, the PMIC children and the battery gauge. Pin map source:
+ * the M5Stack official StickS3 PinMap, see docs/09_SOURCES.md.
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/battery/battery.h>
+#include <zephyr/dt-bindings/display/panel.h>
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+&pinctrl {
+	i2s0_default: i2s0_default {
+		group1 {
+			pinmux = <I2S0_MCLK_GPIO18>,
+				 <I2S0_O_BCK_GPIO17>,
+				 <I2S0_O_WS_GPIO15>,
+				 <I2S0_O_SD_GPIO14>,
+				 <I2S0_I_SD_GPIO16>;
+		};
+	};
+
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_SCLK_GPIO40>;
+		};
+
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO39>;
+			output-low;
+		};
+	};
+
+	ledc0_default: ledc0_default {
+		group1 {
+			pinmux = <LEDC_CH0_GPIO46>;
+			output-enable;
+		};
+	};
+};
+
+/ {
+	chosen {
+		zephyr,bt-hci = &esp32_bt_hci;
+		zephyr,display = &lcd0;
+	};
+
+	aliases {
+		imu0 = &bmi270;
+		i2c-0 = &i2c0;
+		adc-0 = &m5pm1_adc;
+	};
+
+	/*
+	 * AW8737 speaker-amplifier enable, gated by M5PM1 GPIO3 (PYG3). Driver-less
+	 * on purpose: app/src/audio.c reads amp-gpios and drives it high only while
+	 * playing, which is what keeps the pop out. A gpio-leds or regulator node
+	 * would enable it at boot instead. The MFD gpio child writes masked, so
+	 * pin 3 leaves the neighbouring L3B bit on pin 2 alone.
+	 */
+	sound_amp: sound-amp {
+		compatible = "m5stack,sticks3-amp";
+		status = "okay";
+		amp-gpios = <&m5pm1_gpio 3 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * LCD/MIC/SPK power domain (L3B), gated by M5PM1 GPIO2 (PYG2).
+	 * regulator-boot-on brings it up before the display; the 100 ms delay is the
+	 * vendor settle time (HW-003 power-before-init).
+	 */
+	lcd_power: lcd-l3b {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-l3b";
+		enable-gpios = <&m5pm1_gpio 2 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		startup-delay-us = <100000>;
+	};
+
+	/* Backlight enable, BL = G38. Only lights once the L3B rail is up. */
+	lcd_backlight: lcd-backlight {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-backlight";
+		enable-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+
+	/*
+	 * ST7789P3 LCD on SPI2 through the MIPI-DBI SPI shim. MOSI G39, SCK G40
+	 * (pinctrl), CS G41, DC G45, RST G21. Panel geometry, offsets and inversion
+	 * come from the vendor M5GFX StickS3 configuration.
+	 */
+	mipi_dbi: mipi-dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		lcd0: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			reg = <0>;
+			mipi-max-frequency = <40000000>;
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+
+			width = <135>;
+			height = <240>;
+			x-offset = <52>;
+			y-offset = <40>;
+
+			vcom = <0x19>;
+			gctrl = <0x35>;
+			vrhs = <0x12>;
+			vdvs = <0x20>;
+			mdac = <0x00>;
+			gamma = <0x01>;
+			pixel-format = <PANEL_PIXEL_FORMAT_RGB_565>;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [d0 04 0d 11 13 2b 3f 54 4c 18 0d 0b 1f 23];
+			nvgam-param = [d0 04 0c 11 13 2c 3f 44 51 2f 1f 1f 20 23];
+			ram-param = [00 e0];
+			rgb-param = [40 02 14];
+		};
+	};
+
+	/*
+	 * Battery state of charge (issue #8). The M5PM1 reports voltages only, so
+	 * SoC comes from VBAT through the voltage-only composite gauge:
+	 * m5pm1_adc ch1 -> vbatt (unity divider, microvolt passthrough) -> gauge.
+	 * See docs/02_SDD.md section 4.5.1.
+	 */
+	vbatt: vbatt {
+		compatible = "voltage-divider";
+		io-channels = <&m5pm1_adc 1>;
+		output-ohms = <1>;
+	};
+
+	fuel_gauge: fuel-gauge {
+		compatible = "zephyr,fuel-gauge-composite";
+		source-primary = <&vbatt>;
+		device-chemistry = "lithium-ion-polymer";
+		ocv-capacity-table-0 = <BATTERY_OCV_CURVE_LITHIUM_ION_POLYMER_DEFAULT>;
+		charge-full-design-microamp-hours = <250000>;
+	};
+
+	zephyr,user {
+		/* IR receiver output, G42 = gpio1 pin 10, idles high, read as an edge. */
+		ir-rx-gpios = <&gpio1 10 GPIO_PULL_UP>;
+	};
+};
+
+&i2c0 {
+	/*
+	 * The codec shares the L3B rail, which regulator-boot-on brings up at init.
+	 * Its node carries no supply link and CONFIG_DEVICE_DEPS is off, so without
+	 * deferred-init it would probe before the rail settles and fail to read the
+	 * chip id (HW-016 codec-power-before-probe). audio_init() calls
+	 * device_init() from main context instead, long after L3B is up.
+	 */
+	es8311: es8311@18 {
+		compatible = "everest,es8311";
+		reg = <0x18>;
+		status = "okay";
+		zephyr,deferred-init;
+		/*
+		 * The on-board analog MEMS microphone is quiet enough to want the PGA
+		 * maximum. The driver defaults to 0 dB because that gain sits ahead of
+		 * the ADC and clipping there is unrecoverable, so this board asks for
+		 * it explicitly. Measured in HW-016d.
+		 */
+		everest,mic-pga-gain-db = <30>;
+	};
+
+	/*
+	 * M5PM1 PMIC. PYG2 gates the L3B rail (driven by lcd_power above), PYG3 the
+	 * speaker amplifier. ADC channel 1 is VBAT, channel 2 is VIN.
+	 */
+	m5pm1: pmic@6e {
+		compatible = "m5stack,m5pm1";
+		reg = <0x6e>;
+		status = "okay";
+
+		m5pm1_gpio: gpio {
+			compatible = "m5stack,m5pm1-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <5>;
+			status = "okay";
+		};
+
+		m5pm1_adc: adc {
+			compatible = "m5stack,m5pm1-adc";
+			#io-channel-cells = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			channel@1 {
+				reg = <1>;
+				zephyr,gain = "ADC_GAIN_1";
+				zephyr,reference = "ADC_REF_INTERNAL";
+				zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+				zephyr,resolution = <12>;
+			};
+
+			channel@2 {
+				reg = <2>;
+				zephyr,gain = "ADC_GAIN_1";
+				zephyr,reference = "ADC_REF_INTERNAL";
+				zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+				zephyr,resolution = <12>;
+			};
+		};
+	};
+};
+
+&spi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio1 9 GPIO_ACTIVE_LOW>;
+};
+
+/*
+ * The esp32-i2s driver #errors unless the GDMA node is okay, and i2s0 references
+ * its channels. Enabling the controller is inert without CONFIG_DMA, which the
+ * default build leaves off, so the default image is unchanged.
+ */
+&dma {
+	status = "okay";
+};
+
+/*
+ * I2S0 to the ES8311. Hardware-verified pins: MCLK G18, BCLK G17, WS G15,
+ * DOUT G14, DIN G16. The SoC dtsi already supplies the GDMA channel bindings.
+ */
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+};
+
+/*
+ * IR NEC. Zephyr has no ESP32 RMT driver, so TX (G46) is a LEDC ~38 kHz carrier
+ * gated by a software envelope and RX (G42) is a plain GPIO edge interrupt; the
+ * MCPWM capture path drops edges during the burst. Inert without CONFIG_PWM.
+ */
+&ledc0 {
+	status = "okay";
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	ir_tx: channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
+};
+
+&timer0 {
+	status = "okay";
+};
+
+&timer1 {
+	status = "okay";
+};
+
+&esp32_bt_hci {
+	status = "okay";
+};

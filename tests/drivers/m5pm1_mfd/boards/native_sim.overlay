@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Hsiu-Chi Tsai
  * SPDX-License-Identifier: Apache-2.0
  *
- * Mirrors the on-board M5PM1 topology (boards/m5stack/m5stack_sticks3): the
+ * Mirrors the on-board M5PM1 topology (app/boards/m5stack_sticks3_esp32s3_procpu.overlay): the
  * `m5stack,m5pm1` MFD parent on I2C, a `m5stack,m5pm1-gpio` child, a
  * `m5stack,m5pm1-adc` child with VBAT on channel 1, and a top-level
  * `regulator-fixed` whose enable line is the MFD GPIO child's pin 2 (PYG2,

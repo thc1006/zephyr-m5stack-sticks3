@@ -14,8 +14,7 @@ REQUIRED = [
     'docs/03_TDD.md',
     'docs/04_AGILE_BACKLOG.md',
     'docs/05_VALIDATION_MATRIX.md',
-    'boards/m5stack/m5stack_sticks3/board.yml',
-    'boards/m5stack/m5stack_sticks3/m5stack_sticks3_procpu.dts',
+    'app/boards/m5stack_sticks3_esp32s3_procpu.overlay',
     'app/CMakeLists.txt',
     'app/src/main.c',
 ]
