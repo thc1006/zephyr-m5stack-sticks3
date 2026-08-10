@@ -28,7 +28,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZEPHYR_REV: v4.4.0
+  ZEPHYR_REV: 697b32395
   # ghcr.io/zephyrproject-rtos/ci image whose bundled SDK is 1.0.1.
   # Pinned by digest, not by tag: a tag can be re-pointed at different content
   # without anything in this repo changing.

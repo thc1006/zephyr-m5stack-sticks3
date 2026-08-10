@@ -110,15 +110,13 @@ else
 	bad "the doc claims $claim ztest cases but $have exist"
 fi
 
-# 9. The upstream copy needs DEVICE_API(audio_codec, ...); this tree pins v4.4.0
-#    and must NOT carry it, or it will not build here. Check the divergence is
-#    the documented one and has not silently drifted.
+# 9. The audio codec is a driver class since zephyr#110631. This tree now tracks a
+#    Zephyr that has it, so the in-repo copy and the upstream copy are the same
+#    file and must both use DEVICE_API(audio_codec, ...).
 if grep -qE '^static DEVICE_API\(audio_codec' "$DRIVER"; then
-	bad "the in-repo copy carries DEVICE_API(audio_codec, ...), which does not exist on v4.4.0"
-elif grep -q 'scripts/sync_es8311_upstream.py' "$DRIVER"; then
-	ok "the in-repo copy keeps the v4.4.0 API form and points at the sync script"
+	ok "the in-repo copy registers through the audio_codec driver class"
 else
-	bad "the in-repo copy no longer explains why it diverges from the upstream copy"
+	bad "the in-repo copy does not use DEVICE_API(audio_codec, ...)"
 fi
 
 echo "----------------------------------------------------------------"

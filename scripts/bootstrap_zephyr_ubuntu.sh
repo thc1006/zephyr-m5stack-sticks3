@@ -12,7 +12,7 @@ sudo apt-get install -y --no-install-recommends \
   protobuf-compiler curl ca-certificates
 
 WORKSPACE_DIR="${WORKSPACE_DIR:-$HOME/zephyrproject-m5sticks3}"
-ZEPHYR_TAG="${ZEPHYR_TAG:-v4.4.0}"
+ZEPHYR_TAG="${ZEPHYR_TAG:-697b32395}"
 
 mkdir -p "$WORKSPACE_DIR"
 cd "$WORKSPACE_DIR"
