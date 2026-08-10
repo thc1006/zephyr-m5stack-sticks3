@@ -1861,7 +1861,7 @@ ZTEST(es8311, test_configure_opens_the_microphone_last_of_all)
 		}
 	}
 
-	/* The last three writes: DAC serial port, DAC mute (held ON), microphone port (held OFF). */
+	/* Last three writes: DAC serial port, DAC mute (held ON), mic port (held OFF). */
 	zassert_equal(emul_es8311_write_at(emul, n - 3), ES8311_REG_SDP_IN,
 		      "write %d should be the DAC serial port (0x09), not 0x%02x", n - 3,
 		      emul_es8311_write_at(emul, n - 3));
@@ -2770,7 +2770,8 @@ ZTEST(es8311, test_board_policy_devicetree_properties)
 	zassert_equal(v & 0x80U, 0x80U, "mono-dac-source=right must set SDP_IN_SEL (0x09 bit 7)");
 	zassert_ok(i2c_reg_read_byte_dt(&es_profile, ES8311_REG_ADC_PGA, &v),
 		   "read ADC_PGA failed");
-	zassert_equal(v, 0x1AU, "mic-pga-gain-db=30 must be MIC1 differential | 30 dB (0x14 = 0x1A)");
+	zassert_equal(v, 0x1AU,
+		      "mic-pga-gain-db=30 must be MIC1 differential | 30 dB (0x14 = 0x1A)");
 }
 
 /*
