@@ -1082,7 +1082,13 @@ static int es8311_stop(const struct device *dev, audio_dai_dir_t dir)
 		}
 	}
 
-	if ((dir & AUDIO_DAI_DIR_RX) != 0U && data->capture) {
+	/*
+	 * Ungated, like the TX half. configure() clears the route cache before it touches the
+	 * chip, so a configure() that failed on its first write leaves data->capture false with
+	 * the microphone still live -- and gating the off switch on that cache is exactly when it
+	 * would be skipped. Muting a powered-down ADC costs one write and is always safe.
+	 */
+	if ((dir & AUDIO_DAI_DIR_RX) != 0U) {
 		ret = es8311_stop_rx_locked(dev);
 		if (ret < 0 && first_err == 0) {
 			first_err = ret;

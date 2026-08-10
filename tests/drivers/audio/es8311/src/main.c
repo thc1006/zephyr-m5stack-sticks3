@@ -2996,4 +2996,30 @@ ZTEST(es8311, test_txrx_start_failure_rolls_back_rx_opened_by_this_call)
 		      "a failed TXRX start left the microphone this call opened running");
 }
 
+/*
+ * The off switch may not be gated on the route cache. configure() clears that cache before it
+ * writes anything, so a configure() that fails on its first write leaves capture false while the
+ * microphone is still live -- and that is precisely when a caller reaches for stop(RX).
+ */
+ZTEST(es8311, test_stop_rx_still_mutes_after_a_failed_configure)
+{
+	struct audio_codec_cfg cfg;
+
+	zassert_ok(audio_codec_start(codec, AUDIO_DAI_DIR_RX), "start(RX) failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, 0x00U,
+		      "precondition: the microphone is open");
+
+	/* Break the very first write of the reconfigure, so the route cache is already cleared. */
+	make_cfg(&cfg, AUDIO_PCM_RATE_16K, AUDIO_ROUTE_PLAYBACK_CAPTURE);
+	emul_es8311_fail_at(emul, 0);
+	zassert_true(audio_codec_configure(codec, &cfg) < 0, "the injected failure must surface");
+	emul_es8311_fail_at(emul, -1);
+
+	/* Whatever the cache now says, the microphone must still be reachable. */
+	reg_put(ES8311_REG_SDP_OUT, ES8311_SDP_I2S_16BIT);
+	zassert_ok(audio_codec_stop(codec, AUDIO_DAI_DIR_RX), "stop(RX) failed");
+	zassert_equal(reg_get(ES8311_REG_SDP_OUT) & ES8311_SDP_MUTE, ES8311_SDP_MUTE,
+		      "stop(RX) skipped the mute because the route cache had been cleared");
+}
+
 ZTEST_SUITE(es8311, NULL, NULL, es8311_before, NULL, NULL);
