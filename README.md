@@ -88,9 +88,9 @@ GitHub/web. The defensible claim is therefore:
 It is **not** "first Zephyr on ESP32-S3" (the SoC and sibling
 StampS3/AtomS3/CoreS3 boards are long supported); **not** "first RTOS on StickS3"
 (Arduino / ESP-IDF / UiFlow2 / MicroPython / ESPHome predate it); and **not**
-"first M5PM1 Zephyr driver" (Zephyr PR #109961 is upstreaming an M5PM1 MFD driver
-for a different board — this project reuses that work upstream, see
-`docs/07_UPSTREAM_PLAN.md`).
+"first M5PM1 Zephyr driver" (Zephyr PR #109961 added an M5PM1 MFD driver for a
+different board — this project depends on that upstream work rather than carrying
+its own, see `docs/07_UPSTREAM_PLAN.md`).
 
 ## Evidence & honesty rule
 
