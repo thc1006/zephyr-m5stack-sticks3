@@ -1637,10 +1637,10 @@ ZTEST(es8311, test_configure_rejects_a_gated_bit_clock)
 	struct audio_codec_cfg cfg;
 
 	/*
-	 * This codec's master clock IS the bit clock. A controller that gates BCLK when the
-	 * TX queue is idle stops the codec's entire clock tree, freezing the DAC modulator
-	 * on its last sample: a DC level on the amplifier, re-created on every underrun, at
-	 * a moment the driver is never told about. It has to be refused, not ignored.
+	 * A controller that gates BCLK when the TX queue is idle stops the serial port at a
+	 * moment the driver is never told about, and in the BCLK-derived mode it stops the
+	 * codec's entire clock tree, freezing the DAC modulator on its last sample: a DC
+	 * level on the amplifier, re-created on every underrun. Refused in both modes.
 	 */
 	make_cfg_16k_16bit(&cfg);
 	cfg.dai_cfg.i2s.options |= I2S_OPT_BIT_CLK_GATED;

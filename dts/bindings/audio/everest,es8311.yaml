@@ -117,11 +117,14 @@ description: |
   Power management: the application owns it
   -----------------------------------------
 
-  This codec derives its whole internal clock tree from the I2S bit clock. When BCLK
-  stops, the clock tree stops -- and a DAC that is powered and unmuted at that moment
-  has its modulator frozen on its last sample, which is a DC level sitting on the
-  amplifier. That is why init() quiesces the part, why configure() mutes before it
-  reclocks, and why I2S_OPT_BIT_CLK_GATED is refused.
+  In the BCLK-derived mode this codec takes its whole internal clock tree from the I2S
+  bit clock. When BCLK stops, the clock tree stops -- and a DAC that is powered and
+  unmuted at that moment has its modulator frozen on its last sample, which is a DC
+  level sitting on the amplifier. That is why init() quiesces the part, why configure()
+  mutes before it reclocks, and why I2S_OPT_BIT_CLK_GATED is refused. Driving MCLK
+  removes that particular failure, since the tree then runs from a clock the transport
+  does not stop, but it does not remove the need to mute before suspending: what the
+  DAC does with a stalled serial port has not been characterised here.
 
   It is also what a system suspend does, or runtime power management on the I2S
   controller, and this driver implements NO power-management actions: it registers no
@@ -133,13 +136,16 @@ description: |
   Clock sequencing: the application owns this too
   -----------------------------------------------
 
-  Because the codec's clock IS the bit clock, the transport and the codec output have to be
-  sequenced. The I2S controller must run a CONTINUOUS bit clock while streaming
-  (I2S_OPT_BIT_CLK_GATED is refused).
+  The transport and the codec output have to be sequenced, and how much rests on it depends on
+  which clock source is in use. The I2S controller must run a CONTINUOUS bit clock while
+  streaming in either mode (I2S_OPT_BIT_CLK_GATED is refused in both).
 
   The hard rule is on the way DOWN: never let BCLK stop while the DAC is powered and unmuted.
-  With no clock the modulator freezes on its last sample -- a DC level sitting on the amplifier.
-  So audio_codec_stop_output() (or an OUTPUT_MUTE) must land BEFORE the transport stops or the
+  In the BCLK-derived mode the codec's clock IS the bit clock, so with no clock the modulator
+  freezes on its last sample -- a DC level sitting on the amplifier. In the external-MCLK mode
+  the clock tree survives a stopped bit clock, and what the DAC does with a stalled serial port
+  has not been characterised here, so the same order is asked for rather than a weaker one.
+  audio_codec_stop_output() (or an OUTPUT_MUTE) must land BEFORE the transport stops or the
   I2S controller is suspended.
 
   For startup, the recommended order is to have the transport already running -- continuous BCLK,
@@ -152,9 +158,13 @@ description: |
       i2s_trigger(START)           # continuous BCLK begins, silence flows
       audio_codec_start_output()   # first DAC unmute, into a running clock
 
-  samples/drivers/i2s/i2s_codec unmutes BEFORE it starts the transport; that also works in
-  practice, but it relies on the DAC's un-clocked idle level, which this driver has not
-  characterised on silicon, so the order above is the one it recommends.
+  samples/drivers/i2s/i2s_codec does neither of those things, and it is worth being precise
+  about which half matters. It unmutes BEFORE it starts the transport, which also works in
+  practice but relies on the DAC's un-clocked idle level, something this driver has not
+  characterised on silicon. More importantly it stops with I2S_TRIGGER_DROP and never calls
+  audio_codec_stop_output(), which is the DOWN rule above. Neither is a defect in the sample
+  for a codec with its own clock; both are why an application using THIS codec should follow
+  the order given here rather than that sample.
 
   Shutdown reverses the streaming pair: audio_codec_stop_output() (mute), then stop the
   transport. A board with a separate power-amp enable should gate the speaker with THAT -- on
