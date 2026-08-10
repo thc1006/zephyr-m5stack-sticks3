@@ -41,31 +41,46 @@ else
 	GATE_MOUNT="$(cd "$GATE" && pwd)"
 fi
 
-echo "== gate: $(git -C "$WT" rev-parse --short HEAD) against $BASE"
+# EVERY commit in the range, not just HEAD. A push sends the whole series and CI checks
+# the whole series. This script checked only HEAD until 2026-08-10, which meant a
+# three-commit branch was gated on its last commit -- a six-line devicetree overlay --
+# while 1450 lines of new driver went past checkpatch untouched, and it still printed
+# "gate passed".
+COMMITS=$(git -C "$WT" rev-list --reverse "$BASE..HEAD")
+if [ -z "$COMMITS" ]; then
+	echo "FAIL no commits in $BASE..HEAD"
+	exit 1
+fi
+echo "== gate: $(echo "$COMMITS" | wc -l) commit(s), $BASE..$(git -C "$WT" rev-parse --short HEAD)"
 
 # Cheap local checks first, so an obvious miss does not wait on a container.
-LONGEST=$(git -C "$WT" log -1 --format=%B | awk '{ print length }' | sort -rn | head -1)
-if [ "$LONGEST" -gt 75 ]; then
-	echo "FAIL commit body has a $LONGEST-character line; Zephyr's limit is 75"
-	git -C "$WT" log -1 --format=%B | awk 'length > 75 { print "  " length ": " $0 }'
-	exit 1
-fi
-echo "ok   longest commit-message line is $LONGEST"
+i=0
+for c in $COMMITS; do
+	i=$((i + 1))
+	SHORT=$(git -C "$WT" rev-parse --short "$c")
+	git -C "$WT" log -1 --format=%B "$c" > "$GATE/msg-$i.txt"
 
-if git -C "$WT" log -1 --format=%B | grep -qiE 'co-authored-by: .*(claude|copilot|bot)|generated with'; then
-	echo "FAIL commit message carries a bot authorship or generated-with trailer"
-	exit 1
-fi
-echo "ok   no bot authorship trailer"
+	LONGEST=$(awk '{ print length }' "$GATE/msg-$i.txt" | sort -rn | head -1)
+	if [ "$LONGEST" -gt 75 ]; then
+		echo "FAIL $SHORT: message has a $LONGEST-character line; Zephyr's limit is 75"
+		awk 'length > 75 { print "  " length ": " $0 }' "$GATE/msg-$i.txt"
+		exit 1
+	fi
 
-if ! git -C "$WT" log -1 --format='%(trailers:key=Signed-off-by)' | grep -q .; then
-	echo "FAIL commit is missing its Signed-off-by trailer"
-	exit 1
-fi
-echo "ok   Signed-off-by present"
+	if grep -qiE 'co-authored-by: .*(claude|copilot|bot)|generated with' "$GATE/msg-$i.txt"; then
+		echo "FAIL $SHORT: message carries a bot authorship or generated-with trailer"
+		exit 1
+	fi
 
-git -C "$WT" log -1 --format=%B > "$GATE/msg.txt"
-git -C "$WT" format-patch -1 --stdout > "$GATE/patch.diff"
+	if ! git -C "$WT" log -1 --format='%(trailers:key=Signed-off-by)' "$c" | grep -q .; then
+		echo "FAIL $SHORT: commit is missing its Signed-off-by trailer"
+		exit 1
+	fi
+
+	echo "ok   $SHORT  longest line $LONGEST, signed off, no bot trailer"
+done
+
+git -C "$WT" format-patch "$BASE..HEAD" -o "$GATE/patches" > /dev/null
 
 # MSYS_NO_PATHCONV keeps Git Bash from mangling the -v arguments on Windows. Do not
 # stage files under /tmp for the mount: in Git Bash that is a Windows path and the
@@ -77,20 +92,24 @@ MSYS_NO_PATHCONV=1 docker run --rm \
 	set -o pipefail
 	cd /work/zephyr
 	rc=0
-	if gitlint --config .gitlint --msg-filename /host/msg.txt 2>/dev/null; then
-		echo "ok   gitlint"
-	else
-		echo "FAIL gitlint"
-		gitlint --config .gitlint --msg-filename /host/msg.txt || true
-		rc=1
-	fi
-	if ./scripts/checkpatch.pl --mailback --no-tree --patch /host/patch.diff > /host/cp.out 2>&1; then
-		echo "ok   checkpatch"
-	else
-		echo "FAIL checkpatch"
-		grep -E "ERROR|WARNING" /host/cp.out | head -20 || true
-		rc=1
-	fi
+	for m in /host/msg-*.txt; do
+		if gitlint --config .gitlint --msg-filename "$m" 2>/dev/null; then
+			echo "ok   gitlint $(basename "$m")"
+		else
+			echo "FAIL gitlint $(basename "$m")"
+			gitlint --config .gitlint --msg-filename "$m" || true
+			rc=1
+		fi
+	done
+	for p in /host/patches/*.patch; do
+		if ./scripts/checkpatch.pl --mailback --no-tree --patch "$p" > /host/cp.out 2>&1; then
+			echo "ok   checkpatch $(basename "$p")"
+		else
+			echo "FAIL checkpatch $(basename "$p")"
+			grep -E "ERROR|WARNING" /host/cp.out | head -20 || true
+			rc=1
+		fi
+	done
 	exit $rc
 '
 
