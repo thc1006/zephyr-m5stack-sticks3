@@ -31,6 +31,26 @@ description: |
   Whichever clock is named must actually be present on the pin before the codec is
   opened, and a board using the external-MCLK mode has to route MCLK.
 
+  A wider frame is not an escape from that bound, which is worth stating because it
+  is the obvious thing to try. Widening the slot to 32 bits doubles the bit clock to
+  64 * Fs, and at 8 kHz that is 512 kHz: enough for the 1.8 V DVDD minimum, still
+  short of the 1 MHz one that applies at 3.3 V. This driver refuses the rate in that
+  mode rather than widening the frame, and offers the MCLK pin, which needs no
+  multiplier at all.
+
+  One published recommendation this driver does NOT follow, stated rather than left
+  to be discovered: the recommended operating conditions ask that MCLK, LRCK and
+  SCLK be present before any control register is written, and that the part
+  otherwise be reset afterwards. This driver writes its control registers from
+  init(), which runs at POST_KERNEL, before any application has configured an I2S
+  peripheral, so no clock is running then. The remedy the note offers is not
+  available either: register 0x00 does not reset the register file, and issuing it
+  costs about 6.2 seconds of a capture noise floor of exactly zero, measured. What
+  stands behind the deviation is measurement rather than argument -- every rate and
+  route this driver advertises has been exercised on hardware, in both clock modes,
+  with every control write made this way -- and measurement on a handful of boards
+  is not a guarantee across process, voltage and temperature.
+
   This driver does not reset the codec, and there is no reset-gpios property,
   because the ES8311 has no reset pin. Its twenty pins are the I2C three, MCLK,
   SCLK, LRCK, ASDOUT, DSDIN, MIC1P/N, OUTP/N, the four supply pairs, and three
