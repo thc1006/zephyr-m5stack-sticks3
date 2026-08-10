@@ -2,8 +2,8 @@ name: CI
 
 # Build the firmware for every overlay, run the native_sim unit tests, and run a
 # scoped Zephyr compliance pass (issue #17). Everything is built out-of-tree
-# against a pinned upstream Zephyr (BOARD_ROOT + ZEPHYR_EXTRA_MODULES = this
-# repo) inside the official Zephyr CI container.
+# against a pinned upstream Zephyr (ZEPHYR_EXTRA_MODULES = this repo, whose
+# board now lives upstream) inside the official Zephyr CI container.
 #
 # The container is run via `docker run` on a plain runner, NOT via `container:`:
 # the ~10 GB image exhausts the default runner disk during the `container:`
@@ -28,7 +28,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZEPHYR_REV: v4.4.0
+  ZEPHYR_REV: 697b32395
   # ghcr.io/zephyrproject-rtos/ci image whose bundled SDK is 1.0.1.
   # Pinned by digest, not by tag: a tag can be re-pointed at different content
   # without anything in this repo changing.
@@ -101,9 +101,12 @@ jobs:
               # fails, without swallowing the build result.
               trap "mkdir -p /out/$NAME; cp -f build/zephyr/.config build/zephyr/zephyr.map /out/$NAME/ 2>/dev/null || true" EXIT
               mkdir -p /work && cd /work
-              west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
-              cd ws && west update --narrow -o=--depth=1 && west zephyr-export
-              export BOARD_ROOT=/repo ZEPHYR_EXTRA_MODULES=/repo
+              # Check the revision out by hand: west init --mr wants a branch or a
+              # tag, and no released tag carries this board yet.
+              mkdir ws && git clone --filter=blob:none https://github.com/zephyrproject-rtos/zephyr.git ws/zephyr
+              git -C ws/zephyr checkout --detach "$ZEPHYR_REV"
+              cd ws && west init -l zephyr && west update --narrow -o=--depth=1 && west zephyr-export
+              export ZEPHYR_EXTRA_MODULES=/repo
               if [ "$BLOB" = "true" ]; then west blobs fetch hal_espressif; fi
               args=(-p always -b m5stack_sticks3/esp32s3/procpu /repo/app)
               extra=()
@@ -168,8 +171,11 @@ jobs:
             "$CI_IMAGE" \
             bash -c 'set -eo pipefail
               mkdir -p /work && cd /work
-              west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
-              cd ws && west update --narrow -o=--depth=1 && west zephyr-export
+              # Check the revision out by hand: west init --mr wants a branch or a
+              # tag, and no released tag carries this board yet.
+              mkdir ws && git clone --filter=blob:none https://github.com/zephyrproject-rtos/zephyr.git ws/zephyr
+              git -C ws/zephyr checkout --detach "$ZEPHYR_REV"
+              cd ws && west init -l zephyr && west update --narrow -o=--depth=1 && west zephyr-export
               export ZEPHYR_EXTRA_MODULES=/repo
               west twister -p native_sim --inline-logs -v -T /repo/tests -O /out/twister-out
             '
@@ -306,8 +312,11 @@ jobs:
             "$CI_IMAGE" \
             bash -c 'set -eo pipefail
               mkdir -p /work && cd /work
-              west init -m https://github.com/zephyrproject-rtos/zephyr --mr "$ZEPHYR_REV" ws
-              cd ws && west update --narrow -o=--depth=1 && west zephyr-export
+              # Check the revision out by hand: west init --mr wants a branch or a
+              # tag, and no released tag carries this board yet.
+              mkdir ws && git clone --filter=blob:none https://github.com/zephyrproject-rtos/zephyr.git ws/zephyr
+              git -C ws/zephyr checkout --detach "$ZEPHYR_REV"
+              cd ws && west init -l zephyr && west update --narrow -o=--depth=1 && west zephyr-export
               export ZEPHYR_BASE=/work/ws/zephyr
               git config --global --add safe.directory /repo
               cd /repo

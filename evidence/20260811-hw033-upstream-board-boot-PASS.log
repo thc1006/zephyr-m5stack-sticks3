@@ -1,0 +1,66 @@
+HW-033  #24 board-name collision resolved: this tree builds against and boots on
+        an upstream Zephyr that already carries boards/m5stack/m5stack_sticks3
+        and the M5PM1 drivers.
+
+        Date        2026-08-11
+        Board       M5Stack StickS3, COM35, MAC 98:88:e0:0e:dc:64
+        Zephyr      697b32395 (upstream main; no released tag contains the board)
+        Image       app default config, 143076 B, flashed at 0x0, hash verified
+        Built with  upstream board + app/boards/m5stack_sticks3_esp32s3_procpu.overlay
+                    and NO vendored board or M5PM1 in this tree
+
+        The SHA-256 line below is the ESP simple-boot notice for an image with only
+        RAM segments visible; esptool says so when it creates it. Pre-existing.
+
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x403771be
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fc90850,len:0x24d0
+load:0x40374000,len:0xc83c
+load:0x50000000,len:0x24
+SHA-256 comparison failed:
+Calculated: c78603c9fe684d79aa642528f29f7b9d5f28f51ec3e34eaee8ca0ca12c156c2d
+Expected: 0000000080120000000000000000000000000000000000000000000000000000
+Attempting to boot anyway...
+entry 0x4037a64c
+I (soc_init): ESP Simple boot
+I (soc_init): compile time Aug 10 2026 18:24:08
+W (soc_init): Unicore bootloader
+I (soc_init): chip revision: v0.2
+I (flash_init): Boot SPI Speed : 80MHz
+I (flash_init): SPI Mode       : DIO
+I (flash_init): SPI Flash Size : 8MB
+I (boot): DRAM	: lma=00000020h vma=3fc90850h size=024d0h (  9424)
+I (boot): IRAM	: lma=000024f8h vma=40374000h size=0c83ch ( 51260)
+I (boot): RTC_DATA	: lma=0000ed3ch vma=50000000h size=00024h (    36)
+I (boot): IROM	: lma=00010000h vma=42000000h size=08b70h ( 35696)
+I (boot): DROM	: lma=00020000h vma=3c010000h size=02ee4h ( 12004)
+I (boot): libc heap size 329 kB.
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+I (spi_flash): detected chip: gd
+I (spi_flash): flash io: dio
+*** Booting Zephyr OS build 697b32395414 ***
+M5StickS3 Zephyr validation app
+Board: m5stack_sticks3
+[00:00:00.373,000] [0m<inf> gfx: Pixel format RGB_565 (high byte first)[0m
+[00:00:00.373,000] [0m<inf> gfx: Display ready (135x240)[0m
+alive uptime_ms=409 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5152 imu=1 accel=[0.000000 0.000000 0.000000]
+alive uptime_ms=1459 page=0 KEY1=1 KEY2=1 bat=4174 soc=99 vin=5148 imu=1 accel=[0.152036 0.171789 -9.890150]
+alive uptime_ms=2470 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5154 imu=1 accel=[0.125699 0.171789 -9.893143]
+alive uptime_ms=3481 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5152 imu=1 accel=[0.141860 0.161014 -9.899727]
+alive uptime_ms=4492 page=0 KEY1=1 KEY2=1 bat=4174 soc=99 vin=5152 imu=1 accel=[0.131685 0.174183 -9.896136]
+alive uptime_ms=5503 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5152 imu=1 accel=[0.151437 0.162212 -9.890748]
+alive uptime_ms=6514 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[0.135875 0.164007 -9.902121]
+alive uptime_ms=7525 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5148 imu=1 accel=[0.135875 0.177774 -9.901523]
+alive uptime_ms=8535 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5150 imu=1 accel=[0.143656 0.178972 -9.885361]
+alive uptime_ms=9546 page=0 KEY1=1 KEY2=1 bat=4172 soc=99 vin=5150 imu=1 accel=[0.136473 0.189746 -9.883566]
+alive uptime_ms=10557 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5154 imu=1 accel=[0.145452 0.178373 -9.908107]
+alive uptime_ms=11568 page=0 KEY1=1 KEY2=1 bat=4174 soc=99 vin=5148 imu=1 accel=[0.133480 0.162212 -9.881171]
+alive uptime_ms=12579 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5152 imu=1 accel=[0.144255 0.175380 -9.888953]
+alive uptime_ms=13591 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5158 imu=1 accel=[0.150839 0.171190 -9.898530]
+alive uptime_ms=14602 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5154 imu=1 accel=[0.134079 0.181366 -9.914691]
+alive uptime_ms=15613 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5150 imu=1 accel=[0.147247 0.171190 -9.888354]
+alive uptime_ms=16624 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5150 imu=1 accel=[0.149642 0.159817 -9.910501]

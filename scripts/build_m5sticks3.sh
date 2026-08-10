@@ -13,9 +13,9 @@ fi
 # shellcheck disable=SC1091
 source "$WORKSPACE_DIR/.venv/bin/activate"
 cd "$WORKSPACE_DIR"
-export BOARD_ROOT="$REPO_ROOT"
 # Build the repo in as an out-of-tree module so its drivers/ + dts/bindings/
-# (e.g. the M5PM1 PMIC regulator) are compiled.
+# are compiled. The board itself is upstream now; app/boards/ carries the
+# StickS3 peripherals upstream does not describe.
 export ZEPHYR_EXTRA_MODULES="$REPO_ROOT"
 BOARD="${BOARD:-m5stack_sticks3/esp32s3/procpu}"
 west build -p always -b "$BOARD" "$REPO_ROOT/app"

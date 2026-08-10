@@ -50,29 +50,41 @@ extern int emul_m5pm1_last_write(const struct emul *target, uint8_t reg);
 
 #define PYG2             BIT(2)
 #define FUNC0_GPIO2_MASK (0x3U << 4) /* GPIO2 occupies FUNC0 bits [5:4] */
+#define I2C_CFG_SLP_TO   0x0FU       /* I2C_CFG[3:0] = idle-sleep timeout, 0 = disabled */
 
 /* VBAT logical channel on the M5PM1 ADC (overlay channel@1). */
 #define VBAT_CHANNEL 1
 #define VBAT_TEST_MV 4180 /* must match the seed in emul_m5pm1.c */
 
 /*
- * TEST 1: mfd_m5pm1_init() must DISABLE idle-sleep by writing reg 0x09 = 0x00.
+ * TEST 1: mfd_m5pm1 init must DISABLE idle-sleep, i.e. leave I2C_CFG[3:0] = 0.
  *
- * Load-bearing: the emulator seeds 0x09 = 0xFF (opposite), so a no-op leaves
- * 0xFF in the byte-store; and last_write(0x09) returns -1 if 0x09 was never
- * written. We assert BOTH the recorded write value is 0x00 and the resulting
- * byte-store is 0x00. Delete the reg-0x09 write from mfd_m5pm1.c and this test
- * fails (last_write -> -1, peek -> 0xFF).
+ * The requirement is the SLP_TO field, not the whole byte. This test used to
+ * assert the byte was 0x00, which passed only because the copy of the driver
+ * this repo vendored wrote 0x00 over the whole register. The upstream driver
+ * (Zephyr PR #109961) read-modify-writes instead, clearing only bits 3:0 and
+ * preserving 7:4, so against the emulator's 0xFF seed it writes 0xF0 -- the
+ * same requirement met without clobbering the neighbouring bits. Asserting the
+ * byte was testing the vendored clobber, not idle-sleep being off.
+ *
+ * Still load-bearing: the emulator seeds 0x09 = 0xFF, whose SLP_TO is 0xF, so a
+ * no-op leaves a non-zero field; and last_write(0x09) returns -1 if 0x09 was
+ * never written at all. Delete the I2C_CFG write from the driver and this test
+ * still fails (last_write -> -1, peek's field -> 0xF).
  */
 ZTEST(m5pm1_mfd, test_mfd_init_disables_idle_sleep)
 {
+	int last_write;
+
 	zassert_true(device_is_ready(mfd), "MFD not ready");
 
-	zassert_equal(emul_m5pm1_last_write(emul, M5PM1_REG_I2C_CFG), 0x00,
-		      "init must WRITE idle-sleep reg 0x09 = 0x00 (last_write was %d)",
-		      emul_m5pm1_last_write(emul, M5PM1_REG_I2C_CFG));
-	zassert_equal(emul_m5pm1_peek(emul, M5PM1_REG_I2C_CFG), 0x00,
-		      "idle-sleep reg 0x09 should read 0x00 after init (was seeded 0xFF)");
+	last_write = emul_m5pm1_last_write(emul, M5PM1_REG_I2C_CFG);
+	zassert_true(last_write >= 0, "init must WRITE idle-sleep reg 0x09 at all (last_write %d)",
+		     last_write);
+	zassert_equal(last_write & I2C_CFG_SLP_TO, 0x00,
+		      "init must clear SLP_TO in reg 0x09 (wrote 0x%02x)", last_write);
+	zassert_equal(emul_m5pm1_peek(emul, M5PM1_REG_I2C_CFG) & I2C_CFG_SLP_TO, 0x00,
+		      "reg 0x09 SLP_TO should read 0 after init (was seeded 0xFF)");
 }
 
 /*

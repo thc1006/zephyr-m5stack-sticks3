@@ -1301,19 +1301,7 @@ static int es8311_apply_properties(const struct device *dev)
  * has one differential microphone input and one output, so there is nothing to
  * multiplex.
  */
-/*
- * Zephyr made the audio codec a proper driver class in zephyrproject-rtos/zephyr
- * PR #110631, which landed after v4.4.0: `struct audio_codec_api` became a
- * deprecated alias and drivers now register with DEVICE_API(audio_codec, ...).
- * This tree pins v4.4.0, where that class does not exist, so the copy here keeps
- * the pre-#110631 form. The upstream copy of this file carries
- *
- *     static DEVICE_API(audio_codec, es8311_api) = {
- *
- * on the line below, and that is the ONLY line that differs between the two.
- * scripts/sync_es8311_upstream.py is what keeps them in step.
- */
-static const struct audio_codec_api es8311_api = {
+static DEVICE_API(audio_codec, es8311_api) = {
 	.configure = es8311_configure,
 	.start_output = es8311_start_output,
 	.stop_output = es8311_stop_output,

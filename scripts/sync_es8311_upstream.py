@@ -6,11 +6,12 @@
 There is ONE tracked source of truth, `drivers/audio/es8311.c`, and it is the
 v4.4.0 form, because that is the Zephyr this repo pins and builds against.
 
-Upstream main is one line different. Zephyr made the audio codec a proper driver
-class in zephyrproject-rtos/zephyr#110631, which landed after v4.4.0: `struct
-audio_codec_api` became a deprecated alias and drivers now register with
-`DEVICE_API(audio_codec, ...)`. This script rewrites exactly that one declaration
-and writes the result somewhere else. It never writes into the repo.
+The driver itself is now byte-identical to the upstream copy: this tree tracks a
+Zephyr that has the audio-codec driver class from zephyrproject-rtos/zephyr#110631,
+so both sides use `DEVICE_API(audio_codec, ...)`. What still differs is the Kconfig,
+which has to state `depends on AUDIO_CODEC` out of tree because upstream sources the
+same file from inside `if AUDIO_CODEC`. This script emits the upstream form
+somewhere else. It never writes into the repo.
 
 The direction matters. This used to run the other way, copying an upstream file
 that lived outside the repo INTO the tree, which made an untracked file the real
@@ -44,30 +45,12 @@ import io
 import os
 import sys
 
-UPSTREAM_DECL = "static DEVICE_API(audio_codec, es8311_api) = {"
-
 # Present out of tree, absent upstream.
 KCONFIG_OOT_ONLY = """	# The upstream copy carries no such dependency, because upstream sources this
 	# file from inside `if AUDIO_CODEC`. Out of tree it is sourced at the top
 	# level, so it has to state it.
 	depends on AUDIO_CODEC
 """
-
-# The exact block sync-emitted into the repo copy. Matched verbatim, so that an
-# edit to it is a loud failure here rather than a silent divergence upstream.
-IN_REPO_DECL = """/*
- * Zephyr made the audio codec a proper driver class in zephyrproject-rtos/zephyr
- * PR #110631, which landed after v4.4.0: `struct audio_codec_api` became a
- * deprecated alias and drivers now register with DEVICE_API(audio_codec, ...).
- * This tree pins v4.4.0, where that class does not exist, so the copy here keeps
- * the pre-#110631 form. The upstream copy of this file carries
- *
- *     static DEVICE_API(audio_codec, es8311_api) = {
- *
- * on the line below, and that is the ONLY line that differs between the two.
- * scripts/sync_es8311_upstream.py is what keeps them in step.
- */
-static const struct audio_codec_api es8311_api = {"""
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AUDIO = os.path.join(HERE, os.pardir, "drivers", "audio")
@@ -111,10 +94,7 @@ def main(argv):
 
     outdir = argv[1]
 
-    driver = rewrite("drivers/audio/es8311.c", read(REPO_DRIVER), IN_REPO_DECL, UPSTREAM_DECL,
-                     "v4.4.0 API declaration block")
-    if driver is None:
-        return 1
+    driver = read(REPO_DRIVER)
 
     kconfig = rewrite("drivers/audio/Kconfig.es8311", read(REPO_KCONFIG), KCONFIG_OOT_ONLY, "",
                       "out-of-tree `depends on AUDIO_CODEC` block")

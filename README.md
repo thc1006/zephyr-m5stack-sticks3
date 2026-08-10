@@ -3,7 +3,7 @@
 [![CI](https://github.com/thc1006/zephyr-m5stack-sticks3/actions/workflows/ci.yml/badge.svg)](https://github.com/thc1006/zephyr-m5stack-sticks3/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Zephyr](https://img.shields.io/badge/Zephyr-4.4.0-7f52ff.svg)](https://docs.zephyrproject.org/latest/releases/release-notes-4.4.html)
-[![Board](https://img.shields.io/badge/board-m5stack__sticks3-informational.svg)](boards/m5stack/m5stack_sticks3)
+[![Board](https://img.shields.io/badge/board-m5stack__sticks3-informational.svg)](https://github.com/zephyrproject-rtos/zephyr/tree/main/boards/m5stack/m5stack_sticks3)
 
 **Yes — you can run Zephyr RTOS on the M5Stack StickS3.** This repository is a
 public, reproducible, upstream-oriented Zephyr 4.4 **board port** for the
@@ -88,9 +88,9 @@ GitHub/web. The defensible claim is therefore:
 It is **not** "first Zephyr on ESP32-S3" (the SoC and sibling
 StampS3/AtomS3/CoreS3 boards are long supported); **not** "first RTOS on StickS3"
 (Arduino / ESP-IDF / UiFlow2 / MicroPython / ESPHome predate it); and **not**
-"first M5PM1 Zephyr driver" (Zephyr PR #109961 is upstreaming an M5PM1 MFD driver
-for a different board — this project reuses that work upstream, see
-`docs/07_UPSTREAM_PLAN.md`).
+"first M5PM1 Zephyr driver" (Zephyr PR #109961 added an M5PM1 MFD driver for a
+different board — this project depends on that upstream work rather than carrying
+its own, see `docs/07_UPSTREAM_PLAN.md`).
 
 ## Evidence & honesty rule
 
@@ -108,8 +108,8 @@ flash-verified → runtime-verified → upstream-reviewed) are defined in
 .
 ├── CONTRIBUTING.md                   # Project conventions, rules, Definition of Done
 ├── docs/                             # SDD, TDD, ADRs, prior art, validation, upstream plan
-├── boards/m5stack/m5stack_sticks3/   # Zephyr HWMv2 board definition (procpu/appcpu)
-├── drivers/{mfd,gpio,adc}/           # M5PM1 PMIC MFD parent + GPIO/ADC children (+ emulator)
+├── app/boards/                       # StickS3 peripherals the upstream board does not describe
+├── drivers/mfd/                      # M5PM1 native_sim emulator (the drivers are upstream)
 ├── drivers/audio/                    # ES8311 codec driver (+ native_sim emulator)
 ├── dts/bindings/                     # Devicetree bindings for the above
 ├── app/                              # Minimal hardware-validation app

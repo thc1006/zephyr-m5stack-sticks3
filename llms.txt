@@ -25,7 +25,7 @@
 
 - README.md: overview, hardware table, quick start, honest scope.
 - CONTRIBUTING.md: conventions, verification levels, Definition of Done.
-- boards/m5stack/m5stack_sticks3/: Zephyr HWMv2 board definition.
+- app/boards/: board overlay for what the upstream m5stack_sticks3 board omits.
 - drivers/{mfd,gpio,adc}/*_m5pm1.c: M5PM1 PMIC MFD parent + GPIO/ADC children
   (vendored from Zephyr PR #109961, with a local idle-sleep/wake-retry fix).
 - app/: modular multi-page hardware-validation / demo application.
