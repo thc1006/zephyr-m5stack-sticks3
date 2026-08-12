@@ -80,6 +80,27 @@ for c in $COMMITS; do
 	echo "ok   $SHORT  longest line $LONGEST, signed off, no bot trailer"
 done
 
+# A push dismisses every approval on the branch, so knowing the vote count is part
+# of deciding whether to push at all, not something to check afterwards. On
+# 2026-08-11 a self-invented "commit message is too long" threshold nearly cost
+# five pull requests their approvals, three of which had been earned that evening.
+# Set ZEPHYR_GATE_ALLOW_DISMISS=1 when losing the votes is the actual intent.
+BRANCH=$(git -C "$WT" rev-parse --abbrev-ref HEAD)
+if command -v gh >/dev/null 2>&1; then
+	if bash "$(dirname "$0")/zephyr_live_votes.sh" --branch "$BRANCH"; then
+		:
+	elif [ "${ZEPHYR_GATE_ALLOW_DISMISS:-0}" = "1" ]; then
+		echo "     ZEPHYR_GATE_ALLOW_DISMISS=1 set; continuing anyway"
+	else
+		echo "FAIL pushing $BRANCH would dismiss the approvals listed above"
+		exit 1
+	fi
+else
+	echo "FAIL gh is not on PATH, so the vote check cannot run"
+	echo "     refusing to pass a gate whose approval check did not execute"
+	exit 1
+fi
+
 git -C "$WT" format-patch "$BASE..HEAD" -o "$GATE/patches" > /dev/null
 
 # MSYS_NO_PATHCONV keeps Git Bash from mangling the -v arguments on Windows. Do not
