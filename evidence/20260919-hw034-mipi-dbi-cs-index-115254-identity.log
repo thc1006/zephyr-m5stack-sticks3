@@ -1,0 +1,31 @@
+HW-034: zephyr#115254 (mipi_dbi: check the chip select GPIO per device index)
+board       : M5Stack StickS3, m5stack_sticks3/esp32s3/procpu, USB-Serial/JTAG on COM35
+date        : 2026-09-19
+zephyr base : 434233e9751e7cca7bea82047e812bca607722d3 (upstream main, 2026-09-06)
+app         : this repository's app/ with app/boards/m5stack_sticks3_esp32s3_procpu.overlay
+              (spi2 cs-gpios = <&gpio1 9 GPIO_ACTIVE_LOW>, one entry; lcd0: st7789v@0, reg = <0>)
+
+baseline    : base tree, unmodified
+              include/zephyr/drivers/mipi_dbi.h contains DT_PROP_HAS_IDX: 0 occurrences
+              zephyr.bin 143604 bytes sha256 fce7a9305c70ef3b27bbbd24d2434c5442bbc53a68a2f20778cd036fe910cf0e
+patched     : base tree + PR #115254 commit 9f7f009da21 (the header change), applied by
+              three-way cherry-pick (git apply rejected it: #110156 changed the same
+              region of the header on 2026-09-03), +10/-2 in mipi_dbi.h
+              include/zephyr/drivers/mipi_dbi.h contains DT_PROP_HAS_IDX: 1 occurrence
+              zephyr.bin 143604 bytes sha256 896a78e2eff5815be05580faf7b3b4570870212a26bdbb8925bdab8fd2b39853
+
+Both images print "*** Booting Zephyr OS build 434233e9751e ***" because the patch was
+applied uncommitted; the build logs, the macro count above and the two checksums are what
+tell the images apart.
+
+result      : both boot to "<inf> gfx: Display ready (135x240)" with zero <err>/<wrn> lines.
+              After stripping ANSI colour codes and timestamps the two Zephyr-side logs
+              (50 lines each) differ only in the periodic "alive" telemetry values
+              (battery mV, SoC %, accelerometer), i.e. live sensor readings.
+
+what this proves: no regression on the ordinary single-chip-select path. On this board
+              the old form DT_SPI_HAS_CS_GPIOS(spi2) and the new form
+              DT_PROP_HAS_IDX(spi2, cs_gpios, 0) both evaluate to 1, so the change is a
+              no-op here by construction. It does NOT exercise the case the PR exists for
+              (a MIPI DBI child whose index lies past the end of cs-gpios); that is covered
+              by the BUILD_ASSERTs the PR adds to tests/drivers/build_all/display.

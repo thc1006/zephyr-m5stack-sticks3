@@ -1,0 +1,124 @@
+[?9001h[?1004h[?25l[2J[m[33m[H--- Warning: GDB cannot open serial ports accessed as COMx
+
+]0;C:\Python313\python.EXE[?25h[m[33m--- Using \\.\COM35 instead...
+
+--- esp-idf-monitor 1.9.0 on \\.\COM35 115200
+
+[m[38;5;3m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[m
+
+ESP-ROM:esp32s3-20210327
+
+Build:Mar 27 2021
+
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x2b (SPI_FAST_FLASH_BOOT)
+
+Saved PC:0x4037731a
+
+[38;5;9mxtensa-esp32-elf-addr2line -fiaC -e C:\Users\thc1006\AppData\Local\Temp\claude\D--dev-2026-m5sticks3-zephyr-first-port-kit\6a9a0cbb-4f94-4dfe-ad0b-81510c89f82e\scratchpad\hwout\hw115254-baseline.elf 0x4037731a: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??[m
+
+SPIWP:0xee
+
+mode:DIO, clock div:1
+
+load:0x3fc911f0,len:0x2520
+
+load:0x40374000,len:0xd1d4[38;5;9m
+
+xtensa-esp32-elf-addr2line -fiaC -e C:\Users\thc1006\AppData\Local\Temp\claude\D--dev-2026-m5sticks3-zephyr-first-port-kit\6a9a0cbb-4f94-4dfe-ad0b-81510c89f82e\scratchpad\hwout\hw115254-baseline.elf 0x40374000: [WinError 2[m[38;5;9m] 蝟餌絞?曆??唳?摰?瑼??
+
+[mload:0x50000000,len:0x24
+
+SHA-256 comparison failed:
+
+Calculated: e857806e7f69f6c2e521810c740dcce8f5fcdae186e28f536152be78f6c5280d
+
+Expected: 00000000a0080000000000000000000000000000000000000000000000000000
+
+Attempting to boot anyway...
+
+entry 0x4037addc
+
+[38;5;9mxtensa-esp32-elf-addr2line -fiaC -e C:\Users\thc1006\AppData\Local\Temp\claude\D--dev-2026-m5sticks3-zephyr-first-port-kit\6a9a0cbb-4f94-4dfe-ad0b-81510c89f82e\scratchpad\hwout\hw115254-baseline.elf 0x4037addc: [WinError 2] 蝟餌絞?曆??唳?摰?瑼??[m
+
+I (soc_init): ESP Simple boot
+
+I (soc_init): compile time Sep 18 2026 17:14:12
+
+W (soc_init): Unicore bootloader
+
+I (soc_init): chip revision: v0.2
+
+I (flash_init): Boot SPI Speed : 80MHz
+
+I (flash_init): SPI Mode       : DIO
+
+I (flash_init): SPI Flash Size : 8MB
+
+I (boot): DRAM[2C: lma=00000020h vma=3fc911f0h size=02520h (  9504)
+
+I (boot): IRAM[2C: lma=00002548h vma=40374000h size=0d1d4h ( 53716)
+
+I (boot): RTC_DATA[6C: lma=0000f724h vma=50000000h size=00024h (    36)
+
+I (boot): IROM[2C: lma=00010000h vma=42000000h size=09bf0h ( 39920)
+
+I (boot): DROM[2C: lma=00020000h vma=3c010000h size=030f4h ( 12532)
+
+I (boot): libc heap size 324 kB.
+
+I (cache): Instruction cache: size 16KB, 8Ways, cache line size 32Byte
+
+I (spi_flash): detected chip: gd
+
+I (spi_flash): flash io: dio
+
+*** Booting Zephyr OS build 434233e9751e ***
+
+M5StickS3 Zephyr validation app
+
+Board: m5stack_sticks3
+
+[00:00:00.345,000] <inf> gfx: Pixel format RGB_565 (high byte first)
+
+[00:00:00.345,000] <inf> gfx: Display ready (135x240)
+
+alive uptime_ms=381 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5156 imu=1 accel=[0.000000 0.000000 0.000000]
+
+alive uptime_ms=1431 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[1.653246 0.177176 -9.763852]
+
+alive uptime_ms=2442 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5148 imu=1 accel=[1.627508 0.205309 -9.739909]
+
+alive uptime_ms=3453 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5152 imu=1 accel=[1.641275 0.159817 -9.790787]
+
+alive uptime_ms=4464 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5156 imu=1 accel=[1.615536 0.167000 -9.733923]
+
+alive uptime_ms=5475 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[1.610149 0.127495 -9.759662]
+
+alive uptime_ms=6486 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[1.598178 0.144255 -9.765648]
+
+alive uptime_ms=7497 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[1.635289 0.161613 -9.764450]
+
+alive uptime_ms=8508 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5160 imu=1 accel=[1.626909 0.168796 -9.759662]
+
+alive uptime_ms=9519 page=0 KEY1=1 KEY2=1 bat=4184 soc=100 vin=5158 imu=1 accel=[1.629303 0.179570 -9.762655]
+
+alive uptime_ms=10530 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5156 imu=1 accel=[1.643669 0.183760 -9.738712]
+
+alive uptime_ms=11541 page=0 KEY1=1 KEY2=1 bat=4180 soc=100 vin=5152 imu=1 accel=[1.610748 0.158022 -9.775823]
+
+alive uptime_ms=12552 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5154 imu=1 accel=[1.631099 0.161613 -9.759662]
+
+alive uptime_ms=13563 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5154 imu=1 accel=[1.624515 0.165204 -9.761458]
+
+alive uptime_ms=14574 page=0 KEY1=1 KEY2=1 bat=4174 soc=99 vin=5150 imu=1 accel=[1.628705 0.165204 -9.756070]
+
+alive uptime_ms=15585 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5150 imu=1 accel=[1.615536 0.169394 -9.754275]
+
+alive uptime_ms=16596 page=0 KEY1=1 KEY2=1 bat=4182 soc=100 vin=5158 imu=1 accel=[1.607755 0.149642 -9.784802]
+
+alive uptime_ms=17607 page=0 KEY1=1 KEY2=1 bat=4176 soc=99 vin=5154 imu=1 accel=[1.608354 0.159219 -9.743501]
+
+alive uptime_ms=18618 page=0 KEY1=1 KEY2=1 bat=4178 soc=100 vin=5154 imu=1 accel=[1.634092 0.159817 -9.754873]
+
+
+[monitor captured 4678 chars; last 1.0s silent]
