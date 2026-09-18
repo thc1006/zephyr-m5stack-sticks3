@@ -1,0 +1,12 @@
+/*
+ * Copyright (c) 2026 Hsiu-Chi Tsai
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The GDMA controller is disabled by default in the SoC devicetree and the
+ * upstream m5stack_sticks3 board does not override it, so enable it here. The
+ * test only calls dma_config(); no channel is started.
+ */
+
+&dma {
+	status = "okay";
+};
